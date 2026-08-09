@@ -6,7 +6,21 @@ Servo is an autonomous validation and training workbench for physical AI. Give i
 
 Servo is being developed for the [All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/) in the **Taskmaster** track.
 
-> Project status: early hackathon prototype and product-design phase. The repository currently contains a minimal Qt/QML desktop shell and design research. The autonomous validation loop is not implemented yet.
+> Project status: frontend-first hackathon prototype. The complete Qt/QML desktop workflow is navigable and interactive with representative local data. Simulation, agent orchestration, training, and cloud services are still mocked.
+
+## Frontend prototype
+
+The first complete UI/UX pass follows a restrained game-engine workbench model: near-black surfaces, compact resizable panes, persistent navigation, dense inspection tools, and color reserved for active, warning, failure, and pass states.
+
+| Workspace | Frontend coverage |
+| --- | --- |
+| Prepare | Study outliner, editable policy/vehicle/sensor/world configuration, readiness checks, and build state |
+| Simulate | Scene outliner, camera viewport, object selection, playback timeline, telemetry, and inspector |
+| Diagnose | Failure browser, replay timeline, counterfactual evidence, causal hypotheses, and ablation state |
+| Train | Workflow stages, job queue, live metrics, logs, artifacts, and locked run configuration |
+| Verify | Baseline/candidate comparison, hidden-exam matrix, regression evidence, Reality Debt, and promotion decision |
+
+Workspace tabs and the left activity rail are both interactive. `Ctrl+1` through `Ctrl+5` switch workspaces, split-pane handles resize the editor, configuration sections collapse, and the principal run/build/decision controls update prototype state.
 
 ## The core loop
 
@@ -45,16 +59,33 @@ The important product is the capability-closing loop, not a Gaussian-splat viewe
 
 ```text
 .
-|-- Main.qml              # Current Qt Quick application shell
-|-- main.cpp              # Qt application entry point
-|-- CMakeLists.txt        # Qt/CMake project definition
-|-- importedcontent/      # Reserved for approved imported design assets
-`-- docs/                 # Product and hackathon research
+|-- Main.qml                 # Persistent application shell and workspace routing
+|-- *Workspace.qml           # Prepare, Simulate, Diagnose, Train, and Verify views
+|-- Theme.qml                # Shared color, typography, sizing, and helper tokens
+|-- EngineViewport.qml       # Reusable simulated camera viewport
+|-- TimelinePanel.qml        # Reusable playback and event timeline
+|-- AppButton.qml, ...       # Shared compact editor controls
+|-- main.cpp                 # Qt application entry point and optional QML log sink
+|-- CMakeLists.txt           # Qt/CMake project definition
+|-- importedcontent/         # Reserved for approved imported design assets
+`-- docs/                    # Product research and UI design references
 ```
 
-## Development status
+## Build the frontend
 
-No production build or model-training workflow is available yet. Build, cloud deployment, and reproducibility instructions will be added with the first runnable vertical slice. Nothing in this repository should be used to control a real vehicle or robot.
+Servo currently targets Qt 6.10 or newer with Qt Quick and Qt Quick Controls 2. With Qt, CMake, Ninja, and a compatible C++ compiler on `PATH`:
+
+```powershell
+cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/mingw_64
+cmake --build build --parallel
+./build/appServo.exe
+```
+
+Set `SERVO_QML_LOG` to a writable file path when a persistent runtime QML log is useful during visual QA.
+
+## Implementation boundary
+
+This milestone completes the desktop frontend prototype, not the autonomous validation backend. Viewport imagery and metrics are representative fixtures; no production simulation, model-training workflow, cloud deployment, or robot/vehicle control is connected yet. Nothing in this repository should be used to control a real vehicle or robot.
 
 ## Qt and open-source licensing
 
