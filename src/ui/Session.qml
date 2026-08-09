@@ -5,7 +5,9 @@ import QtQuick
 QtObject {
     property url projectUrl: ""
     property url recordingUrl: ""
-    property int workspaceIndex: 0
+    property int workspaceIndex: 1
+    property bool showPerformanceMetrics: true
+    property bool viewportFocusMode: false
 
     property var projectTreeModel: null
     property var worldModel: null
@@ -20,32 +22,31 @@ QtObject {
     readonly property bool recordingSelected: recordingUrl.toString().length > 0
     readonly property string projectName: fileStem(projectUrl)
     readonly property string recordingName: fileName(recordingUrl)
-    readonly property int targetUiFrameRate: 120
-
-    signal openProjectRequested()
-    signal importRecordingRequested()
+    signal openProjectRequested
+    signal importRecordingRequested
+    signal resetWorkspaceLayoutRequested
 
     function fileName(url) {
-        const value = decodeURIComponent(url.toString())
-        return value.length > 0 ? value.substring(value.lastIndexOf("/") + 1) : ""
+        const value = decodeURIComponent(url.toString());
+        return value.length > 0 ? value.substring(value.lastIndexOf("/") + 1) : "";
     }
 
     function fileStem(url) {
-        const name = fileName(url)
-        const dot = name.lastIndexOf(".")
-        return dot > 0 ? name.substring(0, dot) : name
+        const name = fileName(url);
+        const dot = name.lastIndexOf(".");
+        return dot > 0 ? name.substring(0, dot) : name;
     }
 
     function closeProject() {
-        projectUrl = ""
-        recordingUrl = ""
-        projectTreeModel = null
-        worldModel = null
-        runModel = null
-        failureModel = null
-        experimentModel = null
-        trainingJobModel = null
-        checkpointModel = null
-        capabilityModel = null
+        projectUrl = "";
+        recordingUrl = "";
+        projectTreeModel = null;
+        worldModel = null;
+        runModel = null;
+        failureModel = null;
+        experimentModel = null;
+        trainingJobModel = null;
+        checkpointModel = null;
+        capabilityModel = null;
     }
 }

@@ -10,6 +10,7 @@ T.Button {
     property string tone: "default"
     property string toolTip: ""
     property bool compact: false
+    property bool selected: false
 
     implicitHeight: compact ? 26 : Theme.controlHeight
     implicitWidth: Math.max(54, contentRow.implicitWidth + 18)
@@ -44,28 +45,32 @@ T.Button {
         radius: Theme.cornerControl
         color: {
             if (!control.enabled)
-                return Theme.field
+                return Theme.field;
+            if (control.selected)
+                return Theme.selection;
             if (control.down)
-                return control.tone === "primary" ? Theme.selectionBorder : Theme.panelHover
+                return control.tone === "primary" ? Theme.selectionBorder : Theme.panelHover;
             if (control.hovered)
-                return control.tone === "primary" ? Theme.accentHover : Theme.panelHover
+                return control.tone === "primary" ? Theme.accentHover : Theme.panelHover;
             if (control.tone === "primary")
-                return Theme.accent
+                return Theme.accent;
             if (control.tone === "danger")
-                return "#3b292b"
-            return Theme.panelRaised
+                return "#3b292b";
+            return Theme.panelRaised;
         }
         border.width: 1
         border.color: {
             if (!control.enabled)
-                return Theme.border
+                return Theme.border;
             if (control.activeFocus)
-                return Theme.selectionBorder
+                return Theme.selectionBorder;
+            if (control.selected)
+                return Theme.selectionBorder;
             if (control.tone === "primary")
-                return Theme.accentHover
+                return Theme.accentHover;
             if (control.tone === "danger")
-                return Theme.error
-            return control.hovered ? Theme.borderStrong : Theme.border
+                return Theme.error;
+            return control.hovered ? Theme.borderStrong : Theme.border;
         }
     }
 

@@ -1,3 +1,6 @@
+pragma ComponentBehavior: Bound
+
+import QtCore
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
@@ -6,53 +9,76 @@ import "../components"
 Item {
     id: root
 
-    readonly property bool compilerAvailable: false
+    function resetLayout() {
+        Session.viewportFocusMode = false;
+        worldLibrary.SplitView.preferredWidth = 248;
+        worldInspector.SplitView.preferredWidth = 300;
+    }
+
+    Settings {
+        id: layoutSettings
+        category: "WorldEditorLayout"
+        property var horizontalSplitState
+    }
+
+    Component.onCompleted: {
+        if (layoutSettings.horizontalSplitState !== undefined)
+            worldSplit.restoreState(layoutSettings.horizontalSplitState);
+    }
+
+    Component.onDestruction: {
+        if (!Session.viewportFocusMode)
+            layoutSettings.horizontalSplitState = worldSplit.saveState();
+    }
+
+    Connections {
+        target: Session
+        function onResetWorkspaceLayoutRequested() {
+            root.resetLayout();
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
         PageToolbar {
-            title: "Worlds"
-            subtitle: "Executable reality: appearance, metric geometry, actors, road graph, sensors, and uncertainty"
+            title: "World Editor"
+            subtitle: Session.projectOpen ? Session.projectName : "No project open"
             iconSource: Theme.icon("world")
             Layout.fillWidth: true
 
             TextButton {
-                text: "Select Recording"
+                text: Session.recordingSelected ? Session.recordingName : "Select recording"
                 iconSource: Theme.icon("camera")
                 enabled: Session.projectOpen
+                toolTip: Session.projectOpen ? "Select an authorized sensor recording" : "Open a project first"
                 onClicked: Session.importRecordingRequested()
-            }
-
-            TextButton {
-                text: "Compile World"
-                iconSource: Theme.icon("build")
-                tone: "primary"
-                enabled: Session.recordingSelected && root.compilerAvailable
-                toolTip: root.compilerAvailable ? "Compile selected recording" : "World compiler service is not connected"
             }
         }
 
         SplitView {
+            id: worldSplit
             Layout.fillWidth: true
             Layout.fillHeight: true
             orientation: Qt.Horizontal
-            handle: SplitHandle { }
+            handle: SplitHandle {}
 
             Panel {
-                SplitView.preferredWidth: 270
-                SplitView.minimumWidth: 220
-                SplitView.maximumWidth: 380
+                id: worldLibrary
+                visible: !Session.viewportFocusMode
+                SplitView.preferredWidth: 248
+                SplitView.minimumWidth: 180
+                SplitView.maximumWidth: 520
 
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 0
 
                     PanelHeader {
-                        title: "World Library"
-                        subtitle: Session.worldModel === null ? "No model" : "Connected"
-                        iconSource: Theme.icon("world")
+                        title: "Worlds"
+                        subtitle: Session.worldModel === null ? "No source" : "Connected"
+                        iconSource: Theme.icon("folder")
                         Layout.fillWidth: true
                     }
 
@@ -60,18 +86,15 @@ Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         model: Session.worldModel
-                        searchPlaceholder: "Search worlds"
+                        searchPlaceholder: "Filter worlds"
                         emptyIcon: Theme.icon("world")
                         emptyTitle: "No compiled worlds"
-                        emptyDescription: Session.recordingSelected
-                                          ? "The selected recording has not been compiled into an executable world."
-                                          : "Select an authorized recording, then compile appearance and deterministic simulation layers."
+                        emptyDescription: "World records appear here only after a compiler service publishes them."
                     }
 
                     Rectangle {
-                        visible: Session.recordingSelected
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 50
+                        Layout.preferredHeight: 46
                         color: Theme.chrome
                         border.width: 1
                         border.color: Theme.borderSoft
@@ -81,61 +104,60 @@ Item {
                             anchors.leftMargin: 9
                             anchors.rightMargin: 9
                             spacing: 8
-                            SvgIcon { source: Theme.icon("camera"); iconSize: 14 }
+
+                            SvgIcon {
+                                source: Theme.icon("sensor")
+                                iconSize: 14
+                            }
+
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                spacing: 1
-                                Text { text: "Selected source"; color: Theme.textMuted; font.family: Theme.uiFont; font.pixelSize: 9 }
-                                Text { text: Session.recordingName; color: Theme.textSecondary; font.family: Theme.uiFont; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                spacing: 0
+                                Text {
+                                    text: "SOURCE"
+                                    color: Theme.textMuted
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 8
+                                    font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    text: Session.recordingSelected ? Session.recordingName : "No recording selected"
+                                    color: Session.recordingSelected ? Theme.textSecondary : Theme.textDisabled
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 9
+                                    elide: Text.ElideMiddle
+                                    Layout.fillWidth: true
+                                }
                             }
                         }
                     }
                 }
             }
 
-            SplitView {
-                orientation: Qt.Vertical
+            ViewportSurface {
                 SplitView.fillWidth: true
-                SplitView.minimumWidth: 620
-                handle: SplitHandle { }
-
-                ViewportSurface {
-                    SplitView.fillHeight: true
-                    SplitView.minimumHeight: 380
-                    title: "World View"
-                    available: false
-                    emptyTitle: "No compiled world open"
-                    emptyDescription: "The viewport activates only after a world service publishes a render scene."
-                }
-
-                Timeline {
-                    SplitView.preferredHeight: 110
-                    SplitView.minimumHeight: 86
-                    SplitView.maximumHeight: 180
-                    available: false
-                }
-
-                BottomDrawer {
-                    SplitView.preferredHeight: implicitHeight
-                    SplitView.minimumHeight: 34
-                    SplitView.maximumHeight: 220
-                    tabs: ["Compiler", "Validation", "Artifacts"]
-                }
+                SplitView.minimumWidth: 440
+                title: "World / Perspective"
+                available: false
+                emptyTitle: "3D world viewport ready"
+                emptyDescription: "Attach a compiled appearance layer, metric geometry, and scene graph when those services are available."
             }
 
             Panel {
-                SplitView.preferredWidth: 310
-                SplitView.minimumWidth: 270
-                SplitView.maximumWidth: 430
+                id: worldInspector
+                visible: !Session.viewportFocusMode
+                SplitView.preferredWidth: 300
+                SplitView.minimumWidth: 230
+                SplitView.maximumWidth: 560
 
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 0
 
                     PanelHeader {
-                        title: "World Inspector"
+                        title: "Inspector"
                         subtitle: "No selection"
-                        iconSource: Theme.icon("settings")
+                        iconSource: Theme.icon("inspector")
                         Layout.fillWidth: true
                     }
 
@@ -151,30 +173,88 @@ Item {
                             width: inspectorScroll.availableWidth
 
                             Section {
-                                title: "Source"
-                                PropertyRow { label: "Recording"; labelWidth: 92; TextInput { text: Session.recordingName; placeholderText: "No source"; readOnly: true } }
-                                PropertyRow { label: "Calibration"; labelWidth: 92; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Duration"; labelWidth: 92; TextInput { placeholderText: "Unavailable"; readOnly: true } }
+                                title: "World"
+                                PropertyRow {
+                                    label: "Source"
+                                    labelWidth: 82
+                                    TextInput {
+                                        text: Session.recordingName
+                                        placeholderText: "Not attached"
+                                        readOnly: true
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Appearance"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "Not compiled"
+                                        readOnly: true
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Geometry"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "Not compiled"
+                                        readOnly: true
+                                    }
+                                }
                             }
 
                             Section {
-                                title: "Geometry"
-                                PropertyRow { label: "Representation"; labelWidth: 92; TextInput { placeholderText: "No compiled geometry"; readOnly: true } }
-                                PropertyRow { label: "Metric scale"; labelWidth: 92; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Collision"; labelWidth: 92; TextInput { placeholderText: "Unavailable"; readOnly: true } }
+                                title: "Scene"
+                                PropertyRow {
+                                    label: "Actors"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "No scene model"
+                                        readOnly: true
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Sensors"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "No sensor rig"
+                                        readOnly: true
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Road graph"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "Not available"
+                                        readOnly: true
+                                    }
+                                }
                             }
 
                             Section {
-                                title: "Scene Structure"
-                                PropertyRow { label: "Actors"; labelWidth: 92; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Road graph"; labelWidth: 92; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Sensors"; labelWidth: 92; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                            }
-
-                            Section {
-                                title: "Uncertainty"
-                                PropertyRow { label: "Coverage"; labelWidth: 92; TextInput { placeholderText: "No uncertainty map"; readOnly: true } }
-                                PropertyRow { label: "Threshold"; labelWidth: 92; TextInput { placeholderText: "Not configured"; readOnly: true } }
+                                title: "Trust"
+                                PropertyRow {
+                                    label: "Metric scale"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "Unverified"
+                                        readOnly: true
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Collision"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "Not attached"
+                                        readOnly: true
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Uncertainty"
+                                    labelWidth: 82
+                                    TextInput {
+                                        placeholderText: "No map"
+                                        readOnly: true
+                                    }
+                                }
                             }
                         }
                     }

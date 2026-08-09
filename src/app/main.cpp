@@ -1,5 +1,6 @@
 #include <QFile>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QQmlApplicationEngine>
@@ -58,8 +59,8 @@ void servoMessageHandler(QtMsgType type,
 
 int main(int argc, char *argv[])
 {
-    // Keep presentation synchronized with the active display. A 120 Hz display
-    // can therefore present the UI at 120 Hz without a timer-driven redraw loop.
+    // Keep presentation synchronized with the active display while allowing
+    // static editor surfaces to remain event-driven.
     QSurfaceFormat surfaceFormat;
     surfaceFormat.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
     surfaceFormat.setSwapInterval(1);
@@ -82,6 +83,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationDomain(QStringLiteral("servo.local"));
     QCoreApplication::setApplicationName(QStringLiteral("Servo"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
+    app.setWindowIcon(QIcon(QStringLiteral(":/qt/qml/Servo/icons/app.svg")));
 
     QQmlApplicationEngine engine;
     QObject::connect(

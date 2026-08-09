@@ -11,26 +11,20 @@ import "components"
 ApplicationWindow {
     id: window
 
-    width: 1600
-    height: 960
-    minimumWidth: 1280
-    minimumHeight: 720
+    width: 1440
+    height: 860
+    minimumWidth: 1040
+    minimumHeight: 640
     visible: true
     title: Session.projectOpen ? "Servo - " + Session.projectName : "Servo"
     color: Theme.window
 
-    readonly property var workspaceNames: [
-        "Prepare", "Worlds", "Runs", "Diagnose", "Train", "Verify", "Capabilities"
-    ]
-    readonly property var workspaceFiles: [
-        "workspaces/PrepareWorkspace.qml",
-        "workspaces/WorldsWorkspace.qml",
-        "workspaces/RunsWorkspace.qml",
-        "workspaces/DiagnoseWorkspace.qml",
-        "workspaces/TrainWorkspace.qml",
-        "workspaces/VerifyWorkspace.qml",
-        "workspaces/CapabilitiesWorkspace.qml"
-    ]
+    readonly property var workspaceNames: ["Prepare", "Worlds", "Runs", "Diagnose", "Train", "Verify", "Capabilities"]
+    readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/DiagnoseWorkspace.qml", "workspaces/TrainWorkspace.qml", "workspaces/VerifyWorkspace.qml", "workspaces/CapabilitiesWorkspace.qml"]
+
+    function showDebugTab(index) {
+        debugDrawer.showTab(index);
+    }
 
     palette.window: Theme.window
     palette.windowText: Theme.text
@@ -46,27 +40,87 @@ ApplicationWindow {
     palette.placeholderText: Theme.textMuted
 
     Settings {
-        id: settings
+        id: appSettings
         category: "Workspace"
-        property int selectedWorkspace: 0
+        property int selectedWorkspace: 1
+        property bool showPerformanceMetrics: true
+        property bool debugExpanded: false
+        property int debugTab: 0
     }
 
-    Component.onCompleted: Session.workspaceIndex = Math.max(0, Math.min(6, settings.selectedWorkspace))
+    Component.onCompleted: {
+        Session.workspaceIndex = Math.max(0, Math.min(6, appSettings.selectedWorkspace));
+        Session.showPerformanceMetrics = appSettings.showPerformanceMetrics;
+        workspaceSelector.currentIndex = Session.workspaceIndex;
+        debugDrawer.currentTab = Math.max(0, Math.min(2, appSettings.debugTab));
+        debugDrawer.expanded = appSettings.debugExpanded;
+        RuntimeMetrics.attachWindow(window);
+    }
+
     Connections {
         target: Session
-        function onWorkspaceIndexChanged() { settings.selectedWorkspace = Session.workspaceIndex }
-        function onOpenProjectRequested() { projectDialog.open() }
-        function onImportRecordingRequested() { recordingDialog.open() }
+        function onWorkspaceIndexChanged() {
+            appSettings.selectedWorkspace = Session.workspaceIndex;
+            workspaceSelector.currentIndex = Session.workspaceIndex;
+            Session.viewportFocusMode = false;
+        }
+        function onShowPerformanceMetricsChanged() {
+            appSettings.showPerformanceMetrics = Session.showPerformanceMetrics;
+        }
+        function onOpenProjectRequested() {
+            projectDialog.open();
+        }
+        function onImportRecordingRequested() {
+            recordingDialog.open();
+        }
     }
 
-    Shortcut { sequence: "Ctrl+O"; onActivated: projectDialog.open() }
-    Shortcut { sequence: "Ctrl+1"; onActivated: Session.workspaceIndex = 0 }
-    Shortcut { sequence: "Ctrl+2"; onActivated: Session.workspaceIndex = 1 }
-    Shortcut { sequence: "Ctrl+3"; onActivated: Session.workspaceIndex = 2 }
-    Shortcut { sequence: "Ctrl+4"; onActivated: Session.workspaceIndex = 3 }
-    Shortcut { sequence: "Ctrl+5"; onActivated: Session.workspaceIndex = 4 }
-    Shortcut { sequence: "Ctrl+6"; onActivated: Session.workspaceIndex = 5 }
-    Shortcut { sequence: "Ctrl+7"; onActivated: Session.workspaceIndex = 6 }
+    Connections {
+        target: debugDrawer
+        function onExpandedChanged() {
+            appSettings.debugExpanded = debugDrawer.expanded;
+        }
+        function onCurrentTabChanged() {
+            appSettings.debugTab = debugDrawer.currentTab;
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+O"
+        onActivated: projectDialog.open()
+    }
+    Shortcut {
+        sequence: "Ctrl+`"
+        onActivated: window.showDebugTab(2)
+    }
+    Shortcut {
+        sequence: "Ctrl+1"
+        onActivated: Session.workspaceIndex = 0
+    }
+    Shortcut {
+        sequence: "Ctrl+2"
+        onActivated: Session.workspaceIndex = 1
+    }
+    Shortcut {
+        sequence: "Ctrl+3"
+        onActivated: Session.workspaceIndex = 2
+    }
+    Shortcut {
+        sequence: "Ctrl+4"
+        onActivated: Session.workspaceIndex = 3
+    }
+    Shortcut {
+        sequence: "Ctrl+5"
+        onActivated: Session.workspaceIndex = 4
+    }
+    Shortcut {
+        sequence: "Ctrl+6"
+        onActivated: Session.workspaceIndex = 5
+    }
+    Shortcut {
+        sequence: "Ctrl+7"
+        onActivated: Session.workspaceIndex = 6
+    }
 
     menuBar: MenuBar {
         id: mainMenu
@@ -81,34 +135,61 @@ ApplicationWindow {
         delegate: MenuBarItem {
             id: menuItem
             implicitHeight: Theme.menuHeight
+            leftPadding: 11
+            rightPadding: 11
 
             contentItem: Text {
                 text: menuItem.text
-                color: menuItem.highlighted ? Theme.text : Theme.textSecondary
+                color: menuItem.enabled ? Theme.textSecondary : Theme.textDisabled
                 font.family: Theme.uiFont
-                font.pixelSize: 11
+                font.pixelSize: 10
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
             }
 
             background: Rectangle {
                 color: menuItem.highlighted ? Theme.panelHover : "transparent"
+                border.width: menuItem.highlighted ? 1 : 0
+                border.color: Theme.borderStrong
             }
         }
 
-        Menu {
+        EditorMenu {
             title: "File"
-            Action { text: "Open Project..."; shortcut: "Ctrl+O"; onTriggered: projectDialog.open() }
-            Action { text: "Close Project"; enabled: Session.projectOpen; onTriggered: Session.closeProject() }
-            MenuSeparator { }
-            Action { text: "Quit"; shortcut: StandardKey.Quit; onTriggered: window.close() }
+            Action {
+                text: "Open Project..."
+                icon.source: Theme.icon("open")
+                shortcut: "Ctrl+O"
+                onTriggered: projectDialog.open()
+            }
+            Action {
+                text: "Select Recording..."
+                icon.source: Theme.icon("camera")
+                enabled: Session.projectOpen
+                onTriggered: recordingDialog.open()
+            }
+            EditorMenuSeparator {}
+            Action {
+                text: "Close Project"
+                icon.source: Theme.icon("close")
+                enabled: Session.projectOpen
+                onTriggered: Session.closeProject()
+            }
+            EditorMenuSeparator {}
+            Action {
+                text: "Quit"
+                shortcut: StandardKey.Quit
+                onTriggered: window.close()
+            }
         }
 
-        Menu {
+        EditorMenu {
             title: "View"
+
             Repeater {
                 model: window.workspaceNames
-                MenuItem {
+
+                EditorMenuItem {
                     required property int index
                     required property string modelData
                     text: modelData
@@ -117,21 +198,61 @@ ApplicationWindow {
                     onTriggered: Session.workspaceIndex = index
                 }
             }
-        }
 
-        Menu {
-            title: "Window"
-            Action {
-                text: "Full Screen"
-                shortcut: "F11"
-                onTriggered: window.visibility = window.visibility === Window.FullScreen
-                             ? Window.Windowed : Window.FullScreen
+            EditorMenuSeparator {}
+            EditorMenuItem {
+                text: "Focus Viewport"
+                checkable: true
+                checked: Session.viewportFocusMode
+                enabled: Session.workspaceIndex === 1
+                onTriggered: Session.viewportFocusMode = !Session.viewportFocusMode
+            }
+            EditorMenuItem {
+                text: "Performance Readouts"
+                checkable: true
+                checked: Session.showPerformanceMetrics
+                onTriggered: Session.showPerformanceMetrics = !Session.showPerformanceMetrics
             }
         }
 
-        Menu {
+        EditorMenu {
+            title: "Window"
+            Action {
+                text: "Problems"
+                icon.source: Theme.icon("warning")
+                onTriggered: window.showDebugTab(0)
+            }
+            Action {
+                text: "Output"
+                icon.source: Theme.icon("table")
+                onTriggered: window.showDebugTab(1)
+            }
+            Action {
+                text: "Terminal"
+                icon.source: Theme.icon("terminal")
+                shortcut: "Ctrl+`"
+                onTriggered: window.showDebugTab(2)
+            }
+            EditorMenuSeparator {}
+            Action {
+                text: "Reset Workspace Layout"
+                icon.source: Theme.icon("refresh")
+                onTriggered: Session.resetWorkspaceLayoutRequested()
+            }
+            Action {
+                text: "Full Screen"
+                shortcut: "F11"
+                onTriggered: window.visibility = window.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
+            }
+        }
+
+        EditorMenu {
             title: "Help"
-            Action { text: "About Servo"; onTriggered: aboutDialog.open() }
+            Action {
+                text: "About Servo"
+                icon.source: Theme.icon("app")
+                onTriggered: aboutDialog.open()
+            }
         }
     }
 
@@ -148,83 +269,122 @@ ApplicationWindow {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 13
-                anchors.rightMargin: 9
-                spacing: 0
+                anchors.leftMargin: 9
+                anchors.rightMargin: 7
+                spacing: 7
+
+                SvgIcon {
+                    source: Theme.icon("app")
+                    iconSize: 25
+                }
+
+                Text {
+                    text: "SERVO"
+                    color: Theme.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 14
+                    font.weight: Font.Bold
+                    font.letterSpacing: 0.9
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 22
+                    color: Theme.border
+                    Layout.leftMargin: 2
+                    Layout.rightMargin: 2
+                }
+
+                SelectField {
+                    id: workspaceSelector
+                    Layout.preferredWidth: 142
+                    Layout.preferredHeight: 28
+                    Layout.fillWidth: false
+                    model: window.workspaceNames
+                    currentIndex: 1
+                    onActivated: Session.workspaceIndex = currentIndex
+                }
+
+                SvgIcon {
+                    source: Theme.icon("chevron-right")
+                    iconSize: 11
+                    opacity: 0.55
+                }
+
+                Text {
+                    Layout.maximumWidth: 270
+                    text: Session.projectOpen ? Session.projectName : "No project"
+                    color: Session.projectOpen ? Theme.textSecondary : Theme.textMuted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 10
+                    elide: Text.ElideMiddle
+                }
+
+                TextButton {
+                    visible: !Session.projectOpen
+                    text: "Open Project"
+                    iconSource: Theme.icon("open")
+                    compact: true
+                    onClicked: projectDialog.open()
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
 
                 RowLayout {
-                    Layout.preferredWidth: 270
-                    Layout.fillHeight: true
+                    visible: Session.showPerformanceMetrics
                     spacing: 9
 
-                    SvgIcon { source: Theme.icon("app"); iconSize: 24 }
-
-                    Text {
-                        text: "SERVO"
-                        color: Theme.text
-                        font.family: Theme.uiFont
-                        font.pixelSize: 17
-                        font.weight: Font.Bold
-                        font.letterSpacing: 1.0
+                    MetricReadout {
+                        label: "FPS"
+                        value: RuntimeMetrics.frameRateText
+                        toolTip: "Measured window presentation activity. Idle means the event-driven UI is not continuously redrawing."
                     }
-
-                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 24; color: Theme.border }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 0
-
-                        Text {
-                            text: Session.projectOpen ? Session.projectName : "No project open"
-                            color: Session.projectOpen ? Theme.textSecondary : Theme.textMuted
-                            font.family: Theme.uiFont
-                            font.pixelSize: 10
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                        }
-
-                        Text {
-                            text: Session.projectOpen ? Session.fileName(Session.projectUrl) : "Open a .servo project to begin"
-                            color: Theme.textMuted
-                            font.family: Theme.monoFont
-                            font.pixelSize: 8
-                            elide: Text.ElideMiddle
-                            Layout.fillWidth: true
-                        }
+                    Rectangle {
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 16
+                        color: Theme.borderSoft
                     }
-                }
-
-                Item { Layout.fillWidth: true }
-
-                Repeater {
-                    model: window.workspaceNames
-
-                    TopTab {
-                        required property int index
-                        required property string modelData
-                        text: modelData
-                        current: Session.workspaceIndex === index
-                        onClicked: Session.workspaceIndex = index
+                    MetricReadout {
+                        label: "CPU"
+                        value: RuntimeMetrics.cpuPercent < 0 ? "--" : Number(RuntimeMetrics.cpuPercent).toFixed(1) + "%"
+                        toolTip: "Current Servo process CPU utilization"
+                    }
+                    Rectangle {
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 16
+                        color: Theme.borderSoft
+                    }
+                    MetricReadout {
+                        label: "RAM"
+                        value: RuntimeMetrics.residentMemoryText
+                        toolTip: "Current Servo process working set"
+                    }
+                    Rectangle {
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 16
+                        color: Theme.borderSoft
+                    }
+                    MetricReadout {
+                        label: "RHI"
+                        value: RuntimeMetrics.graphicsApi
+                        toolTip: "Graphics backend reported by the active Qt scene graph"
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 22
+                    color: Theme.border
+                    Layout.leftMargin: 3
+                }
 
-                RowLayout {
-                    Layout.preferredWidth: 230
-                    Layout.alignment: Qt.AlignRight
-                    spacing: 7
-
-                    StatusBadge {
-                        visible: Session.projectOpen
-                        text: "Local project"
-                    }
-
-                    TextButton {
-                        text: "Open Project"
-                        iconSource: Theme.icon("open")
-                        onClicked: projectDialog.open()
-                    }
+                IconButton {
+                    iconSource: Theme.icon("settings")
+                    toolTip: "Settings"
+                    buttonSize: 29
+                    onClicked: settingsDialog.open()
                 }
             }
         }
@@ -237,6 +397,13 @@ ApplicationWindow {
             source: window.workspaceFiles[Session.workspaceIndex]
         }
 
+        BottomDrawer {
+            id: debugDrawer
+            Layout.fillWidth: true
+            Layout.preferredHeight: implicitHeight
+            tabs: ["Problems", "Output", "Terminal"]
+        }
+
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.statusHeight
@@ -246,9 +413,9 @@ ApplicationWindow {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 10
-                spacing: 9
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                spacing: 5
 
                 SvgIcon {
                     source: Session.projectOpen ? Theme.icon("project") : Theme.icon("info")
@@ -261,24 +428,57 @@ ApplicationWindow {
                     font.family: Theme.monoFont
                     font.pixelSize: 8
                     elide: Text.ElideMiddle
-                    Layout.maximumWidth: 620
+                    Layout.maximumWidth: 440
                 }
 
-                Item { Layout.fillWidth: true }
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 12
+                    color: Theme.borderSoft
+                    Layout.leftMargin: 4
+                    Layout.rightMargin: 4
+                }
+
+                TextButton {
+                    text: "Problems"
+                    compact: true
+                    selected: debugDrawer.expanded && debugDrawer.currentTab === 0
+                    onClicked: debugDrawer.expanded && debugDrawer.currentTab === 0 ? debugDrawer.expanded = false : window.showDebugTab(0)
+                }
+                TextButton {
+                    text: "Output"
+                    compact: true
+                    selected: debugDrawer.expanded && debugDrawer.currentTab === 1
+                    onClicked: debugDrawer.expanded && debugDrawer.currentTab === 1 ? debugDrawer.expanded = false : window.showDebugTab(1)
+                }
+                TextButton {
+                    text: "Terminal"
+                    compact: true
+                    selected: debugDrawer.expanded && debugDrawer.currentTab === 2
+                    onClicked: debugDrawer.expanded && debugDrawer.currentTab === 2 ? debugDrawer.expanded = false : window.showDebugTab(2)
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
 
                 Text {
-                    text: "Qt RHI"
+                    text: RuntimeMetrics.sceneGraphReady ? "Renderer ready" : "Renderer initializing"
                     color: Theme.textMuted
                     font.family: Theme.uiFont
-                    font.pixelSize: 9
+                    font.pixelSize: 8
                 }
 
-                Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 12; color: Theme.border }
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 12
+                    color: Theme.borderSoft
+                }
 
                 Text {
-                    text: "Display-synchronized  /  UI target up to " + Session.targetUiFrameRate + " Hz"
+                    text: "Local frontend"
                     color: Theme.textMuted
-                    font.family: Theme.monoFont
+                    font.family: Theme.uiFont
                     font.pixelSize: 8
                 }
             }
@@ -301,10 +501,15 @@ ApplicationWindow {
         onAccepted: Session.recordingUrl = selectedFile
     }
 
+    SettingsDialog {
+        id: settingsDialog
+        anchors.centerIn: Overlay.overlay
+    }
+
     Popup {
         id: aboutDialog
-        width: 420
-        height: 230
+        width: 430
+        height: 238
         anchors.centerIn: Overlay.overlay
         modal: true
         focus: true
@@ -329,25 +534,64 @@ ApplicationWindow {
                 onActionTriggered: aboutDialog.close()
             }
 
-            ColumnLayout {
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.margins: 18
-                spacing: 8
+                spacing: 14
 
-                Text { text: "SERVO"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 20; font.weight: Font.Bold }
-                Text {
-                    text: "Simulation Environment for Robotic Validation and Optimization"
-                    color: Theme.textSecondary
-                    font.family: Theme.uiFont
-                    font.pixelSize: 11
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
+                SvgIcon {
+                    source: Theme.icon("app")
+                    iconSize: 64
+                    Layout.alignment: Qt.AlignTop
                 }
-                Text { text: "Qt 6 / QML / C++  |  GPL-3.0-only"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9 }
-                Item { Layout.fillHeight: true }
-                TextButton { text: "Close"; Layout.alignment: Qt.AlignRight; onClicked: aboutDialog.close() }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 6
+
+                    Text {
+                        text: "SERVO"
+                        color: Theme.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 20
+                        font.weight: Font.Bold
+                        font.letterSpacing: 1
+                    }
+                    Text {
+                        text: "Simulation Environment for Robotic Validation and Optimization"
+                        color: Theme.textSecondary
+                        font.family: Theme.uiFont
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: "Qt 6.11 / QML / C++20"
+                        color: Theme.textMuted
+                        font.family: Theme.monoFont
+                        font.pixelSize: 9
+                    }
+                    Text {
+                        text: "GPL-3.0-only"
+                        color: Theme.textMuted
+                        font.family: Theme.monoFont
+                        font.pixelSize: 9
+                    }
+                    Item {
+                        Layout.fillHeight: true
+                    }
+                    TextButton {
+                        text: "Close"
+                        Layout.alignment: Qt.AlignRight
+                        onClicked: aboutDialog.close()
+                    }
+                }
             }
         }
+
+        enter: Transition {}
+        exit: Transition {}
     }
 }

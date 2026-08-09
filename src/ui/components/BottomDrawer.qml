@@ -9,9 +9,14 @@ Panel {
 
     property bool expanded: false
     property int currentTab: 0
-    property var tabs: ["Problems", "Output", "Files"]
+    property var tabs: ["Problems", "Output", "Terminal"]
 
-    implicitHeight: expanded ? 150 : 34
+    function showTab(index) {
+        currentTab = Math.max(0, Math.min(tabs.length - 1, index));
+        expanded = true;
+    }
+
+    implicitHeight: expanded ? 210 : 32
 
     ColumnLayout {
         anchors.fill: parent
@@ -19,7 +24,7 @@ Panel {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 34
+            Layout.preferredHeight: 32
             color: Theme.chrome
             border.width: 1
             border.color: Theme.borderSoft
@@ -44,14 +49,28 @@ Panel {
                         required property string modelData
                         text: modelData
                         compact: true
+                        selected: root.currentTab === index && root.expanded
                         onClicked: {
-                            root.currentTab = index
-                            root.expanded = true
+                            if (root.currentTab === index && root.expanded)
+                                root.expanded = false;
+                            else
+                                root.showTab(index);
                         }
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                Text {
+                    visible: root.expanded
+                    text: "No active process"
+                    color: Theme.textMuted
+                    font.family: Theme.monoFont
+                    font.pixelSize: 8
+                    Layout.rightMargin: 6
+                }
             }
         }
 
@@ -59,11 +78,9 @@ Panel {
             visible: root.expanded
             Layout.fillWidth: true
             Layout.fillHeight: true
-            iconSource: root.currentTab === 0 ? Theme.icon("warning")
-                                                : (root.currentTab === 1 ? Theme.icon("table") : Theme.icon("folder"))
-            title: root.currentTab === 0 ? "No problems"
-                                          : (root.currentTab === 1 ? "No process output" : "No generated files")
-            description: "This panel is connected to workspace services and stays empty until they publish records."
+            iconSource: root.currentTab === 0 ? Theme.icon("warning") : (root.currentTab === 1 ? Theme.icon("table") : Theme.icon("terminal"))
+            title: root.currentTab === 0 ? "No problems" : (root.currentTab === 1 ? "No process output" : "No terminal session")
+            description: root.currentTab === 0 ? "Diagnostics appear here when a real frontend or service error is reported." : (root.currentTab === 1 ? "Build, compiler, and connected-service output will stream here." : "A local command session has not been attached. The UI does not emulate shell output.")
         }
     }
 }
