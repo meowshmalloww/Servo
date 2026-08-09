@@ -91,7 +91,12 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Ctrl+`"
-        onActivated: window.showDebugTab(2)
+        onActivated: {
+            if (debugDrawer.expanded && debugDrawer.currentTab === 2)
+                debugDrawer.expanded = false;
+            else
+                window.showDebugTab(2);
+        }
     }
     Shortcut {
         sequence: "Ctrl+1"
