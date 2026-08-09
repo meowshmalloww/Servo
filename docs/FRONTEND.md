@@ -90,11 +90,11 @@ Long-running services should publish explicit states such as `unavailable`, `rea
 
 ## Rendering and responsiveness
 
-Application startup requests double buffering with swap interval 1. Rendering follows the active display rather than a custom timer; a 120 Hz display can therefore present at the 120 Hz UI ceiling without continuously repainting static panes.
+Application startup requests double buffering with swap interval 1. Rendering follows the active display rather than a custom timer; a 120 Hz display can therefore present the editor at up to 120 Hz without continuously repainting static panes.
 
 `LinePlotItem` builds a `QSGGeometryNode` only when its series, range, color, or geometry changes. Table views reuse delegates. SVG resources are cached. Workspaces are loaded synchronously to avoid half-rendered transitions, but future heavy datasets and render scenes must be streamed asynchronously through their owning services.
 
-For performance investigations, set `SERVO_QML_LOG` and use Qt's QML profiler, scene-graph diagnostics, and platform GPU tooling. A target ceiling is not a guarantee: actual frame rate depends on the display, render backend, GPU, scene complexity, and service workload.
+For performance investigations, set `SERVO_QML_LOG` and use Qt's QML profiler, scene-graph diagnostics, and platform GPU tooling. The 120 Hz target is not a universal frame cap or guarantee: actual frame rate depends on the display, render backend, GPU, scene complexity, and service workload.
 
 ## Implementation boundary
 

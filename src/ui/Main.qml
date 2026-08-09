@@ -276,7 +276,7 @@ ApplicationWindow {
                 Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 12; color: Theme.border }
 
                 Text {
-                    text: "Display-synchronized  /  UI ceiling " + Session.maximumUiFrameRate + " Hz"
+                    text: "Display-synchronized  /  UI target up to " + Session.targetUiFrameRate + " Hz"
                     color: Theme.textMuted
                     font.family: Theme.monoFont
                     font.pixelSize: 8

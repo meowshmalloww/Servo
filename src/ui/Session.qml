@@ -20,7 +20,7 @@ QtObject {
     readonly property bool recordingSelected: recordingUrl.toString().length > 0
     readonly property string projectName: fileStem(projectUrl)
     readonly property string recordingName: fileName(recordingUrl)
-    readonly property int maximumUiFrameRate: 120
+    readonly property int targetUiFrameRate: 120
 
     signal openProjectRequested()
     signal importRecordingRequested()

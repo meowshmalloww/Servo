@@ -55,7 +55,7 @@ See [docs/FRONTEND.md](docs/FRONTEND.md) for component and backend contracts.
 ## Performance model
 
 - Qt Quick scene-graph rendering with display synchronization; no forced redraw timer or decorative animation loop.
-- A 120 Hz display can present up to the configured 120 Hz UI ceiling while static panes remain event-driven.
+- A 120 Hz display can present the editor at up to 120 Hz while static panes remain event-driven.
 - Reusable table delegates and Qt model/view contracts are used for large record sets.
 - Metric series use a C++ `QQuickItem`/`QSGGeometryNode` renderer instead of a JavaScript canvas loop.
 - SVG assets are cached and shared through the QML resource module.
