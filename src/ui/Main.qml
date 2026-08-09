@@ -436,33 +436,6 @@ ApplicationWindow {
                     Layout.maximumWidth: 440
                 }
 
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: 12
-                    color: Theme.borderSoft
-                    Layout.leftMargin: 4
-                    Layout.rightMargin: 4
-                }
-
-                TextButton {
-                    text: "Problems"
-                    compact: true
-                    selected: debugDrawer.expanded && debugDrawer.currentTab === 0
-                    onClicked: debugDrawer.expanded && debugDrawer.currentTab === 0 ? debugDrawer.expanded = false : window.showDebugTab(0)
-                }
-                TextButton {
-                    text: "Output"
-                    compact: true
-                    selected: debugDrawer.expanded && debugDrawer.currentTab === 1
-                    onClicked: debugDrawer.expanded && debugDrawer.currentTab === 1 ? debugDrawer.expanded = false : window.showDebugTab(1)
-                }
-                TextButton {
-                    text: "Terminal"
-                    compact: true
-                    selected: debugDrawer.expanded && debugDrawer.currentTab === 2
-                    onClicked: debugDrawer.expanded && debugDrawer.currentTab === 2 ? debugDrawer.expanded = false : window.showDebugTab(2)
-                }
-
                 Item {
                     Layout.fillWidth: true
                 }
