@@ -1,0 +1,73 @@
+# CMake and Ninja
+/build/
+/build-*/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+Makefile
+*.ninja
+.ninja_*
+install_manifest.txt
+
+# Qt Creator and generated Qt/QML files
+/.qtcreator/
+*.user
+*.user.*
+*.autosave
+.qmlcache/
+*.qmlc
+*.jsc
+
+# Compiled objects and binaries
+*.a
+*.app
+*.dll
+*.dylib
+*.exe
+*.exp
+*.ilk
+*.lib
+*.o
+*.obj
+*.pdb
+*.so
+
+# Python tooling planned for agents and training workers
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local data, model artifacts, and experiment output
+/artifacts/
+/checkpoints/
+/data/
+/datasets/
+/models/
+/runs/
+/worlds/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Temporary files and OS metadata
+/tmp/
+/docs/hackathon_extract.txt
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*~
