@@ -7,8 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(GNUInstallDirs)
+include(CTest)
 
 find_package(Qt6 6.11 REQUIRED COMPONENTS
+    Concurrent
+    GuiPrivate
     Quick
     Quick3D
     QuickControls2
@@ -19,6 +22,11 @@ find_package(Qt6 6.11 REQUIRED COMPONENTS
 qt_standard_project_setup(REQUIRES 6.11)
 
 add_subdirectory(src/ui)
+
+if(BUILD_TESTING)
+    find_package(Qt6 6.11 REQUIRED COMPONENTS Test)
+    add_subdirectory(tests)
+endif()
 
 set_target_properties(appServo PROPERTIES
     MACOSX_BUNDLE TRUE

@@ -1,0 +1,10 @@
+# Direct native worker requirements. PyTorch 2.11.0+cu128 must already be
+# installed from the official PyTorch CUDA 12.8 index because it is a large,
+# hardware-specific runtime and must match the installed CUDA toolkit. gsplat
+# is built separately from its hash-pinned source distribution so normal app
+# startup never falls into its Linux-oriented Windows JIT path.
+pycolmap==4.1.1
+opencv-python==4.11.0.86
+Pillow==12.1.1
+numpy==1.26.4
+scipy==1.16.3

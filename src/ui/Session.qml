@@ -5,7 +5,7 @@ import QtQuick
 QtObject {
     property url projectUrl: ""
     property url recordingUrl: ""
-    property int workspaceIndex: 1
+    property int workspaceIndex: 0
     property bool showPerformanceMetrics: true
     property bool viewportFocusMode: false
 

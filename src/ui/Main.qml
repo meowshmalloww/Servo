@@ -15,11 +15,11 @@ ApplicationWindow {
     height: 860
     minimumWidth: 1040
     minimumHeight: 640
-    visible: true
+    visible: false
     title: Session.projectOpen ? "Servo - " + Session.projectName : "Servo"
     color: Theme.window
 
-    readonly property var workspaceNames: ["Prepare", "Worlds", "Runs", "Diagnose", "Train", "Verify", "Capabilities"]
+    readonly property var workspaceNames: ["Create World", "Worlds", "Runs", "Diagnose", "Train", "Verify", "Capabilities"]
     readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/DiagnoseWorkspace.qml", "workspaces/TrainWorkspace.qml", "workspaces/VerifyWorkspace.qml", "workspaces/CapabilitiesWorkspace.qml"]
 
     function showDebugTab(index) {
@@ -42,7 +42,7 @@ ApplicationWindow {
     Settings {
         id: appSettings
         category: "Workspace"
-        property int selectedWorkspace: 1
+        property int selectedWorkspace: 0
         property bool showPerformanceMetrics: true
         property bool debugExpanded: false
         property int debugTab: 0
@@ -255,7 +255,7 @@ ApplicationWindow {
             title: "Help"
             Action {
                 text: "About Servo"
-                icon.source: Theme.icon("app")
+                icon.source: Theme.appLogo
                 onTriggered: aboutDialog.open()
             }
         }
@@ -306,7 +306,7 @@ ApplicationWindow {
                     Layout.preferredHeight: 28
                     Layout.fillWidth: false
                     model: window.workspaceNames
-                    currentIndex: 1
+                    currentIndex: 0
                     onActivated: Session.workspaceIndex = currentIndex
                 }
 
@@ -342,9 +342,10 @@ ApplicationWindow {
                     spacing: 9
 
                     MetricReadout {
-                        label: "FPS"
-                        value: RuntimeMetrics.frameRateText
-                        toolTip: "Measured window presentation activity. Idle means the event-driven UI is not continuously redrawing."
+                        label: "DISPLAY"
+                        value: RuntimeMetrics.displayRefreshText
+                        toolTip: "Active monitor refresh. Servo redraws on change; current window presentation activity is "
+                                 + RuntimeMetrics.presentationRateText + "."
                     }
                     Rectangle {
                         Layout.preferredWidth: 1
@@ -374,7 +375,7 @@ ApplicationWindow {
                     MetricReadout {
                         label: "RHI"
                         value: RuntimeMetrics.graphicsApi
-                        toolTip: "Graphics backend reported by the active Qt scene graph"
+                        toolTip: RuntimeMetrics.graphicsDevice + " (" + RuntimeMetrics.graphicsDeviceType + ")"
                     }
                 }
 
@@ -441,7 +442,9 @@ ApplicationWindow {
                 }
 
                 Text {
-                    text: RuntimeMetrics.sceneGraphReady ? "Renderer ready" : "Renderer initializing"
+                    text: RuntimeMetrics.vulkanReady
+                          ? "Vulkan · " + RuntimeMetrics.graphicsDevice
+                          : "Vulkan initializing"
                     color: Theme.textMuted
                     font.family: Theme.uiFont
                     font.pixelSize: 8
@@ -519,7 +522,7 @@ ApplicationWindow {
                 spacing: 14
 
                 SvgIcon {
-                    source: Theme.icon("app")
+                    source: Theme.appLogo
                     iconSize: 64
                     Layout.alignment: Qt.AlignTop
                 }

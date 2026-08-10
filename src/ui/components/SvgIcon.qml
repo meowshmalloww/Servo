@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Window
 
 Image {
     id: root
@@ -8,8 +7,8 @@ Image {
 
     width: iconSize
     height: iconSize
-    sourceSize.width: iconSize * Screen.devicePixelRatio
-    sourceSize.height: iconSize * Screen.devicePixelRatio
+    sourceSize.width: iconSize
+    sourceSize.height: iconSize
     fillMode: Image.PreserveAspectFit
     asynchronous: false
     cache: true

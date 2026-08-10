@@ -46,6 +46,8 @@ QtObject {
     readonly property int cornerControl: 3
     readonly property int cornerPopup: 6
 
+    readonly property url appLogo: Qt.resolvedUrl("assets/servo-logo.png")
+
     function icon(name) {
         return Qt.resolvedUrl("icons/" + name + ".svg");
     }

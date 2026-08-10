@@ -1,0 +1,56 @@
+{
+  "schema": "servo.reconstruction-worker-lock/v1",
+  "workerVersion": "0.3.0",
+  "trainerVersion": "0.3.0",
+  "pipelineRevision": "native-colmap-servo-fidelity-gs-r3",
+  "representationType": "servo-fidelity-3dgs-v1",
+  "rasterizationMode": "antialiased",
+  "densification": "default-absgrad",
+  "opacityResetSemantics": "servo-gsplat-1.5.3-fix-v2",
+  "platform": "windows-x86_64",
+  "python": "3.11",
+  "cuda": {
+    "version": "12.8",
+    "installer": "winget:Nvidia.CUDA@12.8",
+    "license": "NVIDIA CUDA Toolkit EULA"
+  },
+  "pytorch": {
+    "version": "2.11.0+cu128",
+    "license": "BSD-3-Clause"
+  },
+  "gsplat": {
+    "version": "1.5.3",
+    "license": "Apache-2.0",
+    "source": "https://files.pythonhosted.org/packages/6d/94/a0963873708223385ac926112dc3e40ab08297784ac53d95309b4cb5a801/gsplat-1.5.3.tar.gz",
+    "sourceSha256": "343f080c470e891ba3c697c03bdf0952cb982d1d535fdc24adb23c2cb4fba906",
+    "build": "native Windows cp311 extension; CUDA sm_89; MAX_JOBS=2",
+    "upstreamRelease": "https://github.com/nerfstudio-project/gsplat/releases/tag/v1.5.3"
+  },
+  "pycolmap": {
+    "version": "4.1.1",
+    "license": "BSD-3-Clause",
+    "source": "https://pypi.org/project/pycolmap/4.1.1/"
+  },
+  "colmap": {
+    "version": "4.1.1",
+    "asset": "colmap-x64-windows-cuda.zip",
+    "url": "https://github.com/colmap/colmap/releases/download/4.1.1/colmap-x64-windows-cuda.zip",
+    "bytes": 359029614,
+    "sha256": "b06064e7e4bd34f5b4ef71b442d3537d95d57c666dbec5a3b475902ccd832b9b",
+    "license": "BSD-3-Clause with separately licensed dependencies"
+  },
+  "colmapVocabulary": {
+    "asset": "vocab_tree_faiss_flickr100K_words32K.bin",
+    "url": "https://github.com/colmap/colmap/releases/download/3.11.1/vocab_tree_faiss_flickr100K_words32K.bin",
+    "bytes": 9477067,
+    "sha256": "921e894b7d81f5cf223df824a02b9932660cddf00a815c93fc7c0bd690fc639e"
+  },
+  "opencvPython": "4.11.0.86",
+  "pillow": "12.1.1",
+  "numpy": "1.26.4",
+  "scipy": "1.16.3",
+  "ffmpeg": {
+    "qualifiedDevelopmentVersion": "8.1.1",
+    "distributionPolicy": "Do not redistribute the current GPL-enabled development build. Qualify an LGPL-only build without --enable-gpl or --enable-nonfree."
+  }
+}

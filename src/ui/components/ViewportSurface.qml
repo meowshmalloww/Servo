@@ -263,7 +263,7 @@ Panel {
                 anchors.topMargin: 10
                 anchors.rightMargin: 10
                 width: 190
-                height: 94
+                height: 116
                 visible: root.statsVisible
                 color: "#e5191c1e"
                 border.width: 1
@@ -278,13 +278,27 @@ Panel {
                     columnSpacing: 12
 
                     Text {
-                        text: "Viewport FPS"
+                        text: "Scene activity"
                         color: Theme.textMuted
                         font.family: Theme.uiFont
                         font.pixelSize: 9
                     }
                     Text {
-                        text: Math.round(worldView.renderStats.fps)
+                        text: worldView.renderStats.fps > 2
+                              ? Math.round(worldView.renderStats.fps) + " fps" : "Idle"
+                        color: Theme.text
+                        font.family: Theme.monoFont
+                        font.pixelSize: 9
+                        Layout.alignment: Qt.AlignRight
+                    }
+                    Text {
+                        text: "Display"
+                        color: Theme.textMuted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 9
+                    }
+                    Text {
+                        text: RuntimeMetrics.displayRefreshText
                         color: Theme.text
                         font.family: Theme.monoFont
                         font.pixelSize: 9

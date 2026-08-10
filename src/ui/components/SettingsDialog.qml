@@ -72,7 +72,7 @@ T.Popup {
                             font.pixelSize: 11
                         }
                         Text {
-                            text: "Show measured FPS activity, CPU, RAM, and renderer API in the top bar."
+                            text: "Show display refresh, CPU, RAM, and renderer API in the top bar. Live viewport FPS remains available in the viewport statistics overlay."
                             color: Theme.textMuted
                             font.family: Theme.uiFont
                             font.pixelSize: 9
@@ -171,7 +171,7 @@ T.Popup {
             Text {
                 Layout.fillWidth: true
                 Layout.topMargin: 8
-                text: "The renderer backend is selected before window creation. Vulkan integration remains available without forcing unsupported hardware into a failed startup."
+                text: "Servo requires Vulkan and verifies the active scene-graph API before showing the window. Startup fails explicitly when Vulkan is unavailable; there is no OpenGL, WebGL, or Direct3D fallback."
                 color: Theme.textMuted
                 font.family: Theme.uiFont
                 font.pixelSize: 9

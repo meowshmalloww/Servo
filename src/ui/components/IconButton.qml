@@ -10,9 +10,12 @@ T.Button {
     property int buttonSize: 28
     property bool selected: false
 
+    text: toolTip
     implicitWidth: buttonSize
     implicitHeight: buttonSize
     hoverEnabled: true
+    Accessible.role: Accessible.Button
+    Accessible.name: toolTip
 
     contentItem: SvgIcon {
         anchors.centerIn: parent
@@ -22,10 +25,8 @@ T.Button {
     }
 
     background: Rectangle {
-        radius: Theme.cornerControl
-        color: control.selected ? Theme.selection
-                                : (control.down ? Theme.panelHover
-                                                : (control.hovered ? Theme.panelRaised : "transparent"))
+        radius: 0
+        color: control.selected ? Theme.selection : (control.down ? Theme.panelHover : (control.hovered ? Theme.panelRaised : "transparent"))
         border.width: control.selected || control.activeFocus ? 1 : 0
         border.color: control.activeFocus ? Theme.selectionBorder : Theme.borderStrong
     }
