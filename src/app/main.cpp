@@ -4,7 +4,9 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QQmlApplicationEngine>
+#include <QQuickGraphicsConfiguration>
 #include <QQuickStyle>
+#include <QQuickWindow>
 #include <QSurfaceFormat>
 #include <QWindow>
 #include <QtLogging>
@@ -12,6 +14,13 @@
 #ifdef Q_OS_WIN
 #include <dwmapi.h>
 #include <windows.h>
+
+extern "C" {
+// Ask hybrid-graphics drivers to run Servo on the high-performance adapter.
+// The Vulkan device is still verified after Qt initializes the scene graph.
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
 #endif
 
 namespace {
@@ -68,6 +77,11 @@ int main(int argc, char *argv[])
 
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 
+    // Servo deliberately has no OpenGL, WebGL, or Direct3D renderer fallback.
+    // Qt reports a scene-graph initialization error when Vulkan is unavailable.
+    qputenv("QSG_RHI_BACKEND", "vulkan");
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+
     QFile logFile;
     const QString logPath = qEnvironmentVariable("SERVO_QML_LOG");
     if (!logPath.isEmpty()) {
@@ -83,20 +97,64 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationDomain(QStringLiteral("servo.local"));
     QCoreApplication::setApplicationName(QStringLiteral("Servo"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
-    app.setWindowIcon(QIcon(QStringLiteral(":/qt/qml/Servo/icons/app.svg")));
+    app.setWindowIcon(QIcon(QStringLiteral(":/qt/qml/Servo/assets/servo-logo.png")));
 
     QQmlApplicationEngine engine;
     QObject::connect(
         &engine,
         &QQmlApplicationEngine::objectCreated,
         &app,
-        [](QObject *object, const QUrl &) {
+        [&app](QObject *object, const QUrl &) {
+            auto *window = qobject_cast<QQuickWindow *>(object);
+            if (!window)
+                return;
+
+            QQuickGraphicsConfiguration graphicsConfiguration;
+            const bool validationEnabled =
+                qEnvironmentVariableIntValue("SERVO_VULKAN_VALIDATION") != 0;
+            graphicsConfiguration.setDebugLayer(validationEnabled);
+            graphicsConfiguration.setDebugMarkers(validationEnabled);
+            graphicsConfiguration.setTimestamps(true);
+            window->setGraphicsConfiguration(graphicsConfiguration);
+
+            QObject::connect(
+                window,
+                &QQuickWindow::sceneGraphError,
+                &app,
+                [&app](QQuickWindow::SceneGraphError, const QString &message) {
+                    qCritical().noquote()
+                        << "Servo requires a working Vulkan renderer:" << message;
+                    QMetaObject::invokeMethod(
+                        &app,
+                        []() { QCoreApplication::exit(2); },
+                        Qt::QueuedConnection);
+                });
+
+            QObject::connect(
+                window,
+                &QQuickWindow::sceneGraphInitialized,
+                &app,
+                [window, &app]() {
+                    if (window->rendererInterface()->graphicsApi()
+                        == QSGRendererInterface::Vulkan) {
+                        qInfo() << "Servo scene graph initialized with Vulkan";
+                        return;
+                    }
+
+                    qCritical()
+                        << "Servo refused to start because the active renderer is not Vulkan";
+                    QMetaObject::invokeMethod(
+                        &app,
+                        []() { QCoreApplication::exit(3); },
+                        Qt::QueuedConnection);
+                },
+                Qt::DirectConnection);
+
 #ifdef Q_OS_WIN
-            if (auto *window = qobject_cast<QWindow *>(object))
-                applyDarkWindowChrome(window);
-#else
-            Q_UNUSED(object);
+            applyDarkWindowChrome(window);
 #endif
+
+            window->show();
         });
     QObject::connect(
         &engine,

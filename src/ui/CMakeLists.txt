@@ -8,6 +8,12 @@ qt_add_executable(appServo WIN32
     ../app/main.cpp
 )
 
+if(WIN32)
+    target_sources(appServo PRIVATE
+        ../app/servo.rc
+    )
+endif()
+
 qt_add_qml_module(appServo
     URI Servo
     VERSION 1.0
@@ -26,6 +32,7 @@ qt_add_qml_module(appServo
         components/EntityList.qml
         components/IconButton.qml
         components/LinePlot.qml
+        components/MediaSourceDelegate.qml
         components/MetricReadout.qml
         components/PageToolbar.qml
         components/Panel.qml
@@ -37,6 +44,7 @@ qt_add_qml_module(appServo
         components/SettingsDialog.qml
         components/SplitHandle.qml
         components/StatusBadge.qml
+        components/SourceDropZone.qml
         components/SvgIcon.qml
         components/TextButton.qml
         components/TextInput.qml
@@ -53,12 +61,17 @@ qt_add_qml_module(appServo
         workspaces/WorldsWorkspace.qml
 
     SOURCES
+        media/MediaSourceModel.cpp
+        media/MediaSourceModel.h
+        reconstruction/ReconstructionController.cpp
+        reconstruction/ReconstructionController.h
         rendering/LinePlotItem.cpp
         rendering/LinePlotItem.h
         runtime/RuntimeMetrics.cpp
         runtime/RuntimeMetrics.h
 
     RESOURCES
+        assets/servo-logo.png
         icons/app.svg
         icons/back.svg
         icons/build.svg
@@ -108,12 +121,20 @@ qt_add_qml_module(appServo
 )
 
 target_include_directories(appServo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/media
+    ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
     ${CMAKE_CURRENT_SOURCE_DIR}/rendering
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
 )
 
+target_compile_definitions(appServo PRIVATE
+    SERVO_RECONSTRUCTION_SOURCE_DIR="${CMAKE_SOURCE_DIR}/tools/reconstruction"
+)
+
 target_link_libraries(appServo
     PRIVATE
+        Qt6::Concurrent
+        Qt6::GuiPrivate
         Qt6::Quick
         Qt6::Quick3D
         Qt6::QuickControls2
@@ -124,3 +145,12 @@ target_link_libraries(appServo
 if(WIN32)
     target_link_libraries(appServo PRIVATE dwmapi psapi)
 endif()
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/tools/reconstruction/
+    DESTINATION reconstruction
+    FILES_MATCHING
+        PATTERN "*.py"
+        PATTERN "*.json"
+        PATTERN "*.txt"
+        PATTERN "*.ps1"
+)

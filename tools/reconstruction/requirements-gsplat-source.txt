@@ -1,0 +1,3 @@
+# Official gsplat 1.5.3 source distribution. Building it invokes the project's
+# supported Windows setup path and produces a local cp311 native extension.
+gsplat @ https://files.pythonhosted.org/packages/6d/94/a0963873708223385ac926112dc3e40ab08297784ac53d95309b4cb5a801/gsplat-1.5.3.tar.gz#sha256=343f080c470e891ba3c697c03bdf0952cb982d1d535fdc24adb23c2cb4fba906
