@@ -500,7 +500,12 @@ void ReconstructionController::pollDetachedJob()
         m_detachedProcessId = 0;
         m_processIdentity.clear();
         m_jobPollTimer.stop();
-        clearActiveJob();
+        if (m_state == QStringLiteral("complete")) {
+            clearActiveJob();
+        } else if (!persistActiveJob()) {
+            appendRecentLog(
+                QStringLiteral("The resumable job record could not be preserved."));
+        }
         emit stateChanged();
         emit readinessChanged();
         if (m_artifactValidationActive)
@@ -836,6 +841,11 @@ void ReconstructionController::beginPublishedWorldValidation(const QString &path
                     setMessage(QStringLiteral("Published world failed the app artifact check"));
                     setDetails(result.second);
                     setProgress(-1.0, QStringLiteral("Failed"));
+                    if (!persistActiveJob()) {
+                        appendRecentLog(
+                            QStringLiteral(
+                                "The failed bundle could not be saved for retry after restart."));
+                    }
                 } else {
                     m_worldPath = path;
                     emit jobChanged();
@@ -844,6 +854,7 @@ void ReconstructionController::beginPublishedWorldValidation(const QString &path
                     setMessage(QStringLiteral("Gaussian world published"));
                     setDetails(m_worldPath);
                     setProgress(1.0, QStringLiteral("Complete"));
+                    clearActiveJob();
                 }
                 emit readinessChanged();
                 if (m_preflightRefreshPending) {
@@ -917,7 +928,11 @@ bool ReconstructionController::validatePublishedWorld(const QString &path,
         return false;
     }
 
-    const QRegularExpression sha256Pattern(QStringLiteral("^[0-9a-fA-F]{64}$"));
+    // Worker manifests use the same algorithm-qualified digest convention as
+    // stage receipts ("sha256:<hex>"). Accept the original bare-hex form too
+    // so worlds produced by pre-v1 development builds remain readable.
+    const QRegularExpression sha256Pattern(
+        QStringLiteral("^(?:sha256:)?([0-9a-fA-F]{64})$"));
     const auto resolveBundlePath = [&](const QString &relativePath,
                                        bool requireFile,
                                        QString *resolved) {
@@ -954,8 +969,10 @@ bool ReconstructionController::validatePublishedWorld(const QString &path,
     for (auto iterator = hashes.constBegin(); iterator != hashes.constEnd(); ++iterator) {
         const QString relativePath = iterator.key();
         const QString expectedHash = iterator.value().toString();
+        const QRegularExpressionMatch expectedHashMatch =
+            sha256Pattern.match(expectedHash);
         QString artifactPath;
-        if (!sha256Pattern.match(expectedHash).hasMatch()
+        if (!expectedHashMatch.hasMatch()
             || !resolveBundlePath(relativePath, true, &artifactPath)) {
             if (error)
                 *error = QStringLiteral("Hash entry '%1' is malformed or points outside the bundle.")
@@ -982,7 +999,7 @@ bool ReconstructionController::validatePublishedWorld(const QString &path,
             hash.addData(chunk);
         }
         if (QString::fromLatin1(hash.result().toHex())
-                .compare(expectedHash, Qt::CaseInsensitive)
+                .compare(expectedHashMatch.captured(1), Qt::CaseInsensitive)
             != 0) {
             if (error)
                 *error = QStringLiteral("Artifact hash mismatch: %1").arg(relativePath);

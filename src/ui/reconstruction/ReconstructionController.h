@@ -88,6 +88,8 @@ signals:
     void recentLogChanged();
 
 private:
+    friend class ReconstructionControllerTests;
+
     enum class ProcessMode { None, Preflight, Job };
 
     bool launch(ProcessMode mode, const QStringList &arguments);
