@@ -183,9 +183,9 @@ In short: this is Servo's own end-to-end reconstruction product and reliability 
 
 ### Observed-path audit
 
-[![Three-panel Servo reconstruction audit showing RGB, expected depth, and depth-spread proxy](docs/assets/reconstruction/gerrard-observed-path-audit-preview.jpg)](docs/assets/reconstruction/gerrard-observed-path-audit.mp4)
+[![Animated three-panel Servo reconstruction audit showing RGB, expected depth, and depth-spread proxy](docs/assets/reconstruction/gerrard-observed-path-audit.gif)](docs/assets/reconstruction/gerrard-observed-path-audit.mp4)
 
-**Click the preview to open the 6.63-second H.264 audit video.** It renders 199 interpolated poses between the 100 registered cameras without extrapolating beyond the observed path. Mean visible splat support was 99.40% and the minimum was 97.38%, but the depth-spread proxy remained high: 11.5% at the median and 54.2% at P95. The clip is therefore movement and failure evidence, not a claim of collision-safe depth or final photorealism.
+**The audit plays automatically above. Click it to open the 6.63-second H.264 version with native controls and full quality.** It renders 199 interpolated poses between the 100 registered cameras without extrapolating beyond the observed path. Mean visible splat support was 99.40% and the minimum was 97.38%, but the depth-spread proxy remained high: 11.5% at the median and 54.2% at P95. The clip is therefore movement and failure evidence, not a claim of collision-safe depth or final photorealism.
 
 The input is the public [COLMAP Gerrard Hall example dataset](https://colmap.github.io/datasets.html). COLMAP's dataset page provides the capture for download but does not state a separate media license. The derived clip is included as attributed evaluation evidence and is not relicensed under Servo's GPL; see the [asset notice](docs/assets/reconstruction/README.md). A distribution that requires an explicit media grant should replace it with a contributor-owned capture.
 
