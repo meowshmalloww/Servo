@@ -54,6 +54,7 @@ ApplicationWindow {
         workspaceSelector.currentIndex = Session.workspaceIndex;
         debugDrawer.currentTab = Math.max(0, Math.min(2, appSettings.debugTab));
         debugDrawer.expanded = appSettings.debugExpanded;
+        Session.worldModel = WorldLibraryModel;
         RuntimeMetrics.attachWindow(window);
     }
 
@@ -82,6 +83,17 @@ ApplicationWindow {
         }
         function onCurrentTabChanged() {
             appSettings.debugTab = debugDrawer.currentTab;
+        }
+    }
+
+    Connections {
+        target: ReconstructionController
+
+        function onWorldPublished(worldPath) {
+            WorldLibraryModel.selectWorldPath(worldPath);
+            Session.worldModel = WorldLibraryModel;
+            if (Session.workspaceIndex === 0)
+                Session.workspaceIndex = 1;
         }
     }
 
@@ -342,10 +354,11 @@ ApplicationWindow {
                     spacing: 9
 
                     MetricReadout {
-                        label: "DISPLAY"
-                        value: RuntimeMetrics.displayRefreshText
-                        toolTip: "Active monitor refresh. Servo redraws on change; current window presentation activity is "
-                                 + RuntimeMetrics.presentationRateText + "."
+                        label: "FPS"
+                        value: RuntimeMetrics.presentationRateText
+                        toolTip: "Frames actually presented by Servo. The active monitor can refresh at "
+                                 + RuntimeMetrics.displayRefreshText
+                                 + "; that refresh rate is a ceiling, not render performance."
                     }
                     Rectangle {
                         Layout.preferredWidth: 1

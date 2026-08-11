@@ -1,0 +1,79 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std140, binding = 0) uniform RadixConfig {
+    uvec4 config;
+};
+layout(std430, binding = 1) readonly buffer InputKeys { uint inputKeys[]; };
+layout(std430, binding = 2) readonly buffer InputIds { uint inputIds[]; };
+layout(std430, binding = 3) writeonly buffer OutputKeys { uint outputKeys[]; };
+layout(std430, binding = 4) writeonly buffer OutputIds { uint outputIds[]; };
+layout(std430, binding = 5) readonly buffer GroupPrefix { uint groupPrefix[]; };
+layout(std430, binding = 6) readonly buffer DigitBases { uint digitBases[]; };
+
+shared uint sortKeys[256];
+shared uint keys[256];
+shared uint ids[256];
+shared uint bucketStarts[256];
+
+void swapEntries(uint left, uint right)
+{
+    uint temporary = sortKeys[left];
+    sortKeys[left] = sortKeys[right];
+    sortKeys[right] = temporary;
+    temporary = keys[left];
+    keys[left] = keys[right];
+    keys[right] = temporary;
+    temporary = ids[left];
+    ids[left] = ids[right];
+    ids[right] = temporary;
+}
+
+void main()
+{
+    uint lane = gl_LocalInvocationID.x;
+    uint index = gl_GlobalInvocationID.x;
+    bool valid = index < config.x;
+    uint key = valid ? inputKeys[index] : 0xffffffffu;
+    uint digit = (key >> config.z) & 255u;
+    // The original lane is the secondary key, preserving input order for
+    // equal digits.  Stable local ordering plus ordered group prefixes makes
+    // every LSD radix pass globally stable.
+    sortKeys[lane] = valid ? ((digit << 8u) | lane) : 0xffffffffu;
+    keys[lane] = key;
+    ids[lane] = valid ? inputIds[index] : 0u;
+    bucketStarts[lane] = 0xffffffffu;
+    barrier();
+
+    for (uint size = 2u; size <= 256u; size <<= 1u) {
+        for (uint stride = size >> 1u; stride > 0u; stride >>= 1u) {
+            uint peer = lane ^ stride;
+            if (peer > lane) {
+                bool ascending = (lane & size) == 0u;
+                bool outOfOrder = ascending
+                                      ? sortKeys[lane] > sortKeys[peer]
+                                      : sortKeys[lane] < sortKeys[peer];
+                if (outOfOrder)
+                    swapEntries(lane, peer);
+            }
+            barrier();
+        }
+    }
+
+    bool sortedValid = sortKeys[lane] != 0xffffffffu;
+    uint sortedDigit = (sortKeys[lane] >> 8u) & 255u;
+    if (sortedValid
+        && (lane == 0u || ((sortKeys[lane - 1u] >> 8u) & 255u) != sortedDigit)) {
+        bucketStarts[sortedDigit] = lane;
+    }
+    barrier();
+    if (!sortedValid)
+        return;
+    uint localRank = lane - bucketStarts[sortedDigit];
+    uint destination = digitBases[sortedDigit]
+                       + groupPrefix[gl_WorkGroupID.x * 256u + sortedDigit]
+                       + localRank;
+    outputKeys[destination] = keys[lane];
+    outputIds[destination] = ids[lane];
+}

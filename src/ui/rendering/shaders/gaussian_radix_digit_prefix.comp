@@ -1,0 +1,23 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer DigitTotals { uint digitTotals[]; };
+layout(std430, binding = 1) writeonly buffer DigitBases { uint digitBases[]; };
+
+shared uint scanValues[256];
+
+void main()
+{
+    uint lane = gl_LocalInvocationID.x;
+    uint own = digitTotals[lane];
+    scanValues[lane] = own;
+    barrier();
+    for (uint offset = 1u; offset < 256u; offset <<= 1u) {
+        uint addend = lane >= offset ? scanValues[lane - offset] : 0u;
+        barrier();
+        scanValues[lane] += addend;
+        barrier();
+    }
+    digitBases[lane] = scanValues[lane] - own;
+}

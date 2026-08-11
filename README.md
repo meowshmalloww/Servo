@@ -1,134 +1,108 @@
 <p align="center">
-  <img src="src/ui/assets/servo-logo.png" width="96" alt="Servo logo">
+  <img src="src/ui/assets/servo-logo.png" width="104" alt="Servo logo">
 </p>
 
 <h1 align="center">Servo</h1>
 
 <p align="center">
   <strong>Autonomous CI/CD for physical AI</strong><br>
-  Turn policy failures into diagnosed capability gaps, targeted training, hidden exams, and evidence-backed promotion decisions.
+  Beginning with verified media-to-Gaussian worlds that can be explored in a native Vulkan desktop app.
+</p>
+
+## Reconstruction videos
+
+### Yosemite road — one forward-facing phone video
+
+[![Animated HD excerpt of the Servo Yosemite road r6 observed-path audit with RGB, expected depth, and depth-spread panels](docs/assets/reconstruction/yosemite-road-r6-observed-path-audit.gif)](docs/assets/reconstruction/yosemite-road-r6-observed-path-audit.mp4)
+
+<p align="center">
+  <strong><a href="docs/assets/reconstruction/yosemite-road-r6-observed-path-audit.mp4">Play the full 24.83-second, 1920 x 360 r6 MP4</a></strong>
+</p>
+
+### Gerrard Hall — 100 multi-view photographs
+
+[![Animated HD excerpt of the Servo Gerrard Hall observed-path audit with RGB, expected depth, and depth-spread panels](docs/assets/reconstruction/gerrard-observed-path-audit.gif)](docs/assets/reconstruction/gerrard-observed-path-audit.mp4)
+
+<p align="center">
+  <strong><a href="docs/assets/reconstruction/gerrard-observed-path-audit.mp4">Play the full 6.63-second, 1920 x 418 MP4</a></strong>
+</p>
+
+The animated previews play directly on the README; selecting either preview opens its higher-resolution H.264 video. The Yosemite result is a real, hash-bound audit of the serialized r6 PLY at 745 registered and between-camera poses. It reached 23.87 dB / 0.791 SSIM on 47 unseen frames and 25.25 dB / 0.846 SSIM when the exact PLY was reloaded at all 373 registered views. These are engineering artifacts, not collision or photorealism claims: foliage, monocular depth ambiguity, and unobserved geometry remain visible. See the [asset notice](docs/assets/reconstruction/README.md) for exact provenance and limits.
+
+<p align="center">
+  <img alt="Qt 6.11" src="https://img.shields.io/badge/Qt-6.11-41CD52?logo=qt&logoColor=white">
+  <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
+  <img alt="Vulkan" src="https://img.shields.io/badge/renderer-Vulkan-AC162C?logo=vulkan&logoColor=white">
+  <img alt="Native Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white">
+  <img alt="GPLv3" src="https://img.shields.io/badge/license-GPLv3-6A5ACD">
 </p>
 
 <p align="center">
-  <img alt="Qt 6.11" src="https://img.shields.io/badge/Qt-6.11-202326?logo=qt&logoColor=white">
-  <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-202326?logo=cplusplus&logoColor=white">
-  <img alt="Hackathon track: Taskmaster" src="https://img.shields.io/badge/Taskmaster-All%20Things%20Agentic-202326">
-  <img alt="GPLv3" src="https://img.shields.io/badge/license-GPLv3-202326">
+  <a href="#what-works-today">What works</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/WORLD_RECONSTRUCTION_PLAN.md">Production plan</a>
 </p>
 
-Servo is being built for the [All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/) Taskmaster track. Give Servo a physical-AI policy, a robot or vehicle configuration, and authorized real-world recordings. The target system compiles executable worlds, runs the policy, investigates failures, creates the missing experiences, trains through a supported adapter, verifies the result on hidden scenarios, checks regressions, and promotes or rejects the checkpoint.
+Servo is being built for the [All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/). Its long-term goal is a RealityCI agent that observes a robot or vehicle policy, diagnoses failures, creates the missing training experience, evaluates a new checkpoint on hidden scenarios, and promotes or rejects it with evidence.
 
 ```text
-observe -> run -> fail -> diagnose causally -> generate targeted experience
-        -> train -> hidden exam -> regression gate -> promote or reject -> repeat
+observe -> diagnose -> create experience -> train -> hidden exam -> promote or reject
 ```
 
-## Is Servo an AI agent?
+> [!IMPORTANT]
+> The complete autonomous agent loop is not finished. The repository currently delivers its first foundation: a real local media-to-3D-Gaussian pipeline, durable world builds, quality gates, a world library, and native Vulkan exploration. Gemini, Google ADK, Google Cloud orchestration, policy training, and hidden exams are planned work.
 
-The intended RealityCI loop is an AI agent: it accepts a long-running goal, observes run evidence, makes runtime decisions with Gemini, invokes simulation and training tools, persists state, verifies outcomes, handles failures, and continues without a person choosing every step.
+## What works today
 
-The repository is not a complete RealityCI agent yet. Today it contains the production Qt workbench, a Vulkan-only hardware-rendered viewport, persistent media ingest, and a real native Windows media-to-3D-Gaussian worker. That worker hashes sources, selects video keyframes, recovers cameras with COLMAP, enforces a quantitative pose gate, trains with gsplat/CUDA, checkpoints complete optimizer state, evaluates held-out views, validates the exported PLY, and publishes a hash-addressed world bundle. Learned depth, the Vulkan splat viewer, Gemini, Google ADK, Google Cloud, simulation, causal diagnosis, policy training, and hidden exams remain to be built. Submitted now, Servo is a serious autonomous world-building foundation, not yet the hackathon's full AI agent.
-
-## What makes the target system different
-
-Servo is not pitched as a Gaussian-scene generator, a generic physical-AI dashboard, or a chatbot for robotics. Its unit of work is a falsifiable capability claim:
-
-1. Detect a policy failure and preserve the complete evidence bundle.
-2. Form competing causal hypotheses and choose counterfactual experiments.
-3. Identify the smallest capability gap supported by the evidence.
-4. Select or request the missing experience and an authorized training adapter.
-5. Train a candidate checkpoint while reserving hidden evaluation worlds.
-6. Require the hidden exam and the existing regression suite to pass.
-7. Promote or reject the checkpoint and record the decision in Reality Debt.
-
-Gemini acts as the research scientist controlling the workflow. Deterministic systems remain responsible for physics, metrics, backpropagation, safety limits, and promotion thresholds.
-
-## Architecture target
-
-```mermaid
-flowchart LR
-    UI["Qt/QML workbench"] --> API["Cloud Run control API + Google ADK"]
-    API <--> GEMINI["Vertex AI / Gemini 3.5+"]
-    API <--> STATE["Firestore workflow state"]
-    API --> BUS["Pub/Sub events"]
-
-    BUS --> WORLD["World compiler + simulator"]
-    BUS --> DIAG["Causal experiment worker"]
-    BUS --> TRAIN["Training adapter / Cloud Run Job"]
-    BUS --> EXAM["Hidden examiner + regression gate"]
-
-    WORLD --> EVIDENCE["Cloud Storage evidence and artifacts"]
-    DIAG --> STATE
-    TRAIN --> EVIDENCE
-    EXAM --> STATE
-    STATE --> API
-    API --> UI
-```
-
-The first complete vertical slice should be deliberately narrow: one compact trainable policy, one simulator path, one failure class, one real weight update, one hidden exam, and one automatic promote/reject decision. A working end-to-end loop is more valuable than many disconnected integrations.
-
-## Hackathon proof checklist
-
-| Requirement | Planned proof | Current status |
-| --- | --- | --- |
-| Gemini 3.5+ | Causal diagnosis and experiment selection through Vertex AI | Not implemented |
-| Google agent framework | Durable workflow and tool orchestration with Google ADK | Not implemented |
-| Google Cloud service | Cloud Run, Pub/Sub, Firestore, and Cloud Storage execution trace | Not implemented |
-| Autonomous action | Failure event triggers diagnosis, training, evaluation, and checkpoint decision | Not implemented |
-| State and recovery | Persisted run state, idempotent jobs, bounded retries, and resumable execution | Not implemented |
-| Production evidence | Reproducible repo, architecture diagram, unedited demo, and visible Cloud logs | In progress |
-
-## Current frontend foundation
-
-- A **Create World** workspace that accepts multiple images, videos, dropped files, and recursively selected folders.
-- Sources are referenced in place. Image headers and video metadata are probed in bounded background workers, so importing a long or multi-gigabyte video does not copy or decode the complete file.
-- A versioned local source catalog with atomic writes, restart recovery, canonical-path deduplication, fixed-size sampled fingerprints, and visible missing/corrupt/unsupported-file errors.
-- Compact Qt/QML desktop workbench with resizable library, viewport, inspector, and debug surfaces.
-- Real Qt Quick 3D `View3D` with Vulkan forced and verified before the window is shown; camera orbit, pan, zoom, presets, grid, and renderer statistics are functional.
-- Live process FPS activity, CPU, RAM, Vulkan device/type, and graphics-backend readouts with no fabricated telemetry.
-- A native reconstruction controller with exact dependency and CUDA-kernel preflight, enforced storage/VRAM gates, versioned JSONL progress, detached execution that survives closing the UI, durable stage receipts, safe cancellation, retry, and verified-checkpoint resume.
-- Three bounded 12 GB reconstruction profiles, including the Servo Fidelity 3DGS r3 master with antialiased rasterization, AbsGS detail recovery, coarse-to-fine optimization, bounded exposure compensation, and explicit capture/scale limitations before a job can start.
-- Neutral empty states and disabled service actions until real models and backend services are attached.
-- Cohesive 20 x 20 SVG action-icon system, a transparent application mark, persistent layout settings, and no forced animation loop.
-
-**Build world** is connected to the pinned native worker and becomes available only when Vulkan, every native dependency, the real gsplat CUDA forward/backward test, storage, and at least one ready source pass preflight. The frontend never invents runs, failures, percentages, telemetry, causal confidence, reconstruction quality, exam results, or Reality Debt. See [the media-to-world production plan](docs/WORLD_RECONSTRUCTION_PLAN.md) and [the frontend contract](docs/FRONTEND.md) for the implementation and remaining boundaries.
-
-## Four-minute demo target
-
-The submission demo should show one uninterrupted chain:
-
-```text
-policy enters rare scenario
--> failure event and evidence bundle
--> Gemini chooses counterfactual tests
--> root cause isolated
--> ADK launches targeted training
--> checkpoint weights change
--> hidden world passes
--> old-capability regression suite passes
--> checkpoint promoted
--> Servo selects the next unproven capability
-```
-
-The recording must also show the Cloud Run deployment or URL, Pub/Sub/Firestore activity, and the repository's reproducible setup.
-
-## Stack
-
-| Layer | Technology |
+| Area | Implemented |
 | --- | --- |
-| Desktop shell | Qt 6.11, QML, Qt Quick Controls |
-| Source ingestion | Native C++ catalog; Qt Concurrent; QImageReader; FFmpeg/ffprobe |
-| World viewport | Qt Quick 3D / RHI; Vulkan required and verified |
-| Reconstruction worker | Native Windows Python 3.11 + CUDA 12.8 + PyTorch 2.11 + COLMAP 4.1.1 + gsplat 1.5.3 |
-| Performance-critical code | C++20; CUDA for reconstruction; Vulkan for application rendering |
-| Agent orchestration | Python and Google ADK, planned |
-| Reasoning | Gemini 3.5+ through Vertex AI, planned |
-| Durable control plane | Cloud Run, Pub/Sub, Firestore, and Cloud Storage, planned |
-| Policies and training | Typed PyTorch/JAX/ONNX adapters, planned |
+| Media ingest | Images, videos, drag-and-drop, recursive folders, source deduplication, bounded metadata probing, and persistent recovery |
+| Reconstruction | Native Windows worker with FFmpeg, COLMAP, PyTorch, CUDA, and gsplat; no Docker or WSL |
+| Reliability | Source hashing, resource preflight, durable stage receipts, safe cancellation, verified checkpoints, resume, and atomic publication |
+| Quality control | Pose gates, held-out appearance checks, exact exported-PLY rerendering, interpolated-path audits, artifact-tail checks, and consecutive-failure rejection |
+| World management | Automatic handoff after a successful build, search, sort, rename, storage reporting, safe deletion, and bundle access |
+| Exploration | Native QRhi/Vulkan Gaussian rendering, GPU projection and radix sorting, antialiased SH3 splats, HDR composition, a smoothed observed-camera path, and Appearance / inferred Depth / splat Structure / Coverage diagnostics |
 
-## Build the current desktop shell
+Servo does not fabricate progress, quality scores, telemetry, missing surfaces, or agent decisions. A world that misses the configured acceptance gates is rejected instead of being presented as finished.
 
-Requirements: the exact Qt 6.11 development build used by the application, including Concurrent, GuiPrivate, Quick, Quick 3D, Quick Controls 2, Quick Dialogs 2, SVG, and Test; CMake; Ninja; a C++20 compiler; and FFmpeg/ffprobe on `PATH` for video metadata. The private QRhi device-reporting API makes the Qt patch version part of the build contract.
+The diagnostic views are deliberately named by what the artifact proves. Inferred depth is not LiDAR or metres without a scale anchor; splat structure is not a collision mesh; RGB cannot produce a real temperature map. The accepted r6 road remains a visualization/research world, not autonomous-driving ground truth. The required metric road surface, lane/curb/sign topology, uncertainty layer, and dynamic-object tracks are specified in the [world reconstruction plan](docs/WORLD_RECONSTRUCTION_PLAN.md).
+
+## Media to Gaussian world
+
+```text
+images / video
+      -> color-managed frame selection
+      -> camera recovery and sparse geometry
+      -> Gaussian optimization
+      -> exact-artifact and path validation
+      -> verified world bundle
+      -> Vulkan Explore
+```
+
+1. **Ingest** — Sources are referenced in place. HLG iPhone video is converted through an explicit BT.2020/HLG-to-sRGB path and selected frames are stored as lossless PNGs.
+2. **Recover cameras** — Servo compares incremental and calibrated global COLMAP solutions. Bounded Fidelity jobs add guided exhaustive matching, retriangulation, global bundle adjustment, and confidence filtering.
+3. **Fit the world** — gsplat supplies the Apache-2.0 CUDA rasterization and densification primitives. Servo owns the training policy, static-confidence masks, geometry losses, resource limits, checkpoint contract, cleanup, and streaming export.
+4. **Validate the artifact** — The final `world.ply` is reloaded and rendered at registered and interpolated poses. Appearance, coverage, depth ambiguity, artifacts, and bad temporal sections must pass before publication.
+5. **Explore and organize** — Accepted worlds appear in the app's **Worlds** workspace and open in the native Vulkan viewer.
+
+A published bundle includes the Gaussian PLY, cameras, sparse COLMAP data, sanitized source provenance, configuration, appearance parameters, pose/training/audit metrics, validation media, and SHA-256 hashes.
+
+### Free-view quality and robotics truth
+
+A front-facing monocular video cannot observe every surface beside, behind, or inside the scene. Servo does not hide that limit. The next structural revision separates road/curb/sign/sky/dynamic semantics, temporally consistent depth and normals, a surface-constrained road/mesh layer, uncertainty, and generated-content provenance. Renderer popping is a separate Vulkan ordering problem; it does not become correct geometry by sharpening the image.
+
+[NVIDIA ArtiFixer](https://research.nvidia.com/labs/sil/projects/artifixer/) is being evaluated for an optional visual-completion layer because it can generate plausible novel trajectories and distill them back into a representation. It is not integrated into the local worker: NVIDIA's official workflow targets Linux/CUDA and says the lighter 1.3B model fits comfortably on an 80 GB GPU, while this project's tested laptop has 12 GB. Any future generated surface will be labelled `generated` and excluded from collision, road topology, sign truth, and autonomous-planning APIs. The concrete road/sky/floater and free-view milestones are in the [production plan](docs/WORLD_RECONSTRUCTION_PLAN.md#free-view-repair-and-generated-completion-decision).
+
+## Quick start
+
+### Desktop application
+
+Requirements:
+
+- Windows with Vulkan support
+- Qt 6.11.1 with Concurrent, GuiPrivate, Quick, Quick 3D, Quick Controls 2, Quick Dialogs 2, SVG, and Test
+- CMake, Ninja, and a C++20 compiler
+- FFmpeg and ffprobe on `PATH`
 
 ```powershell
 $env:Path = "C:\Qt\6.11.1\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;$env:Path"
@@ -137,23 +111,21 @@ cmake -S . -B build -G Ninja `
   -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/mingw_64 `
   -DCMAKE_CXX_COMPILER=C:/Qt/Tools/mingw1310_64/bin/g++.exe
 cmake --build build --parallel
-./build/appServo.exe
+.\build\appServo.exe
 ```
 
-Run the native ingestion tests with:
+Run the test suites:
 
 ```powershell
 ctest --test-dir build --output-on-failure
-python tests/python/test_reconstruction_worker.py -v
+python -m unittest discover -s tests/python -p "test_*.py" -v
 ```
 
-Set `SERVO_QML_LOG` to a writable file path when collecting Qt/QML runtime diagnostics. Set `SERVO_VULKAN_VALIDATION=1` in a development environment with the Vulkan validation layer installed to request validation and debug markers. Servo exits explicitly if Qt cannot initialize a Vulkan scene graph; it does not fall back to OpenGL, WebGL, or Direct3D.
+Servo exits if Qt cannot initialize Vulkan; it does not silently fall back to OpenGL, WebGL, or Direct3D.
 
-## Build a Gaussian world on native Windows
+### Native reconstruction runtime
 
-Docker and WSL are not used. The worker runs as a detached native process so Torch, CUDA, and COLMAP cannot crash the Qt UI, and an active build continues if the window closes. The app reattaches through the durable job/event record on restart. The current tested lock is Python 3.11, PyTorch `2.11.0+cu128`, CUDA Toolkit 12.8, an existing Visual Studio C++ x64 toolchain, COLMAP 4.1.1, and gsplat 1.5.3. FFmpeg and ffprobe must be available on `PATH`.
-
-From a PowerShell process with Python 3.11 and the pinned PyTorch CUDA runtime already installed:
+The tested lock uses Python 3.11, PyTorch `2.11.0+cu128`, CUDA Toolkit 12.8, COLMAP 4.1.1, gsplat 1.5.3, FFmpeg/ffprobe, and an existing Visual Studio C++ x64 toolchain. The setup does not install or modify Visual Studio.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -161,34 +133,49 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -Python "C:\path\to\python.exe"
 ```
 
-The setup script downloads the checksum-locked official COLMAP CUDA build, creates a per-user environment under `%LOCALAPPDATA%\Servo\reconstruction`, builds the hash-pinned gsplat source distribution with at most two compiler jobs, and finishes only after a real CUDA rasterization and backward pass succeeds. It detects and uses an existing Visual Studio C++ toolchain; it does not install or modify Visual Studio. Pass `-InstallCudaToolkit` only when CUDA 12.8 is genuinely absent and you explicitly want that toolkit installed.
+The setup creates a managed per-user environment under `%LOCALAPPDATA%\Servo\reconstruction`, installs the checksum-locked toolchain, and finishes only after real CUDA rasterization and backward-pass probes succeed.
 
-In the app, open **Create World**, add overlapping images or a mostly static video, choose a profile, and press **Build world**. Servo owns the reconstruction policy and uses gsplat as its Apache-2.0 CUDA rasterizer and densification/pruning strategy toolkit. The Fidelity profile produces anisotropic degree-three 3D Gaussians with antialiased rasterization, AbsGS detail recovery, coarse-to-fine training, bounded exposure compensation, transactional checkpoints, cleanup statistics, and a hard allocation budget. The published bundle contains `world.ply`, `world.json`, appearance parameters, pose and training metrics, source/frame provenance, COLMAP sparse data, sanitized configuration, SHA-256 hashes, and the fidelity master. Monocular scale remains unknown until a measurement anchor is supplied, and unobserved surfaces are not fabricated as reconstruction truth. The current Qt viewport does not render the published PLY yet; the native Vulkan splat renderer is the next delivery milestone.
+Then open **Create World**, add overlapping images or a mostly static video, choose a profile, and select **Build world**. Successful worlds are added automatically to **Worlds**; select one and choose **Explore**.
 
-The clean 2026-08-10 Fidelity acceptance registered all 100 source photographs, completed 40,000 native CUDA optimization steps, and atomically published 577,553 cleaned SH3 Gaussians in a 198.14 MiB, 27-artifact world bundle. It peaked at 1.664 GiB reserved VRAM on the RTX 4080 Laptop GPU. Held-out appearance scored 18.05 dB PSNR / 0.657 SSIM: a passing engineering result with coherent static architecture, but below Servo's preferred 23 dB / 0.75 tier and visibly weaker on foliage and occlusion boundaries. Servo therefore labels this artifact `review-required`, not final photorealistic quality. Exact evidence and remaining work are tracked in [the production plan](docs/WORLD_RECONSTRUCTION_PLAN.md).
+## Verified evidence
 
-## Reconstruction provenance and acceptance evidence
-
-Servo's reconstruction is our production pipeline, but it is not a claim that we invented structure-from-motion or the underlying 3D Gaussian Splatting method.
-
-| Layer | What Servo uses | Ownership and license boundary |
+| Capture | Result | Interpretation |
 | --- | --- | --- |
-| Servo application and pipeline | Qt/QML workbench, media catalog, keyframe policy, job state machine, resource gates, training loop, checkpoint/recovery contract, evaluation, cleanup, streaming export, and world manifests | Implemented in this repository; GPLv3 |
-| Camera recovery | COLMAP/PyCOLMAP 4.1.1 for features, matching, calibration, poses, and sparse geometry | Upstream COLMAP; BSD-3-Clause with separately licensed dependencies |
-| Gaussian optimization primitives | gsplat 1.5.3 CUDA rasterization plus `DefaultStrategy` densification/pruning operations | Upstream gsplat; Apache-2.0 |
-| Tensor optimization and media handling | PyTorch, OpenCV, and an external FFmpeg/ffprobe installation | Upstream open-source projects under their respective licenses; FFmpeg is not redistributed here |
-| 3DGS research basis | The published [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) representation and optimization ideas | Based on the paper; the [original Graphdeco source repository](https://github.com/graphdeco-inria/gaussian-splatting) is not bundled or imported because its software license is research/non-commercial |
+| Yosemite road video · Fidelity r6 | 1,486,817 cleaned SH3 Gaussians · held-out 23.87 dB / 0.791 · exact-PLY registered path 25.25 dB / 0.846 | Preferred observed-corridor world; full path stays upright and continuous, while close foliage and monocular depth remain limited |
+| Gerrard Hall · 100 photographs | 577,553 cleaned SH3 Gaussians · 18.05 dB PSNR · 0.657 SSIM | Coherent engineering benchmark; still below final photorealistic acceptance |
+| One-way road video · earlier pipeline | 14.75 dB PSNR · 0.410 SSIM with severe mixed-depth layers | Rejected by the current quality policy; not presented as a usable world |
 
-In short: this is Servo's own end-to-end reconstruction product and reliability layer built on open-source numerical foundations. It is not a renamed copy of another reconstruction application, and it is also not a from-scratch invention of every underlying algorithm. Exact pinned versions, source hashes, and license identifiers are recorded in [`worker-lock.json`](tools/reconstruction/worker-lock.json).
+The video above shows the r6 Yosemite road exact-PLY path audit. Exact metrics, failure analysis, and remaining reconstruction work are recorded in the [world reconstruction plan](docs/WORLD_RECONSTRUCTION_PLAN.md). The earlier Gerrard Hall audit remains in [`docs/assets/reconstruction`](docs/assets/reconstruction/README.md).
 
-### Observed-path audit
+## What is Servo's and what is open source?
 
-[![Animated three-panel Servo reconstruction audit showing RGB, expected depth, and depth-spread proxy](docs/assets/reconstruction/gerrard-observed-path-audit.gif)](docs/assets/reconstruction/gerrard-observed-path-audit.mp4)
+Servo is its own end-to-end application and reliability layer. It uses established open-source numerical foundations rather than claiming to have invented structure-from-motion or 3D Gaussian Splatting.
 
-**The audit plays automatically above. Click it to open the 6.63-second H.264 version with native controls and full quality.** It renders 199 interpolated poses between the 100 registered cameras without extrapolating beyond the observed path. Mean visible splat support was 99.40% and the minimum was 97.38%, but the depth-spread proxy remained high: 11.5% at the median and 54.2% at P95. The clip is therefore movement and failure evidence, not a claim of collision-safe depth or final photorealism.
+| Layer | Source |
+| --- | --- |
+| Workbench, media policy, training policy, geometry losses, job system, quality gates, export, manifests, world library, and Vulkan viewer | Implemented in this repository · GPLv3 |
+| Camera recovery and sparse geometry | [COLMAP](https://github.com/colmap/colmap) / PyCOLMAP 4.1.1 · BSD-3-Clause |
+| CUDA Gaussian rasterization and densification primitives | [gsplat](https://github.com/nerfstudio-project/gsplat) 1.5.3 · Apache-2.0 |
+| Tensor and media runtime | PyTorch, OpenCV, and an external FFmpeg/ffprobe installation |
+| Research basis | [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) paper; the non-commercial Graphdeco source is not bundled or imported |
 
-The input is the public [COLMAP Gerrard Hall example dataset](https://colmap.github.io/datasets.html). COLMAP's dataset page provides the capture for download but does not state a separate media license. The derived clip is included as attributed evaluation evidence and is not relicensed under Servo's GPL; see the [asset notice](docs/assets/reconstruction/README.md). A distribution that requires an explicit media grant should replace it with a contributor-owned capture.
+Pinned versions, hashes, and license identifiers are recorded in [`worker-lock.json`](tools/reconstruction/worker-lock.json).
+
+## Honest limits
+
+- A monocular capture has no absolute metric scale until the user supplies a measurement anchor.
+- Servo reconstructs observed evidence; unseen backsides and missing viewpoints are not guaranteed or invented as ground truth.
+- An appearance world is not collision-certified geometry for robotics.
+- Fast motion, rolling shutter, moving vegetation, reflective surfaces, weak parallax, and incomplete coverage can still make a capture unreconstructable.
+- The full Gemini/ADK RealityCI loop remains future work.
+
+## Documentation
+
+- [World reconstruction production plan](docs/WORLD_RECONSTRUCTION_PLAN.md)
+- [Frontend architecture and contracts](docs/FRONTEND.md)
+- [Reconstruction audit asset notice](docs/assets/reconstruction/README.md)
+- [Pinned reconstruction runtime](tools/reconstruction/worker-lock.json)
 
 ## License
 
-Servo is licensed under [GNU GPL v3.0 only](LICENSE). Qt is dual-licensed and individual modules have different open-source terms; Qt Quick 3D is offered under commercial or GPLv3 terms. This repository uses GPLv3 and does not claim that the free Qt edition removes redistribution obligations. Review Qt's [licensing overview](https://doc.qt.io/qt-6/licensing.html) before distributing binaries.
+Servo is licensed under [GNU GPL v3.0 only](LICENSE). Qt modules have their own licensing terms; review the [Qt licensing overview](https://doc.qt.io/qt-6/licensing.html) before distributing binaries.

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Audit a published Servo Gaussian world along its observed camera path.
 
-This tool does not claim metric depth. It renders only interpolated poses between
-registered source cameras, records splat support, and estimates line-of-sight
-depth ambiguity from the first and second composited depth moments. The output
-video is intended for visual acceptance, not collision or navigation.
+This tool does not claim metric depth. It reloads the exact serialized PLY,
+compares registered views with private undistorted references when supplied,
+renders interpolated poses between registered cameras, records splat support,
+and estimates line-of-sight depth ambiguity from the first and second
+composited depth moments. The output video is intended for visual acceptance,
+not collision or navigation.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ import cv2
 import numpy as np
 
 
-AUDIT_SCHEMA = "servo.gaussian-path-audit/v1"
+AUDIT_SCHEMA = "servo.gaussian-path-audit/v2"
 
 
 class AuditError(RuntimeError):
@@ -163,6 +165,12 @@ def camera_records(path: Path) -> list[dict[str, Any]]:
     cameras = value.get("cameras")
     if not isinstance(cameras, list) or len(cameras) < 2:
         raise AuditError("At least two published cameras are required for a path audit.")
+    validation_images = value.get("validationImages")
+    if not isinstance(validation_images, list) or not all(
+        isinstance(name, str) for name in validation_images
+    ):
+        raise AuditError("Published cameras have no valid held-out image list.")
+    validation_names = set(validation_images)
     result: list[dict[str, Any]] = []
     for index, camera in enumerate(cameras):
         if not isinstance(camera, dict):
@@ -180,15 +188,39 @@ def camera_records(path: Path) -> list[dict[str, Any]]:
                 "width": int(camera["width"]),
                 "height": int(camera["height"]),
                 "image": str(camera.get("image", f"camera-{index:04d}")),
+                "validation": str(camera.get("image", "")) in validation_names,
             }
         )
     return result
 
 
+def load_reference_image(
+    root: Path,
+    image_name: str,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    from PIL import Image, ImageOps
+
+    root = root.resolve()
+    image_path = (root / Path(image_name)).resolve()
+    try:
+        image_path.relative_to(root)
+    except ValueError as error:
+        raise AuditError(f"Reference image escapes its private root: {image_name}") from error
+    if not image_path.is_file():
+        raise AuditError(f"Missing private reference image: {image_name}")
+    with Image.open(image_path) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        if image.size != (width, height):
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+        return np.asarray(image, dtype=np.float32) / 255.0
+
+
 def interpolated_cameras(
     cameras: list[dict[str, Any]],
     frames_per_segment: int,
-) -> Iterator[tuple[np.ndarray, np.ndarray, str, float]]:
+) -> Iterator[tuple[np.ndarray, np.ndarray, str, float, str | None, bool]]:
     from scipy.spatial.transform import Rotation, Slerp
 
     if frames_per_segment < 1:
@@ -209,9 +241,23 @@ def interpolated_cameras(
                 (1.0 - fraction) * left["calibration"]
                 + fraction * right["calibration"]
             )
-            yield c2w, calibration, f"{left['image']} -> {right['image']}", fraction
+            yield (
+                c2w,
+                calibration,
+                f"{left['image']} -> {right['image']}",
+                fraction,
+                left["image"] if sample == 0 else None,
+                bool(left["validation"]) if sample == 0 else False,
+            )
     final = cameras[-1]
-    yield final["c2w"].copy(), final["calibration"].copy(), final["image"], 1.0
+    yield (
+        final["c2w"].copy(),
+        final["calibration"].copy(),
+        final["image"],
+        1.0,
+        final["image"],
+        bool(final["validation"]),
+    )
 
 
 def colorize_depth(depth: np.ndarray, alpha: np.ndarray, near: float, far: float) -> np.ndarray:
@@ -315,9 +361,11 @@ def audit(
     width: int,
     frames_per_segment: int,
     fps: int,
+    reference_images: Path | None = None,
 ) -> dict[str, Any]:
     import torch
     from gsplat.rendering import rasterization
+    from servo_train import ssim
 
     world = world.resolve()
     output = output.resolve()
@@ -336,6 +384,10 @@ def audit(
         raise AuditError("The path audit requires the native CUDA renderer.")
     if width < 320 or width % 2:
         raise AuditError("Audit width must be an even integer of at least 320 pixels.")
+    if reference_images is not None:
+        reference_images = reference_images.resolve()
+        if not reference_images.is_dir():
+            raise AuditError("The private reference-image root does not exist.")
 
     cameras = camera_records(cameras_path)
     base_width = cameras[0]["width"]
@@ -360,6 +412,11 @@ def audit(
     lower_support_values: list[float] = []
     center_support_values: list[float] = []
     ambiguity_samples: list[np.ndarray] = []
+    registered_psnr: list[float] = []
+    registered_ssim: list[float] = []
+    heldout_psnr: list[float] = []
+    heldout_ssim: list[float] = []
+    appearance_views: list[dict[str, Any]] = []
     camera_steps: list[float] = []
     for left, right in zip(cameras[:-1], cameras[1:]):
         camera_steps.append(float(np.linalg.norm(right["c2w"][:3, 3] - left["c2w"][:3, 3])))
@@ -367,7 +424,14 @@ def audit(
     started = time.perf_counter()
     try:
         with torch.inference_mode():
-            for frame_index, (c2w_np, calibration_np, segment, fraction) in enumerate(path_cameras):
+            for frame_index, (
+                c2w_np,
+                calibration_np,
+                segment,
+                fraction,
+                reference_name,
+                is_validation,
+            ) in enumerate(path_cameras):
                 calibration_np = calibration_np.copy()
                 calibration_np[0, :] *= scale_x
                 calibration_np[1, :] *= scale_y
@@ -415,7 +479,34 @@ def audit(
                     near_plane=0.01,
                     far_plane=1e4,
                 )
-                rgb = rgb_depth[0, :, :, :3].clamp(0.0, 1.0).cpu().numpy()
+                rendered_rgb = rgb_depth[0, :, :, :3].clamp(0.0, 1.0)
+                if reference_images is not None and reference_name is not None:
+                    reference_np = load_reference_image(
+                        reference_images, reference_name, width, height
+                    )
+                    reference = torch.from_numpy(reference_np).to(device)
+                    mse = torch.mean((rendered_rgb - reference).square()).clamp_min(1e-12)
+                    psnr_value = float((-10.0 * torch.log10(mse)).item())
+                    ssim_value = float(
+                        ssim(
+                            rendered_rgb.permute(2, 0, 1).unsqueeze(0),
+                            reference.permute(2, 0, 1).unsqueeze(0),
+                        ).item()
+                    )
+                    registered_psnr.append(psnr_value)
+                    registered_ssim.append(ssim_value)
+                    if is_validation:
+                        heldout_psnr.append(psnr_value)
+                        heldout_ssim.append(ssim_value)
+                    appearance_views.append(
+                        {
+                            "image": reference_name,
+                            "heldout": is_validation,
+                            "psnr": psnr_value,
+                            "ssim": ssim_value,
+                        }
+                    )
+                rgb = rendered_rgb.cpu().numpy()
                 depth = rgb_depth[0, :, :, 3].cpu().numpy()
                 alpha_np = alpha[0, :, :, 0].clamp(0.0, 1.0).cpu().numpy()
                 moment2 = second_moment[0, :, :, 0].cpu().numpy() / np.maximum(alpha_np, 1e-6)
@@ -452,6 +543,18 @@ def audit(
                 if encoder.stdin is None:
                     raise AuditError("FFmpeg input pipe is unavailable.")
                 encoder.stdin.write(frame.tobytes())
+                if frame_index % max(1, frames_per_segment * 4) == 0:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "world_audit_progress",
+                                "completed": frame_index + 1,
+                                "total": len(path_cameras),
+                            },
+                            separators=(",", ":"),
+                        ),
+                        flush=True,
+                    )
         torch.cuda.synchronize()
         finish_encoder(encoder)
     except Exception:
@@ -464,6 +567,24 @@ def audit(
 
     elapsed = time.perf_counter() - started
     ambiguity = np.concatenate(ambiguity_samples) if ambiguity_samples else np.empty(0, dtype=np.float32)
+    if reference_images is not None and (
+        len(registered_psnr) != len(cameras)
+        or len(heldout_psnr) != sum(bool(camera["validation"]) for camera in cameras)
+        or not heldout_psnr
+    ):
+        raise AuditError(
+            "Exact-Ply appearance audit did not cover every registered and held-out camera."
+        )
+    consecutive_degraded = 0
+    maximum_consecutive_degraded = 0
+    for view in appearance_views:
+        if float(view["psnr"]) < 18.0 or float(view["ssim"]) < 0.60:
+            consecutive_degraded += 1
+            maximum_consecutive_degraded = max(
+                maximum_consecutive_degraded, consecutive_degraded
+            )
+        else:
+            consecutive_degraded = 0
     result = {
         "schema": AUDIT_SCHEMA,
         "worldId": manifest.get("worldId"),
@@ -490,6 +611,32 @@ def audit(
         },
         "gaussians": int(gaussians["means"].shape[0]),
         "shDegree": sh_degree,
+        "appearance": {
+            "meaning": (
+                "PSNR/SSIM from the reloaded serialized PLY against private "
+                "undistorted references at exact registered camera poses."
+            ),
+            "available": reference_images is not None,
+            "registeredImages": len(registered_psnr),
+            "registeredPsnrMean": float(np.mean(registered_psnr))
+            if registered_psnr
+            else None,
+            "registeredSsimMean": float(np.mean(registered_ssim))
+            if registered_ssim
+            else None,
+            "registeredPsnrP10": float(np.percentile(registered_psnr, 10))
+            if registered_psnr
+            else None,
+            "registeredSsimP10": float(np.percentile(registered_ssim, 10))
+            if registered_ssim
+            else None,
+            "maximumConsecutiveDegradedViews": maximum_consecutive_degraded,
+            "degradedViewDefinition": "PSNR < 18 dB or SSIM < 0.60",
+            "heldoutImages": len(heldout_psnr),
+            "heldoutPsnrMean": float(np.mean(heldout_psnr)) if heldout_psnr else None,
+            "heldoutSsimMean": float(np.mean(heldout_ssim)) if heldout_ssim else None,
+            "views": appearance_views,
+        },
         "support": {
             "meaning": "Fraction of pixels whose composited splat alpha is at least 0.5; this is not geometry accuracy.",
             "overallMean": float(np.mean(support_values)),
@@ -526,6 +673,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--width", type=int, default=640, help="Per-panel render width (default: 640).")
     result.add_argument("--frames-per-segment", type=int, default=2, help="Samples per source-camera segment.")
     result.add_argument("--fps", type=int, default=30, help="Encoded audit playback rate.")
+    result.add_argument(
+        "--reference-images",
+        type=Path,
+        help=(
+            "Private undistorted image root used to verify exact-Ply PSNR/SSIM; "
+            "the path is never written to the audit result."
+        ),
+    )
     return result
 
 
@@ -538,6 +693,7 @@ def main() -> int:
             arguments.width,
             arguments.frames_per_segment,
             arguments.fps,
+            arguments.reference_images,
         )
     except AuditError as error:
         print(json.dumps({"event": "world_audit_failed", "error": str(error)}, separators=(",", ":")))

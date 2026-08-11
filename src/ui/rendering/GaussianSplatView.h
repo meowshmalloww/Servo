@@ -1,0 +1,143 @@
+#pragma once
+
+#include <QQuickRhiItem>
+#include <QUrl>
+#include <QVector3D>
+#include <QtQmlIntegration>
+
+#include <memory>
+
+struct GaussianSceneData;
+
+class GaussianSplatView : public QQuickRhiItem
+{
+    Q_OBJECT
+    QML_NAMED_ELEMENT(GaussianSplatView)
+
+    Q_PROPERTY(QUrl source READ source WRITE setSource NOTIFY sourceChanged)
+    Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
+    Q_PROPERTY(bool ready READ ready NOTIFY sceneChanged)
+    Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
+    Q_PROPERTY(QString errorString READ errorString NOTIFY statusChanged)
+    Q_PROPERTY(double loadProgress READ loadProgress NOTIFY loadProgressChanged)
+    Q_PROPERTY(qint64 gaussianCount READ gaussianCount NOTIFY sceneChanged)
+    Q_PROPERTY(int visibleGaussianCount READ visibleGaussianCount NOTIFY renderStatsChanged)
+    Q_PROPERTY(double renderFps READ renderFps NOTIFY renderStatsChanged)
+    Q_PROPERTY(double frameTimeMs READ frameTimeMs NOTIFY renderStatsChanged)
+    Q_PROPERTY(double gpuTimeMs READ gpuTimeMs NOTIFY renderStatsChanged)
+    Q_PROPERTY(double sortTimeMs READ sortTimeMs NOTIFY renderStatsChanged)
+    Q_PROPERTY(double geometryUpdateFps READ geometryUpdateFps NOTIFY renderStatsChanged)
+    Q_PROPERTY(int cameraRevisionLag READ cameraRevisionLag NOTIFY renderStatsChanged)
+    Q_PROPERTY(double movementSpeed READ movementSpeed WRITE setMovementSpeed NOTIFY movementSpeedChanged)
+    Q_PROPERTY(bool pathAvailable READ pathAvailable NOTIFY sceneChanged)
+    Q_PROPERTY(bool followPath READ followPath WRITE setFollowPath NOTIFY navigationModeChanged)
+    Q_PROPERTY(double pathProgress READ pathProgress NOTIFY pathProgressChanged)
+    Q_PROPERTY(int visualizationMode READ visualizationMode WRITE setVisualizationMode NOTIFY visualizationModeChanged)
+
+public:
+    explicit GaussianSplatView(QQuickItem *parent = nullptr);
+    ~GaussianSplatView() override;
+
+    QUrl source() const;
+    void setSource(const QUrl &source);
+    bool loading() const;
+    bool ready() const;
+    QString statusText() const;
+    QString errorString() const;
+    double loadProgress() const;
+    qint64 gaussianCount() const;
+    int visibleGaussianCount() const;
+    double renderFps() const;
+    double frameTimeMs() const;
+    double gpuTimeMs() const;
+    double sortTimeMs() const;
+    double geometryUpdateFps() const;
+    int cameraRevisionLag() const;
+    double movementSpeed() const;
+    void setMovementSpeed(double value);
+    bool pathAvailable() const;
+    bool followPath() const;
+    void setFollowPath(bool value);
+    double pathProgress() const;
+    int visualizationMode() const;
+    void setVisualizationMode(int value);
+
+    Q_INVOKABLE void resetCamera();
+    Q_INVOKABLE void look(double deltaX, double deltaY);
+    Q_INVOKABLE void moveCamera(double forward, double right, double up, double elapsedSeconds);
+    Q_INVOKABLE void changeMovementSpeed(double wheelSteps);
+
+signals:
+    void sourceChanged();
+    void loadingChanged();
+    void sceneChanged();
+    void statusChanged();
+    void loadProgressChanged();
+    void renderStatsChanged();
+    void movementSpeedChanged();
+    void navigationModeChanged();
+    void pathProgressChanged();
+    void visualizationModeChanged();
+
+protected:
+    QQuickRhiItemRenderer *createRenderer() override;
+
+private:
+    friend class GaussianSplatRenderer;
+
+    std::shared_ptr<const GaussianSceneData> sceneData() const;
+    QVector3D cameraPosition() const;
+    QVector3D cameraForward() const;
+    QVector3D cameraUp() const;
+    float verticalFieldOfView() const;
+    quint64 cameraRevision() const;
+    void loadSource(const QString &path);
+    void clearScene();
+    void applyLoadedScene(std::shared_ptr<const GaussianSceneData> scene,
+                          const QString &error,
+                          quint64 generation);
+    void reportRenderStats(int visibleCount,
+                           double frameTimeMs,
+                           double gpuTimeMs,
+                           double sortTimeMs,
+                           double framesPerSecond,
+                           double geometryUpdatesPerSecond,
+                           int cameraRevisionLag);
+    void setStatus(const QString &status, const QString &error = {});
+    void updateCameraVectors();
+    void updatePathCamera();
+
+    QUrl m_source;
+    std::shared_ptr<const GaussianSceneData> m_scene;
+    QString m_statusText = QStringLiteral("No Gaussian world loaded");
+    QString m_errorString;
+    QVector3D m_cameraPosition { 0.0f, 0.0f, 2.0f };
+    QVector3D m_cameraForward { 0.0f, 0.0f, -1.0f };
+    QVector3D m_cameraUp { 0.0f, 1.0f, 0.0f };
+    QVector3D m_initialPosition { 0.0f, 0.0f, 2.0f };
+    QVector3D m_initialForward { 0.0f, 0.0f, -1.0f };
+    QVector3D m_initialUp { 0.0f, 1.0f, 0.0f };
+    QVector3D m_navigationUp { 0.0f, 1.0f, 0.0f };
+    QVector3D m_baseForward { 0.0f, 0.0f, -1.0f };
+    QVector3D m_baseUp { 0.0f, 1.0f, 0.0f };
+    float m_yaw = 0.0f;
+    float m_pitch = 0.0f;
+    float m_verticalFieldOfView = 52.0f;
+    double m_loadProgress = 0.0;
+    double m_movementSpeed = 0.6;
+    double m_renderFps = 0.0;
+    double m_frameTimeMs = 0.0;
+    double m_gpuTimeMs = 0.0;
+    double m_sortTimeMs = 0.0;
+    double m_geometryUpdateFps = 0.0;
+    int m_visibleGaussianCount = 0;
+    int m_cameraRevisionLag = 0;
+    double m_pathDistance = 0.0;
+    double m_pathLateralOffset = 0.0;
+    double m_pathVerticalOffset = 0.0;
+    quint64 m_loadGeneration = 0;
+    quint64 m_cameraRevision = 1;
+    int m_visualizationMode = 0;
+    bool m_loading = false;
+    bool m_followPath = true;
+};

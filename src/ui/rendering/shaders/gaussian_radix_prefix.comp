@@ -1,0 +1,22 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std140, binding = 0) uniform RadixConfig {
+    uvec4 config;
+};
+layout(std430, binding = 1) readonly buffer GroupHistogram { uint histogram[]; };
+layout(std430, binding = 2) writeonly buffer GroupPrefix { uint groupPrefix[]; };
+layout(std430, binding = 3) writeonly buffer DigitTotals { uint digitTotals[]; };
+
+void main()
+{
+    uint digit = gl_LocalInvocationID.x;
+    uint running = 0u;
+    for (uint group = 0u; group < config.y; ++group) {
+        uint offset = group * 256u + digit;
+        groupPrefix[offset] = running;
+        running += histogram[offset];
+    }
+    digitTotals[digit] = running;
+}

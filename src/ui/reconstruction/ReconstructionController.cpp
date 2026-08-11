@@ -40,7 +40,7 @@ namespace {
 constexpr auto jobSchema = "servo.reconstruction-job/v1";
 constexpr auto eventSchema = "servo.reconstruction-event/v1";
 constexpr auto worldSchema = "servo.gaussian-world/v1";
-constexpr auto supportedWorkerVersion = "0.3.0";
+constexpr auto supportedWorkerVersion = "0.6.0";
 constexpr qulonglong gibibyte = 1024ULL * 1024ULL * 1024ULL;
 
 struct ProfilePresentation {
@@ -48,12 +48,13 @@ struct ProfilePresentation {
     const char *label;
     double vramGiB;
     double diskMultiplier;
+    double minimumDerivedGiB;
 };
 
 constexpr ProfilePresentation profiles[] = {
-    { "balanced-12gb", "Servo Balanced / 12 GB", 10.5, 5.0 },
-    { "fidelity-12gb", "Servo Fidelity / 12 GB", 11.0, 7.0 },
-    { "recovery-12gb", "Recovery / difficult capture", 8.0, 5.5 },
+    { "balanced-12gb", "Servo Balanced / 12 GB", 10.5, 5.0, 17.0 },
+    { "fidelity-12gb", "Servo Fidelity / 12 GB", 11.0, 7.0, 20.0 },
+    { "recovery-12gb", "Recovery / difficult capture", 8.0, 5.5, 13.0 },
 };
 
 const ProfilePresentation *profileForName(const QString &name)
@@ -319,7 +320,7 @@ QString ReconstructionController::estimatedStorageText(qulonglong sourceBytes,
     if (!presentation)
         return QStringLiteral("Unknown");
     const long double estimate = std::max<long double>(
-        4.0L * 1024 * 1024 * 1024,
+        presentation->minimumDerivedGiB * gibibyte,
         static_cast<long double>(sourceBytes) * presentation->diskMultiplier);
     const qulonglong bounded = estimate > std::numeric_limits<qulonglong>::max()
                                    ? std::numeric_limits<qulonglong>::max()
@@ -340,7 +341,7 @@ bool ReconstructionController::capacityReady(qulonglong sourceBytes,
     if (!presentation)
         return false;
     const long double derived = std::max<long double>(
-        4.0L * gibibyte,
+        presentation->minimumDerivedGiB * gibibyte,
         static_cast<long double>(sourceBytes) * presentation->diskMultiplier);
     const long double requiredDisk = derived + 2.0L * gibibyte;
     const long double requiredVram = presentation->vramGiB * gibibyte;
@@ -360,7 +361,7 @@ QString ReconstructionController::capacityIssue(qulonglong sourceBytes,
     if (!presentation)
         return QStringLiteral("Unknown reconstruction profile.");
     const long double derived = std::max<long double>(
-        4.0L * gibibyte,
+        presentation->minimumDerivedGiB * gibibyte,
         static_cast<long double>(sourceBytes) * presentation->diskMultiplier);
     const qulonglong requiredDisk = static_cast<qulonglong>(derived + 2.0L * gibibyte);
     const qulonglong requiredVram = static_cast<qulonglong>(
@@ -855,6 +856,7 @@ void ReconstructionController::beginPublishedWorldValidation(const QString &path
                     setDetails(m_worldPath);
                     setProgress(1.0, QStringLiteral("Complete"));
                     clearActiveJob();
+                    emit worldPublished(m_worldPath);
                 }
                 emit readinessChanged();
                 if (m_preflightRefreshPending) {

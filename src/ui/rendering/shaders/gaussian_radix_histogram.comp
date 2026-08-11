@@ -1,0 +1,26 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std140, binding = 0) uniform RadixConfig {
+    uvec4 config; // count, workgroup count, bit shift, reserved
+};
+layout(std430, binding = 1) readonly buffer InputKeys { uint inputKeys[]; };
+layout(std430, binding = 2) writeonly buffer GroupHistogram { uint histogram[]; };
+
+shared uint localHistogram[256];
+
+void main()
+{
+    uint lane = gl_LocalInvocationID.x;
+    uint group = gl_WorkGroupID.x;
+    localHistogram[lane] = 0u;
+    barrier();
+    uint index = gl_GlobalInvocationID.x;
+    if (index < config.x) {
+        uint digit = (inputKeys[index] >> config.z) & 255u;
+        atomicAdd(localHistogram[digit], 1u);
+    }
+    barrier();
+    histogram[group * 256u + lane] = localHistogram[lane];
+}

@@ -65,10 +65,16 @@ qt_add_qml_module(appServo
         media/MediaSourceModel.h
         reconstruction/ReconstructionController.cpp
         reconstruction/ReconstructionController.h
+    rendering/GaussianSplatView.cpp
+    rendering/GaussianSplatView.h
+    rendering/GaussianPathSmoothing.cpp
+    rendering/GaussianPathSmoothing.h
         rendering/LinePlotItem.cpp
         rendering/LinePlotItem.h
         runtime/RuntimeMetrics.cpp
         runtime/RuntimeMetrics.h
+        worlds/WorldLibraryModel.cpp
+        worlds/WorldLibraryModel.h
 
     RESOURCES
         assets/servo-logo.png
@@ -85,6 +91,7 @@ qt_add_qml_module(appServo
         icons/cube.svg
         icons/diagnose.svg
         icons/error.svg
+        icons/edit.svg
         icons/export.svg
         icons/file.svg
         icons/filter.svg
@@ -93,6 +100,7 @@ qt_add_qml_module(appServo
         icons/forward.svg
         icons/grid.svg
         icons/info.svg
+        icons/image.svg
         icons/inspector.svg
         icons/maximize.svg
         icons/minimize.svg
@@ -112,9 +120,11 @@ qt_add_qml_module(appServo
         icons/sensor.svg
         icons/settings.svg
         icons/stop.svg
+        icons/storage.svg
         icons/table.svg
         icons/terminal.svg
         icons/train.svg
+        icons/trash.svg
         icons/verify.svg
         icons/warning.svg
         icons/world.svg
@@ -125,6 +135,24 @@ target_include_directories(appServo PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
     ${CMAKE_CURRENT_SOURCE_DIR}/rendering
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    ${CMAKE_CURRENT_SOURCE_DIR}/worlds
+)
+
+qt_add_shaders(appServo servo_gaussian_shaders
+    PREFIX "/servo"
+    NOGLSL
+    NOHLSL
+    NOMSL
+    FILES
+        rendering/shaders/gaussian.vert
+        rendering/shaders/gaussian.frag
+        rendering/shaders/gaussian_present.vert
+        rendering/shaders/gaussian_present.frag
+        rendering/shaders/gaussian_preprocess.comp
+        rendering/shaders/gaussian_radix_histogram.comp
+        rendering/shaders/gaussian_radix_prefix.comp
+        rendering/shaders/gaussian_radix_digit_prefix.comp
+        rendering/shaders/gaussian_radix_scatter.comp
 )
 
 target_compile_definitions(appServo PRIVATE
@@ -139,6 +167,7 @@ target_link_libraries(appServo
         Qt6::Quick3D
         Qt6::QuickControls2
         Qt6::QuickDialogs2
+        Qt6::ShaderTools
         Qt6::Svg
 )
 

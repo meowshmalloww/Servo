@@ -1,8 +1,8 @@
 {
   "schema": "servo.reconstruction-worker-lock/v1",
-  "workerVersion": "0.3.0",
-  "trainerVersion": "0.3.0",
-  "pipelineRevision": "native-colmap-servo-fidelity-gs-r3",
+  "workerVersion": "0.6.0",
+  "trainerVersion": "0.6.0",
+  "pipelineRevision": "native-colmap-servo-fidelity-gs-r6",
   "representationType": "servo-fidelity-3dgs-v1",
   "rasterizationMode": "antialiased",
   "densification": "default-absgrad",

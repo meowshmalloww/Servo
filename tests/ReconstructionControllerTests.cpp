@@ -34,7 +34,7 @@ private:
 
 namespace {
 constexpr auto worldId = "world-test-id";
-constexpr auto pipelineRevision = "native-colmap-servo-fidelity-gs-r3";
+constexpr auto pipelineRevision = "native-colmap-servo-fidelity-gs-r6";
 }
 
 void ReconstructionControllerTests::acceptsAlgorithmQualifiedHashes()

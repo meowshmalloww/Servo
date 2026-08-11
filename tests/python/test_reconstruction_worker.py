@@ -4,6 +4,7 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import subprocess
 import struct
 import sys
@@ -11,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -27,6 +29,13 @@ assert TRAINER_SPEC is not None and TRAINER_SPEC.loader is not None
 servo_train = importlib.util.module_from_spec(TRAINER_SPEC)
 sys.modules[TRAINER_SPEC.name] = servo_train
 TRAINER_SPEC.loader.exec_module(servo_train)
+
+AUDIT_PATH = REPOSITORY / "tools" / "reconstruction" / "servo_audit_world.py"
+AUDIT_SPEC = importlib.util.spec_from_file_location("servo_audit_world", AUDIT_PATH)
+assert AUDIT_SPEC is not None and AUDIT_SPEC.loader is not None
+servo_audit_world = importlib.util.module_from_spec(AUDIT_SPEC)
+sys.modules[AUDIT_SPEC.name] = servo_audit_world
+AUDIT_SPEC.loader.exec_module(servo_audit_world)
 
 
 BASE_PROPERTIES = [
@@ -279,6 +288,10 @@ class ReconstructionWorkerTests(unittest.TestCase):
                 "registeredRatio": 0.95,
                 "points3D": 80_000,
                 "p95ReprojectionError": profile.max_reprojection_error - 0.1,
+                "medianTrackLength": profile.min_median_track_length + 1.0,
+                "cameraForwardStepMaxDegrees": 2.0,
+                "cameraUpStepMaxDegrees": 2.0,
+                "cameraSpeedMaxRatio": 2.0,
             },
             "global",
             Path("global-0"),
@@ -289,6 +302,157 @@ class ReconstructionWorkerTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         assert selected is not None
         self.assertEqual(selected[1], "global")
+
+    def test_fidelity_pose_filter_retains_long_clean_tracks(self) -> None:
+        profile = servo_worker.PROFILES["fidelity-12gb"]
+        self.assertEqual(servo_worker.pose_filter_min_track_length(profile), 5)
+        candidate = {
+            "registeredImages": 373,
+            "registeredRatio": 1.0,
+            "points3D": 66_900,
+            "p95ReprojectionError": 0.848,
+            "medianTrackLength": 8.0,
+            "cameraForwardStepMaxDegrees": 1.1,
+            "cameraUpStepMaxDegrees": 0.28,
+            "cameraSpeedMaxRatio": 1.7,
+        }
+        self.assertTrue(servo_worker.pose_candidate_passes_gate(candidate, profile))
+        self.assertEqual(servo_worker.minimum_reliable_pose_points(candidate), 7_460)
+
+        candidate["points3D"] = 7_459
+        self.assertFalse(servo_worker.pose_candidate_passes_gate(candidate, profile))
+
+    def test_pose_selection_prefers_broader_clean_fidelity_evidence(self) -> None:
+        profile = servo_worker.PROFILES["fidelity-12gb"]
+        smaller = (
+            {
+                "registeredImages": 373,
+                "registeredRatio": 1.0,
+                "points3D": 55_659,
+                "p95ReprojectionError": 0.781,
+                "medianTrackLength": 8.0,
+                "cameraForwardStepMaxDegrees": 1.1,
+                "cameraUpStepMaxDegrees": 0.28,
+                "cameraSpeedMaxRatio": 2.3,
+            },
+            "global+confidence-filter",
+            Path("filtered-global"),
+        )
+        exhaustive = (
+            {
+                "registeredImages": 373,
+                "registeredRatio": 1.0,
+                "points3D": 66_900,
+                "p95ReprojectionError": 0.848,
+                "medianTrackLength": 8.0,
+                "cameraForwardStepMaxDegrees": 1.1,
+                "cameraUpStepMaxDegrees": 0.28,
+                "cameraSpeedMaxRatio": 1.7,
+            },
+            "global+exhaustive-guided+confidence-filter",
+            Path("filtered-exhaustive"),
+        )
+        selected = servo_worker.select_pose_candidate([smaller, exhaustive], profile)
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected[1], exhaustive[1])
+
+    def test_fidelity_refinement_compares_incremental_and_global_seeds(self) -> None:
+        profile = servo_worker.PROFILES["fidelity-12gb"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "database.db"
+            database.write_bytes(b"sqlite-fixture")
+            images = root / "images"
+            images.mkdir()
+            output = root / "pose"
+            output.mkdir()
+            for name in ("incremental", "global"):
+                (root / name).mkdir()
+
+            raw_scored = [
+                (
+                    {
+                        "registeredImages": 373,
+                        "registeredRatio": 1.0,
+                        "points3D": 84_383,
+                        "p95ReprojectionError": 1.59,
+                        "medianTrackLength": 6.0,
+                        "cameraForwardStepMaxDegrees": 1.1,
+                    },
+                    "incremental",
+                    root / "incremental",
+                ),
+                (
+                    {
+                        "registeredImages": 373,
+                        "registeredRatio": 1.0,
+                        "points3D": 103_982,
+                        "p95ReprojectionError": 1.32,
+                        "medianTrackLength": 5.0,
+                        "cameraForwardStepMaxDegrees": 1.1,
+                    },
+                    "global",
+                    root / "global",
+                ),
+            ]
+            context = SimpleNamespace(
+                profile=profile,
+                require_free_space=mock.Mock(),
+                events=SimpleNamespace(emit=mock.Mock()),
+            )
+
+            def filtered_result(
+                _context: object,
+                _model: Path,
+                filtered_output: Path,
+                _selected_count: int,
+                _timestamps: dict[str, float],
+                solver: str,
+            ) -> tuple[dict[str, object], str, Path]:
+                return (
+                    {
+                        "registeredImages": 373,
+                        "registeredRatio": 1.0,
+                        "points3D": 66_900,
+                        "p95ReprojectionError": 0.848,
+                        "medianTrackLength": 8.0,
+                        "cameraForwardStepMaxDegrees": 1.1,
+                        "cameraUpStepMaxDegrees": 0.28,
+                        "cameraSpeedMaxRatio": 1.7,
+                    },
+                    f"{solver}+confidence-filter",
+                    filtered_output,
+                )
+
+            with (
+                mock.patch.object(servo_worker, "run_colmap") as run_colmap,
+                mock.patch.object(
+                    servo_worker,
+                    "filter_pose_candidate",
+                    side_effect=filtered_result,
+                ) as filter_candidate,
+            ):
+                results = servo_worker.fidelity_refine_pose_candidates(
+                    context,
+                    output,
+                    images,
+                    database,
+                    raw_scored,
+                    373,
+                    {},
+                )
+
+            commands = [call.args[2][0] for call in run_colmap.call_args_list]
+            self.assertEqual(commands.count("exhaustive_matcher"), 1)
+            self.assertEqual(commands.count("point_triangulator"), 2)
+            self.assertEqual(commands.count("bundle_adjuster"), 2)
+            self.assertEqual(filter_candidate.call_count, 2)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(
+                {result[0]["fidelityRefinement"]["seedSolver"] for result in results},
+                {"incremental", "global"},
+            )
 
     def test_checkpoint_is_flushed_verified_and_published(self) -> None:
         import torch
@@ -432,6 +596,136 @@ class ReconstructionWorkerTests(unittest.TestCase):
         self.assertAlmostEqual(float(scaled[0, 0, 2]), 101.0 * 102.0 / 203.0, places=5)
         self.assertAlmostEqual(float(scaled[0, 1, 2]), 50.0 * 50.0 / 101.0, places=5)
 
+    def test_sparse_depth_and_layer_variance_losses_are_geometric(self) -> None:
+        import numpy as np
+        import torch
+
+        pixels = np.asarray(
+            [[0, 0], [1, 0], [2, 0], [3, 0], [0, 3], [1, 3], [2, 3], [3, 3]],
+            dtype=np.float32,
+        )
+        record = servo_train.ImageRecord(
+            name="frame.png",
+            path=Path("frame.png"),
+            camera_id=1,
+            camera_model="PINHOLE",
+            camera_to_world=np.eye(4, dtype=np.float32),
+            calibration=np.eye(3, dtype=np.float32),
+            width=4,
+            height=4,
+            sparse_pixels=pixels,
+            sparse_depths=np.ones(8, dtype=np.float32),
+        )
+        expected = torch.full((1, 4, 4, 1), 2.0, requires_grad=True)
+        alpha = torch.ones((1, 4, 4, 1))
+        sparse_loss, count = servo_train.sparse_depth_consistency_loss(
+            expected, alpha, record, 1
+        )
+        self.assertEqual(count, 8)
+        self.assertGreater(float(sparse_loss.item()), 0.0)
+        sparse_loss.backward()
+        self.assertIsNotNone(expected.grad)
+        self.assertTrue(torch.isfinite(expected.grad).all())
+
+        zero_variance = servo_train.depth_layer_variance_loss(
+            expected.detach(), torch.full_like(expected, 4.0), alpha
+        )
+        mixed_variance = servo_train.depth_layer_variance_loss(
+            expected.detach(), torch.full_like(expected, 8.0), alpha
+        )
+        self.assertAlmostEqual(float(zero_variance.item()), 0.0, places=6)
+        self.assertGreater(float(mixed_variance.item()), 0.5)
+
+    def test_static_pair_confidence_tracks_epipolar_motion(self) -> None:
+        import cv2
+        import numpy as np
+
+        generator = np.random.default_rng(17)
+        first = generator.integers(0, 256, (128, 160), dtype=np.uint8)
+        first = cv2.GaussianBlur(first, (3, 3), 0.6)
+        second = cv2.warpAffine(
+            first,
+            np.asarray([[1.0, 0.0, 2.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            (first.shape[1], first.shape[0]),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT,
+        )
+        # Rectified horizontal camera translation: corresponding points retain
+        # their image row even though their x coordinate changes.
+        fundamental = np.asarray(
+            [[0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+            dtype=np.float64,
+        )
+        first_confidence, second_confidence = servo_worker.static_pair_confidence(
+            first, second, fundamental
+        )
+        self.assertEqual(first_confidence.shape, first.shape)
+        self.assertEqual(second_confidence.shape, second.shape)
+        self.assertTrue(
+            set(np.unique(first_confidence).tolist()).issubset({0, 96, 255})
+        )
+        self.assertGreater(float(np.mean(first_confidence > 0)), 0.70)
+        self.assertGreater(float(np.mean(second_confidence > 0)), 0.70)
+
+    def test_static_confidence_builds_for_registered_still_image(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as directory:
+            training_root = Path(directory)
+            sparse_root = training_root / "sparse"
+            sparse_root.mkdir(parents=True)
+            (sparse_root / "cameras.bin").touch()
+            (training_root / "images").mkdir()
+
+            reconstruction = SimpleNamespace(
+                images={
+                    1: SimpleNamespace(
+                        name="frame.png",
+                        has_pose=True,
+                        camera_id=1,
+                    )
+                },
+                cameras={},
+            )
+            context = SimpleNamespace(
+                check_cancel=mock.Mock(),
+                events=SimpleNamespace(emit=mock.Mock()),
+            )
+            gray = np.full((12, 16), 127, dtype=np.uint8)
+            fake_pycolmap = SimpleNamespace(
+                Reconstruction=mock.Mock(return_value=reconstruction)
+            )
+            with (
+                mock.patch.dict(sys.modules, {"pycolmap": fake_pycolmap}),
+                mock.patch("cv2.imread", return_value=gray),
+                mock.patch.object(servo_worker, "write_selected_frame") as write_mask,
+            ):
+                metrics = servo_worker.build_static_confidence_masks(
+                    context,
+                    training_root,
+                    {},
+                )
+
+            self.assertEqual(metrics["registeredImages"], 1)
+            self.assertEqual(metrics["videoImages"], 0)
+            self.assertEqual(metrics["meanCoverage"], 1.0)
+            write_mask.assert_called_once()
+
+    def test_weighted_ssim_ignores_zero_confidence_region(self) -> None:
+        import torch
+
+        target = torch.zeros((1, 3, 32, 32), dtype=torch.float32)
+        prediction = target.clone()
+        prediction[:, :, :16, :] = 1.0
+        weight = torch.zeros((1, 1, 32, 32), dtype=torch.float32)
+        # Leave more than the 11x11 SSIM window radius between the corrupted
+        # half and the trusted pixels.
+        weight[:, :, 24:, :] = 1.0
+        unweighted = servo_train.ssim(prediction, target)
+        weighted = servo_train.ssim(prediction, target, weight)
+        self.assertGreater(float(weighted), float(unweighted))
+        self.assertGreater(float(weighted), 0.90)
+
     def test_appearance_state_is_bounded_and_checkpointed(self) -> None:
         import torch
 
@@ -566,17 +860,18 @@ class ReconstructionWorkerTests(unittest.TestCase):
 
             events = Events()
             context = SimpleNamespace(
+                root=root,
                 profile=SimpleNamespace(
                     sample_hz=10.0,
                     max_dimension=640,
                     min_interval_seconds=0.05,
                     max_interval_seconds=0.5,
-                    jpeg_quality=92,
+                    motion_threshold=0.002,
                 ),
                 events=events,
                 check_cancel=lambda: None,
             )
-            selected, rejected = servo_worker.extract_video(
+            selected, rejected, decode = servo_worker.extract_video(
                 context,
                 {"path": str(video), "kind": "video"},
                 7,
@@ -587,14 +882,88 @@ class ReconstructionWorkerTests(unittest.TestCase):
 
             self.assertGreaterEqual(len(selected), 20)
             self.assertGreaterEqual(rejected, 0)
+            self.assertEqual(decode["decodedFrames"], 90)
+            self.assertEqual(decode["losslessFrameFormat"], "png")
             self.assertTrue(events.records)
             self.assertEqual({frame["sourceId"] for frame in selected}, {"s007"})
-            self.assertEqual(selected[0]["image"], "video-007/00000004.jpg")
+            self.assertEqual(selected[0]["image"], "video-007/00000004.png")
             timestamps = [float(frame["timestampSeconds"]) for frame in selected]
             self.assertEqual(timestamps, sorted(timestamps))
             self.assertEqual(len(timestamps), len(set(timestamps)))
             for frame in selected:
                 self.assertTrue((images / str(frame["image"])).is_file())
+
+    def test_hlg_probe_requires_explicit_bt2020_to_srgb_transform(self) -> None:
+        environment = servo_worker.compiler_environment()
+        ffmpeg = shutil.which("ffmpeg", path=environment.get("PATH"))
+        if ffmpeg is None:
+            self.skipTest("FFmpeg is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "synthetic-hlg.mp4"
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=320x180:rate=5:duration=0.6",
+                    "-c:v",
+                    "libx265",
+                    "-preset",
+                    "ultrafast",
+                    "-x265-params",
+                    (
+                        "log-level=error:colorprim=bt2020:transfer=arib-std-b67:"
+                        "colormatrix=bt2020nc:range=limited"
+                    ),
+                    "-tag:v",
+                    "hvc1",
+                    "-pix_fmt",
+                    "yuv420p10le",
+                    "-color_primaries",
+                    "bt2020",
+                    "-color_trc",
+                    "arib-std-b67",
+                    "-colorspace",
+                    "bt2020nc",
+                    "-color_range",
+                    "tv",
+                    str(video),
+                ],
+                capture_output=True,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            probe = servo_worker.probe_video_decode(video, 320)
+            self.assertEqual(probe["colorTransfer"], "arib-std-b67")
+            self.assertEqual(
+                probe["displayTransform"],
+                "bt2020-hlg-limited-to-bt709-srgb-mobius-v1",
+            )
+            self.assertIn("tonemap=mobius", probe["filter"])
+            self.assertEqual(len(probe["timestamps"]), 3)
+
+    def test_exact_ply_reference_loader_resizes_and_blocks_escape(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "references"
+            nested = root / "video-000"
+            nested.mkdir(parents=True)
+            Image.new("RGB", (20, 10), "red").save(nested / "frame.png")
+            pixels = servo_audit_world.load_reference_image(
+                root, "video-000/frame.png", 10, 6
+            )
+            self.assertEqual(pixels.shape, (6, 10, 3))
+            self.assertTrue((pixels[..., 0] > 0.99).all())
+            outside = Path(directory) / "outside.png"
+            Image.new("RGB", (4, 4), "blue").save(outside)
+            with self.assertRaises(servo_audit_world.AuditError):
+                servo_audit_world.load_reference_image(root, "../outside.png", 4, 4)
 
     def test_camera_groups_share_verified_photo_signatures(self) -> None:
         from PIL import Image

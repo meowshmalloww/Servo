@@ -1,6 +1,6 @@
 # Servo media-to-world production plan
 
-Status: Servo Fidelity 3DGS r3 implemented and clean full-capture native acceptance completed; appearance quality is review-required and Vulkan splat rendering remains, 2026-08-10.
+Status: Servo Fidelity 3DGS r6 implemented; a clean monocular-video build passed held-out, exact-PLY, interpolated-path, and native Vulkan acceptance at the preferred appearance tier, 2026-08-11. Metric/collision geometry and arbitrary unseen-view completion remain future work.
 
 This document defines Servo's first product foundation: turn ordinary, unposed images and monocular video into a locally stored 3D Gaussian scene that can later support robotics-world compilation. It deliberately separates what the source media proves from what a generative model may only hypothesize.
 
@@ -21,7 +21,83 @@ source media
 
 The reconstruction worker uses CUDA/PyTorch because the maintained differentiable Gaussian and vision-model ecosystem is CUDA-based. The desktop application and final splat viewer use Vulkan only. Vulkan is not a substitute for PyTorch/CUDA training kernels.
 
-The implemented baseline is native Windows only--no Docker or WSL. It uses a separately versioned Python process, CUDA 12.8, PyTorch 2.11, COLMAP/PyCOLMAP 4.1.1, and a hash-pinned native build of gsplat 1.5.3. Servo owns the media, pose, optimization policy, resource limits, checkpoints, validation, cleanup, and publication contracts; gsplat supplies the Apache-2.0 CUDA rasterizer and `DefaultStrategy` densification/pruning operations. The r3 fidelity master is anisotropic 3D Gaussians with degree-three spherical harmonics, antialiased rasterization, AbsGS absolute-gradient detail recovery, coarse-to-fine training, bounded per-frame exposure/white-balance nuisance parameters, and a hard Gaussian allocation cap. It already supports durable hash, extraction, pose, train, validate, and publish receipts; complete safe checkpoints; held-out PSNR/SSIM and visual comparisons; strict streaming PLY validation; detached app-lifecycle-safe execution; cancellation; retry; and resume. Learned depth, geometry/uncertainty layers, and the Vulkan PLY renderer are later milestones.
+The implemented baseline is native Windows only--no Docker or WSL. It uses a separately versioned Python process, CUDA 12.8, PyTorch 2.11, COLMAP/PyCOLMAP 4.1.1, and a hash-pinned native build of gsplat 1.5.3. Servo owns the media, pose, optimization policy, resource limits, checkpoints, validation, cleanup, and publication contracts; gsplat supplies the Apache-2.0 CUDA rasterizer and `DefaultStrategy` densification/pruning operations. The r6 Fidelity master uses anisotropic 3D Gaussians with degree-three spherical harmonics, antialiased rasterization, AbsGS absolute-gradient detail recovery, explicit HLG/BT.2020-to-sRGB decode, lossless selected frames, static-confidence masks, sparse-depth and mixed-layer penalties, coarse-to-fine full-resolution training, bounded per-frame appearance compensation, and hard Gaussian/VRAM/storage limits. It supports durable hash, extraction, pose, train, validate, audit, and publish receipts; safe checkpoints; held-out PSNR/SSIM; exact exported-PLY rerendering; interpolated-path coverage/depth/appearance gates; streaming PLY validation; detached app-lifecycle-safe execution; cancellation; retry; and resume. The desktop app now includes a native QRhi/Vulkan SH3 renderer with GPU projection/radix sorting and a height-smoothed observed-camera path. Learned dense depth, collision geometry/uncertainty, true visibility compaction/LOD, and hierarchical per-pixel splat ordering remain later milestones.
+
+### 2026-08-11 Fidelity r6 video acceptance
+
+The clean `Yosemite Road - Fidelity r6` run used one 43.6-second 1920 x 1080 iPhone HLG/BT.2020 video on the RTX 4080 Laptop GPU. Explicit color-managed FFmpeg decode and the connectivity-aware sampler retained 373 lossless PNG frames. The required Fidelity pose stage compared incremental and calibrated global seeds under guided exhaustive matching, retriangulation, global bundle adjustment, and confidence filtering. The selected result registered 373/373 frames with 66,716 sparse points, 0.847 px p95 reprojection error, median track length 8, 1.10-degree maximum forward step, 0.277-degree maximum up step, and a 1.374 maximum camera-speed ratio.
+
+Optimization completed all 40,000 steps at source resolution after coarse warmup. It stabilized at 1,975,751 Gaussians and used 3.31 GiB peak allocated / 5.75 GiB peak reserved CUDA memory under the 11 GiB guard. Transactional cleanup removed 488,934 transparent, needle, or oversized candidates and exported 1,486,817 degree-three Gaussians in a 350,890,407-byte binary PLY.
+
+The protected pre-final-fit checkpoint scored 23.87 dB mean PSNR and 0.791 mean SSIM on 47 interleaved unseen frames. The final state scored 24.57 dB / 0.815 across all 373 cameras. After export, Servo reloaded the serialized PLY and rendered a 745-frame path containing every registered camera plus one interpolation between each pair. Exact-PLY registered views scored 25.25 dB / 0.846 on average, with p10 values of 22.22 dB / 0.806 and no consecutive degraded-view run. Alpha support stayed above 93.3% overall, 88.9% in the lower half, and 99.5% in the center. The mixed-depth proxy improved to p50 0.155 and p95 0.698, with 69.6% of supported samples above 10% relative spread. All configured gates passed and the world is labeled `preferred`.
+
+The native Vulkan traversal was tested from 0% to 100% of the smoothed observed path. It stayed upright and continuous with zero camera/sort revision lag, approximately 119.7--119.9 submit Hz, and 3.9--5.5 ms reported whole-frame GPU time on the RTX 4080 Laptop GPU. This is a meaningful correction of the earlier upside-down/stale-sort/approximately-5-FPS failure, not a claim of perfect geometry: close foliage and image borders remain smeared, the depth-spread proxy remains material, unseen surfaces are absent, and the world is not collision-certified.
+
+#### Measured r6 reconstruction cost
+
+The same 43.6-second source provides a concrete local baseline rather than an estimate:
+
+| Measure | Observed value |
+| --- | --- |
+| Selected evidence | 373 lossless 1909 x 1073 PNG frames from 1,307 decoded video frames |
+| Extract | approximately 3 minutes 45 seconds |
+| Camera/geometry solve | approximately 42 minutes 47 seconds for the expensive COLMAP solve; the first run then spent extra time in a recovered finalization path |
+| Gaussian optimization | 10,890.8 seconds (3 hours 1 minute 31 seconds), 40,000 steps, approximately 3.67 steps/second |
+| Clean end-to-end expectation | approximately 3 hours 50 minutes to 4 hours 10 minutes on this laptop for this clip, including final validation and publication; not real time |
+| Peak CUDA memory | 3.31 GiB allocated / 5.75 GiB reserved on the 12 GiB RTX 4080 Laptop GPU |
+| Recoverable job storage | 13.52 GiB across extraction, pose, checkpoints, audits, and the published bundle |
+| Published bundle | 2.39 GiB, including 1.74 GiB of per-camera final validation images |
+| Final appearance artifact | 1,486,817 SH3 Gaussians; 350,890,407-byte PLY (334.6 MiB) |
+| Checkpoint cost | three retained checkpoints at approximately 1.318 GiB each |
+
+The source-duration ratio is roughly 250x for optimization alone and roughly 320x--345x for a clean full build. Interactive Vulkan rendering is a separate workload: the accepted path ran near the 120 Hz display cadence with 3.9--5.5 ms whole-frame GPU time, but that rendering speed says nothing about reconstruction speed or geometric safety.
+
+### Road-world and autonomy safety contract
+
+The current r6 road is a **no-go for autonomous planning or collision queries**. It is useful for observed-view appearance review and research perception experiments, but it does not yet prove a solid road. The exact exported-PLY audit still reports a 0.698 p95 mixed-depth proxy and 69.6% of supported samples above 10% relative depth spread. Monocular scale is also unknown. A self-driving stack must therefore never infer free space merely because RGB looks plausible.
+
+Servo's road product must publish five separate, traceable layers instead of forcing one Gaussian field to do every job:
+
+1. **Static appearance:** the current SH3 Gaussian field for photorealistic viewing.
+2. **Static metric structure:** a confidence-weighted road/curb/sidewalk/sign surface using surfels plus a watertight or explicitly open mesh/TSDF derivative. The road model preserves measured grade and banking while rejecting unsupported floating layers.
+3. **Semantic topology:** vector lane boundaries and centerlines, curbs, road edges, crosswalks, stop lines, arrows, sign planes/posts, traffic lights, and their lane relationships. Export an OpenDRIVE/OpenLane-style graph; do not make a planner reverse-engineer topology from RGB.
+4. **Evidence and uncertainty:** observed/unobserved space, camera coverage, reprojection confidence, depth variance, semantic confidence, scale provenance, and generated-versus-observed origin at every usable region.
+5. **Dynamic actors:** time-indexed object tracks and per-object dynamic Gaussians only for vehicles, pedestrians, cyclists, foliage motion, and temporal appearance. The static road remains a stable 3D layer.
+
+Road signs require targeted evidence fusion, not whole-frame upscaling: detect and segment a sign across frames, select the sharpest calibrated observations, rectify its plane, fuse subpixel detail into a texture atlas, run sign classification/OCR, and require cross-view agreement. The original pixels, pose set, confidence, and any unresolved text remain attached. Generative completion may create a visual hypothesis, but it may not alter the safety map or invent a regulatory sign.
+
+Road surfaces, markings, and curbs require temporally consistent depth and normal priors aligned to SfM, semantic masks, robust piecewise-smooth surface fitting, and explicit vectorization. A metric anchor--stereo/LiDAR, calibrated camera height and odometry, GPS/IMU, or a weaker known dimension--is mandatory before centimetre claims. Planar/surface-aligned Gaussian research such as [2D Gaussian Splatting](https://surfsplatting.github.io/) and [PGSR](https://github.com/zju3dv/PGSR) demonstrates why unconstrained volumetric splats are poor geometry, but their reference implementations have research/noncommercial restrictions and are not copied into Servo. Permissive implementation references include [DN-Splatter](https://github.com/maturk/dn-splatter) for depth/normal supervision, [SplatAD](https://github.com/carlinds/splatad) for camera/LiDAR autonomous-driving rendering, and [Video Depth Anything](https://github.com/DepthAnything/Video-Depth-Anything) Small for Apache-2.0 temporally consistent relative-depth experiments.
+
+The map schema follows established driving representations: [OpenLane-V2](https://github.com/OpenDriveLab/OpenLane-V2/blob/master/docs/features.md) represents 3D lane centerlines, boundaries, pedestrian crossings, traffic elements, and topology; [ASAM OpenDRIVE 1.9.0](https://www.asam.net/standards/detail/opendrive/) carries lane geometry, road marks, signals, elevation, and superelevation. These are structural outputs, not visual filters.
+
+The Vulkan viewer now exposes four honest views from the existing artifact: **Appearance**, **relative inferred Depth**, **splat Structure**, and **opacity Coverage**. Depth is not labelled LiDAR and is not metres without scale. Structure is a splat-axis cue, not a certified normal. Coverage exposes weak evidence instead of hiding it. Future semantic, lane-topology, metric-surface, and sparse-SfM views must be backed by published artifacts. A temperature view is allowed only when a thermal sensor or calibrated thermal reconstruction exists; RGB cannot supply real temperature. A LiDAR view is allowed only for actual LiDAR returns; an RGB-derived point cloud must remain labelled inferred depth or SfM points.
+
+For this product, 4D Gaussian splatting is **not** a replacement for 3D. Keep the road, curb, buildings, poles, and signs in a stable 3D world; add 4D/per-object tracks for moving actors or illumination changes. Methods such as [AutoSplat](https://autosplat.github.io/) and [Street Gaussians](https://github.com/zju3dv/street_gaussians) likewise separate background structure from dynamic foreground. Putting the entire road into a deformable 4D field would make collision geometry time-dependent and harder to validate without fixing the underlying scale and surface problem.
+
+### Free-view repair and generated completion decision
+
+One forward-facing video can support a wider lateral viewing corridor than the exact camera line, but it cannot observe the back of a tree, the far side of a vehicle, a room behind a doorway, or road hidden by an occluder. Servo therefore treats three different failures separately:
+
+1. **Renderer instability:** the geometry exists, but global center-depth sorting makes splats pop or blend differently while the camera rotates. The production Vulkan path requires a clean-room hierarchical tile/per-pixel ordering implementation inspired by [StopThePop](https://github.com/r4dl/StopThePop), plus temporal popping tests. This changes compositing, not geometry.
+2. **Bad observed geometry:** floaters, sky splats, doubled road layers, giant needles, or weak depth make an observed region collapse off-axis. This is repaired with semantic masks, temporally consistent depth and normals, surface constraints, multi-view support pruning, and a short post-cleanup refinement. It must pass exact-PLY off-axis sweeps before publication.
+3. **Unobserved content:** no image contains the required surface. A generative model may supply a plausible visual hypothesis, but it cannot convert that hypothesis into measured road, collision, sign, or free-space truth.
+
+[NVIDIA ArtiFixer](https://research.nvidia.com/labs/sil/projects/artifixer/) is a strong candidate for the third case. It uses opacity-conditioned video diffusion to generate novel camera trajectories and can distill those pseudo-views back into a 3D representation. NVIDIA describes the result as *plausible* reconstruction in unobserved areas and notes remaining changes near unexplored peripheries. The official repository recommends Linux/CUDA Docker and states that even its 1.3B checkpoint fits comfortably on a single 80 GB GPU for all workflows. Servo will not install Docker, silently offload data, or pretend that this workflow fits the local 12 GB RTX 4080 Laptop. ArtiFixer is therefore an optional future cloud/large-GPU **visual completion** worker, never a dependency of the verified local geometry path.
+
+The next local reconstruction revision is sequenced as follows:
+
+| Priority | Production change | Required evidence |
+| --- | --- | --- |
+| P0 | Generate temporally consistent relative depth with Apache-2.0 Video Depth Anything Small in bounded windows; align it to reliable SfM tracks and reject low-confidence pixels | Lower road/center depth-spread tails without held-out RGB regression; no metric claim without a scale anchor |
+| P0 | Publish semantic masks for road, curb, lane marking, sign, sky, vegetation, dynamic actor, water, and reflection; intersect them with the existing epipolar static-confidence masks | Per-frame mask hashes, temporal consistency metrics, and manual correction support |
+| P0 | Fit a robust piecewise-smooth road surface that preserves sustained grade/bank; supervise road splats toward the surface and reject disconnected road components above or below it | Road height residual, slope/bank continuity, lane-width consistency, and zero unsupported floating-road components |
+| P0 | Remove sky from finite collision/road geometry and render it as a separate infinite environment layer; do not seed or retain finite sky Gaussians | Finite sky-splat count is zero in the structural artifact; horizon and tree-boundary coverage are reviewed separately |
+| P0 | Fuse signs and road markings across sharp calibrated frames using planar rectification and super-resolution from real observations | Cross-view OCR/class agreement and a provenance-linked texture atlas; generated text never enters the map |
+| P1 | Add confidence-weighted depth/normal supervision and surface-aligned surfels/mesh extraction following the permissive ideas demonstrated by [DN-Splatter](https://github.com/maturk/dn-splatter) | Mesh/TSDF consistency, uncertainty, and held-out reprojection tests independent of the appearance splat |
+| P1 | Replace global splat-center ordering with Vulkan tile binning and hierarchical per-pixel ordering; add visibility compaction and LOD after parity | Continuous-rotation popping metric, gsplat/Vulkan golden renders, visible-count and GPU-time measurements |
+| P2 | Generate lateral/interior pseudo-views with ArtiFixer-class models on an explicitly selected large-GPU worker and distill a separate visual layer | Every generated texel/surface is tagged `generated`; observed references remain anchors; no generated layer is accepted by collision or planning APIs |
+
+“Never broken from every camera” is not a valid acceptance statement for finite, one-sided evidence. The production replacement is measurable: a declared camera envelope, semantic per-region tail gates, off-axis/interpolated trajectories, temporal popping scores, a generated-content mask, and an explicit no-go volume. A robot may leave the original camera line only where the structural layer and its uncertainty gate pass; a visually filled region alone never grants permission.
 
 ### 2026-08-10 Fidelity acceptance
 

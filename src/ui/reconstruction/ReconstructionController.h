@@ -86,6 +86,7 @@ signals:
     void dependenciesChanged();
     void jobChanged();
     void recentLogChanged();
+    void worldPublished(const QString &worldPath);
 
 private:
     friend class ReconstructionControllerTests;

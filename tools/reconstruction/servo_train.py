@@ -32,7 +32,7 @@ from collections.abc import Mapping
 from typing import Any, Iterator, Sequence
 
 
-TRAINER_VERSION = "0.3.0"
+TRAINER_VERSION = "0.6.0"
 CONFIG_SCHEMA = "servo.gsplat-training/v2"
 METRICS_SCHEMA = "servo.gsplat-metrics/v2"
 CHECKPOINT_SCHEMA = "servo.gsplat-checkpoint/v2"
@@ -43,6 +43,10 @@ OPACITY_RESET_SEMANTICS = "servo-gsplat-1.5.3-fix-v2"
 
 class TrainingError(RuntimeError):
     pass
+
+
+class TrainingCancelled(TrainingError):
+    """A cooperative cancellation after the last verified checkpoint."""
 
 
 def canonical_json(value: Any) -> bytes:
@@ -117,6 +121,8 @@ class ImageRecord:
     calibration: Any
     width: int
     height: int
+    sparse_pixels: Any
+    sparse_depths: Any
 
 
 class ColmapDataset:
@@ -126,6 +132,7 @@ class ColmapDataset:
         factor: int,
         cache_size: int = 8,
         max_point_error: float = 3.0,
+        require_static_masks: bool = False,
     ) -> None:
         import numpy as np
         import pycolmap
@@ -133,6 +140,7 @@ class ColmapDataset:
         self.root = root.resolve()
         self.factor = max(1, int(factor))
         self.image_root = self.root / "images"
+        self.mask_root = self.root / "masks"
         sparse_candidates = [self.root / "sparse", self.root / "sparse" / "0"]
         model_root = next(
             (candidate for candidate in sparse_candidates if candidate.is_dir() and any(candidate.glob("cameras.*"))),
@@ -141,7 +149,9 @@ class ColmapDataset:
         if model_root is None:
             raise TrainingError(f"No COLMAP model was found beneath {self.root}.")
         reconstruction = pycolmap.Reconstruction(str(model_root))
-        points = list(reconstruction.points3D.values())
+        point_items = list(reconstruction.points3D.items())
+        point_ids = np.asarray([int(point_id) for point_id, _ in point_items], dtype=np.int64)
+        points = [point for _, point in point_items]
         if len(points) < 100:
             raise TrainingError("The sparse reconstruction has too few 3D points to initialize Gaussians.")
         xyz = np.asarray([point.xyz for point in points], dtype=np.float32)
@@ -158,11 +168,13 @@ class ColmapDataset:
         rejected_confidence = int(len(xyz) - int(confidence.sum()))
         xyz = xyz[confidence]
         rgb = rgb[confidence]
+        point_ids = point_ids[confidence]
         if len(xyz) > 500_000:
             generator = np.random.default_rng(42)
             indices = np.sort(generator.choice(len(xyz), 500_000, replace=False))
             xyz = xyz[indices]
             rgb = rgb[indices]
+            point_ids = point_ids[indices]
 
         raw_records: list[tuple[str, Path, int, str, Any, Any, int, int]] = []
         camera_centers = []
@@ -212,6 +224,7 @@ class ColmapDataset:
         rejected_bounds = int(len(xyz) - int(within_scene.sum()))
         xyz = xyz[within_scene]
         rgb = rgb[within_scene]
+        point_ids = point_ids[within_scene]
         if len(xyz) < 100:
             raise TrainingError(
                 "Fewer than 100 reliable COLMAP points remain after confidence and scene-bound filtering."
@@ -260,6 +273,12 @@ class ColmapDataset:
         self.points = xyz.astype(np.float32, copy=False)
         self.colors = (rgb / 255.0).clip(0.0, 1.0).astype(np.float32, copy=False)
 
+        reliable_point_ids = {int(point_id) for point_id in point_ids.tolist()}
+        images_by_name = {
+            image.name: image for image in reconstruction.images.values() if image.has_pose
+        }
+        sparse_observation_counts: list[int] = []
+
         self.records: list[ImageRecord] = []
         for (
             name,
@@ -278,6 +297,45 @@ class ColmapDataset:
             scaled_height = max(1, round(height / self.factor))
             calibration[0, :] *= scaled_width / width
             calibration[1, :] *= scaled_height / height
+            sparse_pixels: list[list[float]] = []
+            sparse_depths: list[float] = []
+            source_image = images_by_name.get(name)
+            if source_image is not None:
+                camera_from_world = np.asarray(
+                    source_image.cam_from_world().matrix(), dtype=np.float64
+                )
+                for observation in source_image.points2D:
+                    if not observation.has_point3D():
+                        continue
+                    point_id = int(observation.point3D_id)
+                    if point_id not in reliable_point_ids:
+                        continue
+                    point = reconstruction.points3D[point_id]
+                    point_camera = (
+                        camera_from_world[:, :3]
+                        @ np.asarray(point.xyz, dtype=np.float64)
+                        + camera_from_world[:, 3]
+                    )
+                    xy = np.asarray(observation.xy, dtype=np.float64)
+                    depth = float(point_camera[2] * scale)
+                    if (
+                        xy.shape == (2,)
+                        and np.isfinite(xy).all()
+                        and math.isfinite(depth)
+                        and depth > 1e-5
+                        and 0.0 <= xy[0] < width
+                        and 0.0 <= xy[1] < height
+                    ):
+                        sparse_pixels.append(
+                            [
+                                float(xy[0] * scaled_width / width),
+                                float(xy[1] * scaled_height / height),
+                            ]
+                        )
+                        sparse_depths.append(depth)
+            sparse_pixels_array = np.asarray(sparse_pixels, dtype=np.float32).reshape(-1, 2)
+            sparse_depths_array = np.asarray(sparse_depths, dtype=np.float32)
+            sparse_observation_counts.append(len(sparse_depths_array))
             self.records.append(
                 ImageRecord(
                     name=name,
@@ -288,18 +346,33 @@ class ColmapDataset:
                     calibration=calibration,
                     width=scaled_width,
                     height=scaled_height,
+                    sparse_pixels=sparse_pixels_array,
+                    sparse_depths=sparse_depths_array,
                 )
             )
+        self.initialization_stats["sparseDepthObservations"] = int(
+            sum(sparse_observation_counts)
+        )
+        self.initialization_stats["medianSparseDepthObservationsPerImage"] = float(
+            np.median(sparse_observation_counts)
+        )
         grouped: dict[str, list[int]] = collections.defaultdict(list)
         for index, record in enumerate(self.records):
             grouped[Path(record.name).parent.as_posix()].append(index)
         self.validation_indices: set[int] = set()
+        self.path_stress_indices: set[int] = set()
         static_indices: list[int] = []
         for group, indices in sorted(grouped.items()):
             if Path(group).name.startswith("video-") and len(indices) >= 5:
-                count = max(1, min(len(indices) - 2, round(len(indices) * 0.10)))
-                start = min(len(indices) - count - 1, max(1, round(len(indices) * 0.70)))
-                self.validation_indices.update(indices[start : start + count])
+                # The hard novel-view gate is distributed over the whole
+                # capture, so every withheld view remains bracketed by observed
+                # neighbors.  A contiguous missing-corridor test requires a
+                # separate training run; excluding that block from this same
+                # state would contaminate the interleaved metric and needlessly
+                # remove capture-path geometry from the deliverable.
+                self.validation_indices.update(
+                    index for ordinal, index in enumerate(indices) if ordinal % 8 == 4
+                )
             else:
                 static_indices.extend(indices)
         self.validation_indices.update(
@@ -307,17 +380,36 @@ class ColmapDataset:
         )
         if not self.validation_indices:
             self.validation_indices = {len(self.records) - 1}
-        self.validation_policy = "temporal-blocks-per-video/isolated-stratified-stills-v1"
+        self.validation_policy = (
+            "interleaved-every-8th-video-and-stills/final-all-camera-audit-v3"
+        )
+        excluded_indices = self.validation_indices
         self.train_indices = [
-            index for index in range(len(self.records)) if index not in self.validation_indices
+            index for index in range(len(self.records)) if index not in excluded_indices
         ]
+        if not self.train_indices:
+            raise TrainingError("The validation policy left no images for training.")
+        missing_masks = [
+            record.name
+            for record in self.records
+            if not (self.mask_root / record.name).is_file()
+        ]
+        if require_static_masks and missing_masks:
+            raise TrainingError(
+                "Static-confidence masks are missing for registered images: "
+                + ", ".join(missing_masks[:5])
+            )
+        self.static_confidence_masks = not missing_masks
+        self.initialization_stats["staticConfidenceMasks"] = (
+            len(self.records) - len(missing_masks)
+        )
         self._cache: collections.OrderedDict[int, Any] = collections.OrderedDict()
         self._cache_size = max(1, cache_size)
 
     def __len__(self) -> int:
         return len(self.records)
 
-    def load(self, index: int) -> tuple[Any, Any, Any]:
+    def load(self, index: int) -> tuple[Any, Any, Any, Any]:
         import numpy as np
         import torch
         from PIL import Image, ImageOps
@@ -334,15 +426,28 @@ class ColmapDataset:
                     )
                     image = image.resize(target, Image.Resampling.LANCZOS)
                 pixels = np.asarray(image, dtype=np.uint8).copy()
-            cached = torch.from_numpy(pixels)
+            mask_path = self.mask_root / record.name
+            if mask_path.is_file():
+                with Image.open(mask_path) as mask_image:
+                    mask_image = mask_image.convert("L")
+                    if mask_image.size != (pixels.shape[1], pixels.shape[0]):
+                        mask_image = mask_image.resize(
+                            (pixels.shape[1], pixels.shape[0]),
+                            Image.Resampling.BILINEAR,
+                        )
+                    confidence = np.asarray(mask_image, dtype=np.uint8).copy()
+            else:
+                confidence = np.full(pixels.shape[:2], 255, dtype=np.uint8)
+            cached = (torch.from_numpy(pixels), torch.from_numpy(confidence))
         self._cache[index] = cached
         while len(self._cache) > self._cache_size:
             self._cache.popitem(last=False)
         record = self.records[index]
         return (
-            cached,
+            cached[0],
             torch.from_numpy(record.camera_to_world.copy()),
             torch.from_numpy(record.calibration.copy()),
+            cached[1],
         )
 
 
@@ -565,7 +670,7 @@ def gaussian_window(channels: int, device: Any, dtype: Any, size: int = 11, sigm
     return window
 
 
-def ssim(prediction: Any, target: Any) -> Any:
+def ssim(prediction: Any, target: Any, weight: Any | None = None) -> Any:
     import torch.nn.functional as functional
 
     channels = prediction.shape[1]
@@ -584,7 +689,14 @@ def ssim(prediction: Any, target: Any) -> Any:
     score = ((2 * mu_both + c1) * (2 * sigma_both + c2)) / (
         (mu_prediction_sq + mu_target_sq + c1) * (sigma_prediction + sigma_target + c2)
     )
-    return score.mean()
+    if weight is None:
+        return score.mean()
+    if weight.ndim != 4 or weight.shape[1] != 1:
+        raise TrainingError("SSIM confidence must have shape [batch, 1, height, width].")
+    if weight.shape[0] != score.shape[0] or weight.shape[2:] != score.shape[2:]:
+        raise TrainingError("SSIM confidence dimensions do not match the image.")
+    denominator = weight.sum().clamp_min(1e-6) * score.shape[1]
+    return (score * weight).sum() / denominator
 
 
 def optimizer_state_to_device(optimizer: Any, device: str) -> None:
@@ -759,7 +871,24 @@ def save_checkpoint(
         },
     )
     checkpoints = sorted(checkpoint_dir.glob("checkpoint-*.pt"))
-    for stale in checkpoints[:-2]:
+    protected_names: set[str] = set()
+    heldout_metrics_path = checkpoint_dir.parent / "heldout-metrics.json"
+    if heldout_metrics_path.is_file():
+        try:
+            heldout_metrics = json.loads(heldout_metrics_path.read_text(encoding="utf-8"))
+            heldout_checkpoint = heldout_metrics.get("checkpoint", {})
+            protected_name = heldout_checkpoint.get("path")
+            if isinstance(protected_name, str) and protected_name:
+                protected_names.add(protected_name)
+        except (OSError, json.JSONDecodeError):
+            # A malformed held-out receipt is rejected by the trainer/worker.
+            # Do not let checkpoint cleanup turn that recoverable validation
+            # error into silent loss of the evaluated state.
+            protected_names.update(path.name for path in checkpoints)
+    newest_names = {path.name for path in checkpoints[-2:]}
+    for stale in checkpoints:
+        if stale.name in newest_names or stale.name in protected_names:
+            continue
         stale.unlink()
         with contextlib.suppress(FileNotFoundError):
             stale.with_suffix(".json").unlink()
@@ -925,16 +1054,22 @@ def rasterize(
     calibration: Any,
     width: int,
     height: int,
-    sh_degree: int,
+    sh_degree: int | None,
     packed: bool,
     absgrad: bool,
     rasterization_mode: str,
     eps2d: float,
+    render_mode: str = "RGB",
+    colors_override: Any | None = None,
 ) -> tuple[Any, Any, dict[str, Any]]:
     import torch
     from gsplat.rendering import rasterization
 
-    colors = torch.cat([parameters["sh0"], parameters["shN"]], dim=1)
+    colors = (
+        colors_override
+        if colors_override is not None
+        else torch.cat([parameters["sh0"], parameters["shN"]], dim=1)
+    )
     rendered, alpha, information = rasterization(
         means=parameters["means"],
         quats=parameters["quats"],
@@ -951,12 +1086,122 @@ def rasterize(
         rasterize_mode=rasterization_mode,
         eps2d=eps2d,
         camera_model="pinhole",
-        render_mode="RGB",
+        render_mode=render_mode,
         sh_degree=sh_degree,
         near_plane=0.01,
         far_plane=1e4,
     )
     return rendered, alpha, information
+
+
+def sparse_depth_consistency_loss(
+    expected_depth: Any,
+    alpha: Any,
+    record: ImageRecord,
+    resolution_factor: int,
+    maximum_observations: int = 4096,
+) -> tuple[Any, int]:
+    """Anchor rendered depth to reliable COLMAP tracks at observed pixels.
+
+    This is a geometric constraint derived from the same multi-view solve, not
+    a learned monocular guess. Relative Huber residuals keep near and far
+    points comparable while alpha gating avoids supervising unsupported pixels.
+    """
+    import torch
+    import torch.nn.functional as functional
+
+    zero = expected_depth.sum() * 0.0
+    count = int(len(record.sparse_depths))
+    if count < 8:
+        return zero, 0
+    if count > maximum_observations:
+        selected = torch.linspace(
+            0, count - 1, maximum_observations, device=expected_depth.device
+        ).round().long()
+    else:
+        selected = None
+    pixels = torch.from_numpy(record.sparse_pixels).to(
+        device=expected_depth.device, dtype=torch.float32
+    )
+    targets = torch.from_numpy(record.sparse_depths).to(
+        device=expected_depth.device, dtype=torch.float32
+    )
+    if selected is not None:
+        pixels = pixels[selected]
+        targets = targets[selected]
+    factor = max(1, int(resolution_factor))
+    pixels = pixels / float(factor)
+    height, width = expected_depth.shape[1:3]
+    finite = (
+        torch.isfinite(pixels).all(dim=1)
+        & torch.isfinite(targets)
+        & (targets > 1e-5)
+        & (pixels[:, 0] >= 0.0)
+        & (pixels[:, 0] <= width - 1)
+        & (pixels[:, 1] >= 0.0)
+        & (pixels[:, 1] <= height - 1)
+    )
+    if int(finite.sum().item()) < 8:
+        return zero, 0
+    pixels = pixels[finite]
+    targets = targets[finite]
+    grid_x = pixels[:, 0] * (2.0 / max(width - 1, 1)) - 1.0
+    grid_y = pixels[:, 1] * (2.0 / max(height - 1, 1)) - 1.0
+    grid = torch.stack([grid_x, grid_y], dim=-1).view(1, 1, -1, 2)
+    predicted = functional.grid_sample(
+        expected_depth.permute(0, 3, 1, 2),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    ).reshape(-1)
+    support = functional.grid_sample(
+        alpha.permute(0, 3, 1, 2),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    ).reshape(-1)
+    supported = (
+        torch.isfinite(predicted)
+        & (predicted > 1e-5)
+        & torch.isfinite(support)
+        & (support >= 0.25)
+    )
+    supported_count = int(supported.sum().item())
+    if supported_count < 8:
+        return zero, 0
+    relative = (predicted[supported] - targets[supported]) / targets[
+        supported
+    ].clamp_min(1e-5)
+    return (
+        functional.smooth_l1_loss(
+            relative,
+            torch.zeros_like(relative),
+            beta=0.05,
+        ),
+        supported_count,
+    )
+
+
+def depth_layer_variance_loss(expected_depth: Any, second_moment: Any, alpha: Any) -> Any:
+    """Penalize mixed front/back Gaussian layers along supported camera rays."""
+    import torch
+
+    depth = expected_depth[..., 0]
+    support = alpha[..., 0]
+    moment2 = second_moment[..., 0] / support.clamp_min(1e-6)
+    relative_variance = torch.clamp(moment2 - depth.square(), min=0.0) \
+                        / depth.square().clamp_min(1e-6)
+    valid = (
+        torch.isfinite(relative_variance)
+        & torch.isfinite(depth)
+        & (depth > 1e-4)
+        & (support >= 0.5)
+    )
+    if not bool(valid.any()):
+        return expected_depth.sum() * 0.0
+    return relative_variance[valid].clamp(max=4.0).mean()
 
 
 def validate_parameters(parameters: Any) -> None:
@@ -1050,6 +1295,9 @@ def evaluate(
     rasterization_mode: str,
     eps2d: float,
     output: Path,
+    indices: Sequence[int] | None = None,
+    cancel_path: Path | None = None,
+    phase: str = "validation",
 ) -> dict[str, Any]:
     import numpy as np
     import torch
@@ -1058,14 +1306,28 @@ def evaluate(
     output.mkdir(parents=True, exist_ok=True)
     psnr_values: list[float] = []
     ssim_values: list[float] = []
+    ambiguity_samples: list[Any] = []
+    evaluation_indices = sorted(
+        dataset.validation_indices if indices is None else set(indices)
+    )
     with evaluation_mode():
-        for ordinal, index in enumerate(sorted(dataset.validation_indices)):
-            pixels_cpu, camera_cpu, calibration_cpu = dataset.load(index)
+        for ordinal, index in enumerate(evaluation_indices):
+            if cancel_path is not None and cancel_path.exists():
+                raise TrainingCancelled(
+                    f"Reconstruction was cancelled during {phase}."
+                )
+            emit(
+                "evaluation_progress",
+                phase=phase,
+                completed=ordinal,
+                total=len(evaluation_indices),
+            )
+            pixels_cpu, camera_cpu, calibration_cpu, _ = dataset.load(index)
             pixels = pixels_cpu.to(device=device, dtype=torch.float32).unsqueeze(0) / 255.0
             camera = camera_cpu.to(device).unsqueeze(0)
             calibration = calibration_cpu.to(device).unsqueeze(0)
             height, width = pixels.shape[1:3]
-            rendered, _, _ = rasterize(
+            rendered_depth, alpha, _ = rasterize(
                 parameters,
                 camera,
                 calibration,
@@ -1076,21 +1338,70 @@ def evaluate(
                 False,
                 rasterization_mode,
                 eps2d,
+                render_mode="RGB+ED",
             )
-            rendered = rendered[..., :3].clamp(0.0, 1.0)
+            rendered = rendered_depth[..., :3].clamp(0.0, 1.0)
             mse = torch.mean((rendered - pixels).square()).clamp_min(1e-12)
             psnr_values.append(float((-10.0 * torch.log10(mse)).item()))
             ssim_values.append(float(ssim(rendered.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)).item()))
             comparison = torch.cat([pixels, rendered], dim=2)[0].mul(255).byte().cpu().numpy()
             Image.fromarray(np.asarray(comparison)).save(output / f"compare-{ordinal:03d}.png")
+            view = torch.linalg.inv(camera)
+            camera_z = (
+                parameters["means"] @ view[0, :3, :3].transpose(0, 1)
+                + view[0, :3, 3]
+            )[:, 2]
+            second_moment, _, _ = rasterize(
+                parameters,
+                camera,
+                calibration,
+                width,
+                height,
+                None,
+                packed,
+                False,
+                rasterization_mode,
+                eps2d,
+                colors_override=camera_z.square().unsqueeze(1),
+            )
+            depth = rendered_depth[..., 3]
+            alpha_value = alpha[..., 0].clamp_min(1e-6)
+            moment2 = second_moment[..., 0] / alpha_value
+            relative_std = torch.sqrt(torch.clamp(moment2 - depth.square(), min=0.0)) \
+                           / depth.clamp_min(1e-4)
+            valid = (
+                torch.isfinite(relative_std)
+                & torch.isfinite(depth)
+                & (depth > 0.0)
+                & (alpha_value >= 0.5)
+            )
+            sampled = relative_std[:, ::4, ::4][valid[:, ::4, ::4]]
+            if sampled.numel() > 0:
+                ambiguity_samples.append(sampled.float().cpu().numpy())
+    emit(
+        "evaluation_progress",
+        phase=phase,
+        completed=len(evaluation_indices),
+        total=len(evaluation_indices),
+    )
     if not psnr_values:
-        raise TrainingError("No held-out frames were available for evaluation.")
+        raise TrainingError("No frames were available for evaluation.")
+    if not ambiguity_samples:
+        raise TrainingError("Held-out renders contain no supported depth samples.")
+    ambiguity = np.concatenate(ambiguity_samples)
     return {
         "validationImages": len(psnr_values),
         "psnrMean": float(np.mean(psnr_values)),
         "psnrMedian": float(np.median(psnr_values)),
         "ssimMean": float(np.mean(ssim_values)),
         "ssimMedian": float(np.median(ssim_values)),
+        "depthAmbiguityRelativeStdP50": float(np.percentile(ambiguity, 50)),
+        "depthAmbiguityRelativeStdP95": float(np.percentile(ambiguity, 95)),
+        "depthAmbiguityFractionAbove10Percent": float(np.mean(ambiguity > 0.10)),
+        "depthAmbiguityMeaning": (
+            "Relative standard deviation of composited camera-space depth; "
+            "this detects mixed Gaussian layers and is not metric depth error."
+        ),
     }
 
 
@@ -1104,6 +1415,10 @@ def export_cameras(dataset: ColmapDataset, path: Path) -> None:
             "validationImages": [
                 dataset.records[index].name
                 for index in sorted(dataset.validation_indices)
+            ],
+            "pathStressImages": [
+                dataset.records[index].name
+                for index in sorted(dataset.path_stress_indices)
             ],
             "cameras": [
                 {
@@ -1146,7 +1461,8 @@ def export_appearance(dataset: ColmapDataset, appearance: Any | None, path: Path
             "views": [
                 {
                     "image": record.name,
-                    "trained": index in dataset.train_indices,
+                    "trained": True,
+                    "trainingPhase": "final-fit-all-frames",
                     "logGain": log_gains[index].tolist(),
                     "bias": biases[index].tolist(),
                 }
@@ -1272,6 +1588,7 @@ def train(config_path: Path) -> int:
         Path(config["data"]),
         int(config["dataFactor"]),
         max_point_error=float(config.get("maxReprojectionError", 3.0)),
+        require_static_masks=config.get("staticConfidenceMasks") is True,
     )
     device = "cuda:0"
     sh_degree = int(config.get("shDegree", 3))
@@ -1284,12 +1601,44 @@ def train(config_path: Path) -> int:
     grow_grad2d = float(config.get("growGrad2d", 0.0008 if absgrad else 0.0002))
     coarse_factor = int(config.get("coarseFactor", 1))
     coarse_steps = int(config.get("coarseSteps", 0))
+    final_fit_steps = int(config.get("finalFitSteps", 0))
+    target_gaussians = int(config.get("targetGaussians", 0))
     max_gaussians = int(config.get("maxGaussians", 0))
+    quality_gate = config.get("qualityGate", {})
+    minimum_psnr = float(quality_gate.get("minimumPsnr", 18.0))
+    minimum_ssim = float(quality_gate.get("minimumSsim", 0.60))
+    maximum_depth_ambiguity = float(
+        quality_gate.get("maximumDepthAmbiguityP50", 0.25)
+    )
+    maximum_depth_ambiguity_p95 = float(
+        quality_gate.get("maximumDepthAmbiguityP95", 1.0)
+    )
+    maximum_depth_ambiguity_fraction = float(
+        quality_gate.get("maximumDepthAmbiguityFractionAbove10Percent", 0.75)
+    )
+    minimum_final_artifact_psnr = float(
+        quality_gate.get("minimumFinalArtifactPsnr", 16.0)
+    )
+    minimum_final_artifact_ssim = float(
+        quality_gate.get("minimumFinalArtifactSsim", 0.50)
+    )
+    maximum_final_psnr_regression = float(
+        quality_gate.get("maximumFinalPsnrRegression", 0.5)
+    )
+    maximum_final_ssim_regression = float(
+        quality_gate.get("maximumFinalSsimRegression", 0.03)
+    )
     appearance_enabled = config.get("appearanceCompensation") is True
     appearance_learning_rate = float(config.get("appearanceLearningRate", 1e-3))
     appearance_regularization_weight = float(
         config.get("appearanceRegularization", 1e-4)
     )
+    sparse_depth_weight = float(config.get("sparseDepthWeight", 0.0))
+    depth_layer_variance_weight = float(
+        config.get("depthLayerVarianceWeight", 0.0)
+    )
+    depth_layer_variance_every = int(config.get("depthLayerVarianceEvery", 8))
+    depth_layer_variance_start = int(config.get("depthLayerVarianceStart", 1_000))
     if max_steps <= 0 or checkpoint_every <= 0:
         raise TrainingError("Training and checkpoint step counts must be positive.")
     if rasterization_mode not in {"classic", "antialiased"}:
@@ -1300,8 +1649,35 @@ def train(config_path: Path) -> int:
         raise TrainingError("growGrad2d must be a positive finite value.")
     if coarse_factor < 1 or coarse_steps < 0 or coarse_steps >= max_steps:
         raise TrainingError("The coarse-to-fine resolution schedule is invalid.")
+    if final_fit_steps <= 0 or final_fit_steps >= max_steps // 2:
+        raise TrainingError("finalFitSteps must reserve a bounded finishing phase.")
+    if target_gaussians < 100_000 or target_gaussians * 2 > max_gaussians:
+        raise TrainingError(
+            "targetGaussians must be meaningful and no greater than half the allocation ceiling."
+        )
     if max_gaussians < 100_000:
         raise TrainingError("maxGaussians must reserve a meaningful bounded scene budget.")
+    if (
+        not math.isfinite(minimum_psnr)
+        or not math.isfinite(minimum_ssim)
+        or not math.isfinite(maximum_depth_ambiguity)
+        or not math.isfinite(maximum_depth_ambiguity_p95)
+        or not math.isfinite(maximum_depth_ambiguity_fraction)
+        or not math.isfinite(minimum_final_artifact_psnr)
+        or not math.isfinite(minimum_final_artifact_ssim)
+        or not math.isfinite(maximum_final_psnr_regression)
+        or not math.isfinite(maximum_final_ssim_regression)
+        or minimum_psnr <= 0.0
+        or not 0.0 < minimum_ssim <= 1.0
+        or maximum_depth_ambiguity <= 0.0
+        or maximum_depth_ambiguity_p95 <= 0.0
+        or not 0.0 <= maximum_depth_ambiguity_fraction <= 1.0
+        or minimum_final_artifact_psnr <= 0.0
+        or not 0.0 < minimum_final_artifact_ssim <= 1.0
+        or maximum_final_psnr_regression < 0.0
+        or maximum_final_ssim_regression < 0.0
+    ):
+        raise TrainingError("The configured quality gate is invalid.")
     if (
         not math.isfinite(appearance_learning_rate)
         or appearance_learning_rate <= 0.0
@@ -1309,6 +1685,25 @@ def train(config_path: Path) -> int:
         or appearance_regularization_weight < 0.0
     ):
         raise TrainingError("Appearance compensation settings are invalid.")
+    if (
+        not math.isfinite(sparse_depth_weight)
+        or sparse_depth_weight < 0.0
+        or not math.isfinite(depth_layer_variance_weight)
+        or depth_layer_variance_weight < 0.0
+        or depth_layer_variance_every <= 0
+        or depth_layer_variance_start < 0
+        or depth_layer_variance_start >= max_steps
+    ):
+        raise TrainingError("Geometry regularization settings are invalid.")
+    if (
+        sparse_depth_weight > 0.0
+        and int(dataset.initialization_stats.get("sparseDepthObservations", 0))
+        < len(dataset) * 8
+    ):
+        raise TrainingError(
+            "The COLMAP model has too few reliable image-space depth anchors "
+            "for geometry-regularized Gaussian fitting."
+        )
     strategy = DefaultStrategy(
         prune_opa=0.005,
         grow_grad2d=grow_grad2d,
@@ -1352,6 +1747,10 @@ def train(config_path: Path) -> int:
         densification_limited = False
         densification_limit_reason: str | None = None
         recent_loss: float | None = None
+        sparse_depth_samples = 0
+        depth_layer_variance_steps = 0
+        recent_sparse_depth_loss = 0.0
+        recent_depth_layer_variance_loss = 0.0
         elapsed_before = 0.0
         peak_allocated_before = 0.0
         peak_reserved_before = 0.0
@@ -1408,6 +1807,20 @@ def train(config_path: Path) -> int:
             and math.isfinite(float(recent_loss_value))
             else None
         )
+        sparse_depth_samples = int(
+            checkpoint.get("policyState", {}).get("sparseDepthSamples", 0)
+        )
+        depth_layer_variance_steps = int(
+            checkpoint.get("policyState", {}).get("depthLayerVarianceSteps", 0)
+        )
+        recent_sparse_depth_loss = float(
+            checkpoint.get("policyState", {}).get("recentSparseDepthLoss", 0.0)
+        )
+        recent_depth_layer_variance_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentDepthLayerVarianceLoss", 0.0
+            )
+        )
         elapsed_before = float(
             checkpoint.get("policyState", {}).get("elapsedSeconds", 0.0)
         )
@@ -1423,6 +1836,34 @@ def train(config_path: Path) -> int:
         emit("training_resumed", step=start_step, gaussians=len(parameters["means"]))
     strategy.check_sanity(parameters, optimizers)
     recovery_policy_path = checkpoint_dir / "recovery-policy.json"
+    heldout_metrics_path = output / "heldout-metrics.json"
+    heldout_evaluation_step = max_steps - final_fit_steps
+    all_indices = list(range(len(dataset)))
+    if final_fit_steps < len(all_indices):
+        raise TrainingError(
+            "finalFitSteps must visit every camera at least once."
+        )
+    final_fit_seen: set[int] = set()
+    final_fit_epoch = -1
+    final_fit_order: list[int] = []
+
+    def final_fit_index(offset: int) -> int:
+        nonlocal final_fit_epoch, final_fit_order
+        epoch = offset // len(all_indices)
+        if epoch != final_fit_epoch:
+            final_fit_epoch = epoch
+            final_fit_order = all_indices.copy()
+            random.Random(
+                f"{config['configurationHash']}:final-fit:{epoch}"
+            ).shuffle(final_fit_order)
+        return final_fit_order[offset % len(all_indices)]
+
+    completed_final_fit = max(
+        0,
+        min(final_fit_steps, start_step - heldout_evaluation_step),
+    )
+    for completed_offset in range(completed_final_fit):
+        final_fit_seen.add(final_fit_index(completed_offset))
     if recovery_policy_path.is_file():
         with recovery_policy_path.open("r", encoding="utf-8") as stream:
             recovery_policy = json.load(stream)
@@ -1464,6 +1905,10 @@ def train(config_path: Path) -> int:
             "densificationLimited": densification_limited,
             "densificationLimitReason": densification_limit_reason,
             "recentLoss": recent_loss,
+            "sparseDepthSamples": sparse_depth_samples,
+            "depthLayerVarianceSteps": depth_layer_variance_steps,
+            "recentSparseDepthLoss": recent_sparse_depth_loss,
+            "recentDepthLayerVarianceLoss": recent_depth_layer_variance_loss,
             "elapsedSeconds": elapsed_before + time.monotonic() - started,
             "peakVramGiB": max(
                 peak_allocated_before,
@@ -1474,6 +1919,51 @@ def train(config_path: Path) -> int:
                 torch.cuda.max_memory_reserved() / 1024**3,
             ),
         }
+
+    def require_heldout_snapshot(value: Any) -> dict[str, Any]:
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != "servo.gsplat-heldout-evaluation/v1"
+            or value.get("jobId") != config.get("jobId")
+            or value.get("profile") != config.get("profile")
+            or value.get("pipelineRevision") != config.get("pipelineRevision")
+            or value.get("configurationHash") != config["configurationHash"]
+            or value.get("evaluatedAtStep") != heldout_evaluation_step
+        ):
+            raise TrainingError("The pre-fit held-out evaluation is incompatible.")
+        checkpoint_reference = value.get("checkpoint")
+        if not isinstance(checkpoint_reference, dict):
+            raise TrainingError("The held-out evaluation has no checkpoint receipt.")
+        checkpoint_name = checkpoint_reference.get("path")
+        if (
+            not isinstance(checkpoint_name, str)
+            or Path(checkpoint_name).name != checkpoint_name
+            or int(checkpoint_reference.get("step", -2))
+            != heldout_evaluation_step - 1
+            or checkpoint_reference.get("configurationHash")
+            != config["configurationHash"]
+        ):
+            raise TrainingError("The held-out checkpoint receipt is incompatible.")
+        checkpoint_path = checkpoint_dir / checkpoint_name
+        if not checkpoint_path.is_file():
+            raise TrainingError("The exact held-out checkpoint has been lost.")
+        expected_bytes = int(checkpoint_reference.get("bytes", -1))
+        expected_digest = checkpoint_reference.get("sha256")
+        if (
+            checkpoint_path.stat().st_size != expected_bytes
+            or not isinstance(expected_digest, str)
+            or sha256_file(checkpoint_path) != expected_digest
+        ):
+            raise TrainingError("The exact held-out checkpoint failed verification.")
+        return value
+
+    if start_step > heldout_evaluation_step:
+        if not heldout_metrics_path.is_file():
+            raise TrainingError(
+                "The final-fit checkpoint is missing its pre-fit held-out evaluation."
+            )
+        with heldout_metrics_path.open("r", encoding="utf-8") as stream:
+            heldout_snapshot = require_heldout_snapshot(json.load(stream))
 
     for step in range(start_step, max_steps):
         if cancel_path.exists():
@@ -1494,9 +1984,115 @@ def train(config_path: Path) -> int:
                 )
             emit("training_cancelled", step=step)
             return 130
-        index = random.choice(dataset.train_indices)
-        pixels_cpu, camera_cpu, calibration_cpu = dataset.load(index)
+        if step == heldout_evaluation_step:
+            # Persist the exact parameter/optimizer state that is about to be
+            # evaluated.  Later final-fit checkpoints must not replace it:
+            # held-out metrics are only reproducible when they are bound to
+            # this verified checkpoint receipt.
+            heldout_checkpoint_path = save_checkpoint(
+                checkpoint_dir,
+                step - 1,
+                parameters,
+                optimizers,
+                scheduler,
+                strategy_state,
+                current_policy_state(),
+                config,
+                dataset,
+                appearance,
+                appearance_optimizer,
+                appearance_scheduler,
+            )
+            heldout_checkpoint_receipt = json.loads(
+                heldout_checkpoint_path.with_suffix(".json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            heldout_snapshot = {
+                "schema": "servo.gsplat-heldout-evaluation/v1",
+                "jobId": config.get("jobId"),
+                "profile": config.get("profile"),
+                "pipelineRevision": config.get("pipelineRevision"),
+                "configurationHash": config["configurationHash"],
+                "evaluatedAtStep": step,
+                "checkpoint": {
+                    key: heldout_checkpoint_receipt[key]
+                    for key in (
+                        "step",
+                        "path",
+                        "sha256",
+                        "bytes",
+                        "configurationHash",
+                    )
+                },
+                **evaluate(
+                    parameters,
+                    dataset,
+                    device,
+                    sh_degree,
+                    packed,
+                    rasterization_mode,
+                    eps2d,
+                    output / "validation",
+                    cancel_path=cancel_path,
+                    phase="heldout-validation",
+                ),
+            }
+            if dataset.path_stress_indices:
+                heldout_snapshot["pathStress"] = evaluate(
+                    parameters,
+                    dataset,
+                    device,
+                    sh_degree,
+                    packed,
+                    rasterization_mode,
+                    eps2d,
+                    output / "path-stress-validation",
+                    dataset.path_stress_indices,
+                    cancel_path=cancel_path,
+                    phase="path-stress-validation",
+                )
+            atomic_json(heldout_metrics_path, heldout_snapshot)
+            emit(
+                "heldout_evaluation_completed",
+                step=step,
+                psnrMean=heldout_snapshot["psnrMean"],
+                ssimMean=heldout_snapshot["ssimMean"],
+                finalFitSteps=final_fit_steps,
+            )
+            if (
+                float(heldout_snapshot["psnrMean"]) < minimum_psnr
+                or float(heldout_snapshot["ssimMean"]) < minimum_ssim
+                or float(heldout_snapshot["depthAmbiguityRelativeStdP50"])
+                > maximum_depth_ambiguity
+                or float(heldout_snapshot["depthAmbiguityRelativeStdP95"])
+                > maximum_depth_ambiguity_p95
+                or float(
+                    heldout_snapshot[
+                        "depthAmbiguityFractionAbove10Percent"
+                    ]
+                )
+                > maximum_depth_ambiguity_fraction
+            ):
+                raise TrainingError(
+                    "The unbiased held-out reconstruction failed the configured "
+                    "appearance or geometry gate; final fitting was not started."
+                )
+        final_fit = step >= heldout_evaluation_step
+        if final_fit:
+            final_fit_offset = step - heldout_evaluation_step
+            index = final_fit_index(final_fit_offset)
+            final_fit_seen.add(index)
+        else:
+            index = random.choice(dataset.train_indices)
+        pixels_cpu, camera_cpu, calibration_cpu, confidence_cpu = dataset.load(index)
         pixels = pixels_cpu.to(device=device, dtype=torch.float32, non_blocking=True).unsqueeze(0) / 255.0
+        confidence = (
+            confidence_cpu.to(device=device, dtype=torch.float32, non_blocking=True)
+            .unsqueeze(0)
+            .unsqueeze(-1)
+            / 255.0
+        )
         camera = camera_cpu.to(device, non_blocking=True).unsqueeze(0)
         calibration = calibration_cpu.to(device, non_blocking=True).unsqueeze(0)
         active_resolution_factor = coarse_factor if step < coarse_steps else 1
@@ -1505,10 +2101,19 @@ def train(config_path: Path) -> int:
             calibration,
             active_resolution_factor,
         )
+        if active_resolution_factor > 1:
+            confidence = functional.interpolate(
+                confidence.permute(0, 3, 1, 2),
+                size=pixels.shape[1:3],
+                mode="area",
+            ).permute(0, 2, 3, 1)
         height, width = pixels.shape[1:3]
         active_degree = min(step // 1000, sh_degree)
         try:
-            rendered, _, information = rasterize(
+            geometry_regularization_enabled = (
+                sparse_depth_weight > 0.0 or depth_layer_variance_weight > 0.0
+            )
+            rendered_depth, alpha, information = rasterize(
                 parameters,
                 camera,
                 calibration,
@@ -1519,8 +2124,14 @@ def train(config_path: Path) -> int:
                 absgrad,
                 rasterization_mode,
                 eps2d,
+                render_mode="RGB+ED" if geometry_regularization_enabled else "RGB",
             )
-            rendered = rendered[..., :3]
+            rendered = rendered_depth[..., :3]
+            expected_depth = (
+                rendered_depth[..., 3:4]
+                if geometry_regularization_enabled
+                else None
+            )
             training_render = apply_appearance(rendered, appearance, index)
             strategy.step_pre_backward(
                 params=parameters,
@@ -1529,12 +2140,60 @@ def train(config_path: Path) -> int:
                 step=step,
                 info=information,
             )
-            l1 = functional.l1_loss(training_render, pixels)
+            confidence_sum = confidence.sum().clamp_min(1e-6)
+            l1 = (
+                (training_render - pixels).abs() * confidence
+            ).sum() / (confidence_sum * training_render.shape[-1])
             ssim_loss = 1.0 - ssim(
                 training_render.permute(0, 3, 1, 2),
                 pixels.permute(0, 3, 1, 2),
+                confidence.permute(0, 3, 1, 2),
             )
             loss = 0.8 * l1 + 0.2 * ssim_loss
+            recent_sparse_depth_loss = 0.0
+            recent_depth_layer_variance_loss = 0.0
+            if sparse_depth_weight > 0.0 and expected_depth is not None:
+                sparse_loss, supported_sparse_depths = sparse_depth_consistency_loss(
+                    expected_depth,
+                    alpha,
+                    dataset.records[index],
+                    active_resolution_factor,
+                )
+                loss = loss + sparse_depth_weight * sparse_loss
+                sparse_depth_samples += supported_sparse_depths
+                recent_sparse_depth_loss = float(sparse_loss.detach().item())
+            if (
+                depth_layer_variance_weight > 0.0
+                and expected_depth is not None
+                and step >= depth_layer_variance_start
+                and step % depth_layer_variance_every == 0
+            ):
+                view = torch.linalg.inv(camera)
+                camera_z = (
+                    parameters["means"] @ view[0, :3, :3].transpose(0, 1)
+                    + view[0, :3, 3]
+                )[:, 2]
+                second_moment, _, _ = rasterize(
+                    parameters,
+                    camera,
+                    calibration,
+                    width,
+                    height,
+                    None,
+                    packed,
+                    False,
+                    rasterization_mode,
+                    eps2d,
+                    colors_override=camera_z.square().unsqueeze(1),
+                )
+                variance_loss = depth_layer_variance_loss(
+                    expected_depth, second_moment, alpha
+                )
+                loss = loss + depth_layer_variance_weight * variance_loss
+                depth_layer_variance_steps += 1
+                recent_depth_layer_variance_loss = float(
+                    variance_loss.detach().item()
+                )
             if appearance is not None and appearance_regularization_weight > 0.0:
                 loss = loss + appearance_regularization_weight * appearance_regularization(
                     appearance,
@@ -1558,15 +2217,15 @@ def train(config_path: Path) -> int:
                 appearance_scheduler.step()
             if (
                 not densification_limited
-                and len(parameters["means"]) >= max_gaussians // 2
+                and len(parameters["means"]) >= target_gaussians
             ):
                 # One DefaultStrategy split/duplicate pass can at most double
                 # the active set.  Stopping at half of the hard allocation
-                # ceiling makes the profile cap deterministic before a large
+                # ceiling makes the allocation cap deterministic before a large
                 # temporary densification allocation is attempted.
                 strategy.refine_stop_iter = min(strategy.refine_stop_iter, step)
                 densification_limited = True
-                densification_limit_reason = "gaussian-allocation-guard"
+                densification_limit_reason = "gaussian-target-reached"
                 atomic_json(
                     recovery_policy_path,
                     {
@@ -1576,6 +2235,7 @@ def train(config_path: Path) -> int:
                         "reason": densification_limit_reason,
                         "step": step,
                         "gaussians": len(parameters["means"]),
+                        "targetGaussians": target_gaussians,
                         "hardMaximumGaussians": max_gaussians,
                     },
                 )
@@ -1584,6 +2244,7 @@ def train(config_path: Path) -> int:
                     step=step,
                     reason=densification_limit_reason,
                     gaussians=len(parameters["means"]),
+                    targetGaussians=target_gaussians,
                     hardMaximumGaussians=max_gaussians,
                 )
             strategy.step_post_backward(
@@ -1656,6 +2317,7 @@ def train(config_path: Path) -> int:
                 "training_progress",
                 step=completed_step,
                 total=max_steps,
+                phase="final-fit-all-frames" if final_fit else "heldout-training",
                 loss=recent_loss,
                 gaussians=len(parameters["means"]),
                 resolutionFactor=active_resolution_factor,
@@ -1664,6 +2326,10 @@ def train(config_path: Path) -> int:
                 peakReservedVramGiB=torch.cuda.max_memory_reserved() / 1024**3,
                 maxVramGiB=max_vram_gib,
                 elapsedSeconds=time.monotonic() - started,
+                sparseDepthLoss=recent_sparse_depth_loss,
+                sparseDepthSamples=sparse_depth_samples,
+                depthLayerVarianceLoss=recent_depth_layer_variance_loss,
+                depthLayerVarianceSteps=depth_layer_variance_steps,
             )
         if completed_step % checkpoint_every == 0 or completed_step == max_steps:
             validate_parameters(parameters)
@@ -1687,8 +2353,30 @@ def train(config_path: Path) -> int:
         raise TrainingError(
             "The final checkpoint does not contain a finite recent training loss."
         )
+    if len(final_fit_seen) != len(all_indices):
+        raise TrainingError(
+            "The deterministic final-fit phase did not visit every camera."
+        )
     validate_parameters(parameters)
-    appearance_summary = appearance_metrics(appearance, dataset.train_indices)
+    if not heldout_metrics_path.is_file():
+        raise TrainingError("The pre-fit held-out evaluation was not committed.")
+    with heldout_metrics_path.open("r", encoding="utf-8") as stream:
+        heldout_snapshot = require_heldout_snapshot(json.load(stream))
+    validation = {
+        field: heldout_snapshot[field]
+        for field in (
+            "validationImages",
+            "psnrMean",
+            "psnrMedian",
+            "ssimMean",
+            "ssimMedian",
+            "depthAmbiguityRelativeStdP50",
+            "depthAmbiguityRelativeStdP95",
+            "depthAmbiguityFractionAbove10Percent",
+            "depthAmbiguityMeaning",
+        )
+    }
+    appearance_summary = appearance_metrics(appearance, all_indices)
     del optimizers
     del scheduler
     del strategy_state
@@ -1700,7 +2388,7 @@ def train(config_path: Path) -> int:
     torch.cuda.empty_cache()
     parameters, cleanup = cleanup_parameters(parameters, dataset.normalization)
     validate_parameters(parameters)
-    validation = evaluate(
+    final_artifact_validation = evaluate(
         parameters,
         dataset,
         device,
@@ -1708,8 +2396,31 @@ def train(config_path: Path) -> int:
         packed,
         rasterization_mode,
         eps2d,
-        output / "validation",
+        output / "final-validation",
+        all_indices,
+        cancel_path=cancel_path,
+        phase="final-artifact-validation",
     )
+    if (
+        float(final_artifact_validation["psnrMean"]) < minimum_final_artifact_psnr
+        or float(final_artifact_validation["ssimMean"])
+        < minimum_final_artifact_ssim
+        or float(final_artifact_validation["depthAmbiguityRelativeStdP50"])
+        > maximum_depth_ambiguity
+        or float(final_artifact_validation["depthAmbiguityRelativeStdP95"])
+        > maximum_depth_ambiguity_p95
+        or float(
+            final_artifact_validation["depthAmbiguityFractionAbove10Percent"]
+        )
+        > maximum_depth_ambiguity_fraction
+        or float(final_artifact_validation["psnrMean"])
+        < float(heldout_snapshot["psnrMean"]) - maximum_final_psnr_regression
+        or float(final_artifact_validation["ssimMean"])
+        < float(heldout_snapshot["ssimMean"]) - maximum_final_ssim_regression
+    ):
+        raise TrainingError(
+            "The cleaned final artifact failed its all-camera appearance or geometry gate."
+        )
     export_cameras(dataset, output / "cameras.json")
     export_appearance(dataset, appearance, output / "appearance.json")
     export_world(
@@ -1719,6 +2430,7 @@ def train(config_path: Path) -> int:
         eps2d,
         REPRESENTATION_TYPE,
     )
+    world_sha256 = sha256_file(output / "world.ply")
     import importlib.metadata
 
     metrics = {
@@ -1734,6 +2446,7 @@ def train(config_path: Path) -> int:
         "densificationStrategy": "default-absgrad" if absgrad else "default",
         "absgrad": absgrad,
         "growGrad2d": grow_grad2d,
+        "targetGaussians": target_gaussians,
         "maxGaussians": max_gaussians,
         "resolutionSchedule": {
             "coarseFactor": coarse_factor,
@@ -1741,7 +2454,27 @@ def train(config_path: Path) -> int:
             "fullResolutionSteps": max_steps - coarse_steps,
         },
         "appearance": appearance_summary,
+        "geometryRegularization": {
+            "staticConfidenceMasks": dataset.static_confidence_masks,
+            "staticConfidenceMethod": config.get("staticConfidenceMethod"),
+            "sparseDepthSource": "filtered-colmap-track-observations",
+            "sparseDepthWeight": sparse_depth_weight,
+            "sparseDepthSamples": sparse_depth_samples,
+            "recentSparseDepthLoss": recent_sparse_depth_loss,
+            "depthLayerVarianceWeight": depth_layer_variance_weight,
+            "depthLayerVarianceEvery": depth_layer_variance_every,
+            "depthLayerVarianceStart": depth_layer_variance_start,
+            "depthLayerVarianceSteps": depth_layer_variance_steps,
+            "recentDepthLayerVarianceLoss": recent_depth_layer_variance_loss,
+        },
         "steps": max_steps,
+        "heldoutEvaluationStep": heldout_evaluation_step,
+        "finalFitSteps": final_fit_steps,
+        "finalFitImages": len(dataset),
+        "finalFitUniqueImages": len(final_fit_seen),
+        "finalFitEpochs": final_fit_steps / len(dataset),
+        "worldSha256": world_sha256,
+        "finalArtifactValidation": final_artifact_validation,
         "gaussians": len(parameters["means"]),
         "trainingImages": len(dataset.train_indices),
         "validationImages": len(dataset.validation_indices),
@@ -1775,6 +2508,7 @@ def train(config_path: Path) -> int:
 
 
 def kernel_check() -> int:
+    import numpy as np
     import torch
     from gsplat.rendering import rasterization
 
@@ -1806,11 +2540,77 @@ def kernel_check() -> int:
         rasterize_mode="antialiased",
         eps2d=0.3,
     )
+    rendered_depth, depth_alpha, _ = rasterization(
+        means,
+        quaternions,
+        scales,
+        opacities,
+        colors,
+        views,
+        calibrations,
+        64,
+        64,
+        packed=True,
+        rasterize_mode="antialiased",
+        eps2d=0.3,
+        render_mode="RGB+ED",
+    )
+    moment, moment_alpha, _ = rasterization(
+        means,
+        quaternions,
+        scales,
+        opacities,
+        means.detach()[:, 2:3].square(),
+        views,
+        calibrations,
+        64,
+        64,
+        packed=True,
+        rasterize_mode="antialiased",
+        eps2d=0.3,
+        render_mode="RGB",
+        sh_degree=None,
+    )
+    depth_record = ImageRecord(
+        name="kernel-check.png",
+        path=Path("kernel-check.png"),
+        camera_id=1,
+        camera_model="PINHOLE",
+        camera_to_world=np.eye(4, dtype=np.float32),
+        calibration=np.eye(3, dtype=np.float32),
+        width=64,
+        height=64,
+        sparse_pixels=np.asarray(
+            [[31, 31], [32, 31], [33, 31], [31, 32], [32, 32], [33, 32], [31, 33], [32, 33]],
+            dtype=np.float32,
+        ),
+        sparse_depths=np.full(8, 2.0, dtype=np.float32),
+    )
+    sparse_depth_loss, sparse_depth_samples = sparse_depth_consistency_loss(
+        rendered_depth[..., 3:4], depth_alpha, depth_record, 1
+    )
+    layer_variance_loss = depth_layer_variance_loss(
+        rendered_depth[..., 3:4], moment, depth_alpha
+    )
     information["means2d"].retain_grad()
-    loss = rendered.sum() + alpha.sum()
+    loss = (
+        rendered.sum()
+        + alpha.sum()
+        + 0.05 * sparse_depth_loss
+        + 0.01 * layer_variance_loss
+    )
     loss.backward()
     if (
         not bool(torch.isfinite(rendered).all())
+        or rendered_depth.shape[-1] != 4
+        or moment.shape[-1] != 1
+        or not bool(torch.isfinite(rendered_depth).all())
+        or not bool(torch.isfinite(depth_alpha).all())
+        or not bool(torch.isfinite(moment).all())
+        or not bool(torch.isfinite(moment_alpha).all())
+        or not bool(torch.isfinite(sparse_depth_loss))
+        or not bool(torch.isfinite(layer_variance_loss))
+        or sparse_depth_samples != 8
         or means.grad is None
         or not hasattr(information["means2d"], "absgrad")
         or not bool(torch.isfinite(information["means2d"].absgrad).all())
@@ -1824,6 +2624,11 @@ def kernel_check() -> int:
         rasterizationMode="antialiased",
         absgrad=True,
         renderedShape=list(rendered.shape),
+        rgbDepthShape=list(rendered_depth.shape),
+        momentShape=list(moment.shape),
+        sparseDepthSamples=sparse_depth_samples,
+        sparseDepthLoss=float(sparse_depth_loss.detach().item()),
+        depthLayerVarianceLoss=float(layer_variance_loss.detach().item()),
     )
     return 0
 
@@ -1845,6 +2650,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return kernel_check()
         if arguments.command == "train":
             return train(arguments.config)
+    except TrainingCancelled as error:
+        emit("training_cancelled", message=str(error))
+        return 130
     except TrainingError as error:
         emit("training_failed", message=str(error))
         return 2

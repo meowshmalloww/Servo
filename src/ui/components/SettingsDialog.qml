@@ -72,7 +72,7 @@ T.Popup {
                             font.pixelSize: 11
                         }
                         Text {
-                            text: "Show display refresh, CPU, RAM, and renderer API in the top bar. Live viewport FPS remains available in the viewport statistics overlay."
+                            text: "Show actual Servo presentation FPS, CPU, RAM, and renderer API in the top bar. Monitor refresh is reported separately in the FPS tooltip."
                             color: Theme.textMuted
                             font.family: Theme.uiFont
                             font.pixelSize: 9

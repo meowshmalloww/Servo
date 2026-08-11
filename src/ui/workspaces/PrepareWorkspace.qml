@@ -683,10 +683,14 @@ Item {
 
                                         TextButton {
                                             visible: ReconstructionController.worldPath.length > 0
-                                            text: "Open world"
-                                            iconSource: Theme.icon("open")
+                                            text: "View in Worlds"
+                                            iconSource: Theme.icon("world")
                                             tone: "primary"
-                                            onClicked: ReconstructionController.openWorldFolder()
+                                            onClicked: {
+                                                WorldLibraryModel.selectWorldPath(
+                                                    ReconstructionController.worldPath);
+                                                Session.workspaceIndex = 1;
+                                            }
                                         }
 
                                         Item { Layout.fillWidth: true }

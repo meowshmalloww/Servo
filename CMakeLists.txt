@@ -16,6 +16,7 @@ find_package(Qt6 6.11 REQUIRED COMPONENTS
     Quick3D
     QuickControls2
     QuickDialogs2
+    ShaderTools
     Svg
 )
 

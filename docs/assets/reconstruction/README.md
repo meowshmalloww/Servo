@@ -1,12 +1,24 @@
 # Reconstruction evidence assets
 
+## Yosemite road Fidelity r6 observed-path audit
+
+Files:
+
+- `yosemite-road-r6-observed-path-audit.mp4` -- 24.83 seconds, H.264, 1920 x 360, 30 FPS, 40,607,556 bytes, SHA-256 `6de9a53ecadc9712279336328bf8781059d17763503cf29ce61c98d0fa93de81`.
+- `yosemite-road-r6-observed-path-audit.gif` -- 8-second inline README excerpt, 1440 x 270, 8 FPS, 15,568,191 bytes, SHA-256 `1beef2ad0642d82c7307f2b6a805d698ae7add530136e7e2e2f4789d0d3db762`.
+- `yosemite-road-r6-observed-path-audit-preview.jpg` -- 1920 x 360 static fallback preview, 191,780 bytes, SHA-256 `fbc6f9a8c6cf9cf751ae24832d710ff86b54bde15f95ab48d0a9ca39dda1a513`.
+
+Servo generated the audit from the 2026-08-11 Fidelity r6 world. It reloads the published SH3 PLY and renders 745 poses covering all 373 registered cameras plus an interpolated pose between each adjacent pair. The audit presents RGB appearance, composited expected depth, and a line-of-sight depth-spread proxy. It does not extrapolate outside the registered camera path and must not be interpreted as metric depth, free space, unseen geometry, or collision certification.
+
+The contributor supplied and authorized use of the source road capture for this project and its public demonstration. These derived evidence assets document the measured reconstruction result; they do not expand Servo's GPLv3 code license to unrelated source media.
+
 ## Gerrard Hall observed-path audit
 
 Files:
 
-- `gerrard-observed-path-audit.mp4` -- 6.63 seconds, H.264, 1280 x 278, 30 FPS, 4,232,169 bytes, SHA-256 `0825fde2d878009e2f2d5b21bd88c5f6c8d0b18d7e94abdb46351087088a5cb6`.
-- `gerrard-observed-path-audit.gif` -- inline README animation, 6.60 seconds, 960 x 208, 10 FPS, 6,413,639 bytes, SHA-256 `28c1b4ceaea3028b5a03ee39fd56ed92e184a4ffe97cd9ea7e06051eeabc22f3`.
-- `gerrard-observed-path-audit-preview.jpg` -- static fallback preview, 70,071 bytes, SHA-256 `233deca4cce208e389d80bed12d3eef6090d4e567bfd9d0531fa5e82ea2508b8`.
+- `gerrard-observed-path-audit.mp4` -- 6.63 seconds, H.264, 1920 x 418, 30 FPS, 19,239,784 bytes, SHA-256 `54975f9d081d3697491d4d667e48f2f0ea63c2465009f8944356894121b63ec7`.
+- `gerrard-observed-path-audit.gif` -- inline README animation, 6.63 seconds, 1440 x 314, 8 FPS, 14,428,079 bytes, SHA-256 `89ea294ba92419a73ad4b58d3be3e47ab03deefcdb9225468eaa976e53a3be4b`.
+- `gerrard-observed-path-audit-preview.jpg` -- 1920 x 418 static fallback preview, 183,969 bytes, SHA-256 `104fa97c7361824684480dbcdd8951f04e71f827e15895cf2dffe9915901fd56`.
 
 Servo generated the audit from the 2026-08-10 Fidelity r3 world. It renders 199 poses interpolated between 100 registered cameras and presents three synchronized panels: RGB appearance, composited expected depth, and a line-of-sight depth-spread proxy. It does not extrapolate outside the registered camera path and must not be interpreted as metric depth, free-space, or collision certification.
 
