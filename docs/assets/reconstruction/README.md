@@ -1,5 +1,17 @@
 # Reconstruction evidence assets
 
+## Yosemite road r9 observed-path audit (rejected diagnostic)
+
+Files:
+
+- `yosemite-road-r9-observed-path-audit.mp4` -- 24.83 seconds, H.264, 1920 x 360, 30 FPS, 37,252,783 bytes, SHA-256 `a64553037993b88a2dc483fbae3824c2c5d55ff39cff6ae60dafeb5bc09e0f5e`.
+- `yosemite-road-r9-observed-path-audit.gif` -- 8-second inline README excerpt, 1440 x 270, 8 FPS, 14,619,624 bytes, SHA-256 `5a79f2063f73bf3edd9b5b172a5f331a2e5caae657f939f9e0d7e6ce8f694247`.
+- `yosemite-road-r9-observed-path-audit-preview.jpg` -- 1920 x 360 static fallback preview, 200,685 bytes, SHA-256 `d65e6b5dfc48d613db6e4015c39dd3824ff8954bbdff0611ba8c5c4e1044bd96`.
+
+Servo generated the audit from the non-publishable 2026-08-17 r9 certified-sky probe. It reloads the exported SH3 PLY and renders 745 poses covering all 373 registered cameras plus an interpolated pose between each adjacent pair. The diagnostic reached 22.19 dB / 0.707 SSIM on held-out views and 23.04 dB / 0.731 SSIM on registered views, but is explicitly rejected: observed-sky finite-splat alpha p95 was 0.975 against the release limit of 0.10, worst-view sky alpha p95 was 1.000 against 0.25, and minimum path support was 0.572 against 0.90. It remains useful failure evidence only; it is not a published bundle, collision geometry, free-space certificate, or autonomous-driving result.
+
+The contributor supplied and authorized use of the source road capture for this project and its public demonstration. These derived evidence assets document the measured reconstruction result; they do not expand Servo's GPLv3 code license to unrelated source media.
+
 ## Yosemite road Fidelity r6 observed-path audit
 
 Files:

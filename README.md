@@ -11,12 +11,12 @@
 
 ## Reconstruction videos
 
-### Yosemite road — one forward-facing phone video
+### Yosemite road r9 — latest diagnostic (rejected)
 
-[![Animated HD excerpt of the Servo Yosemite road r6 observed-path audit with RGB, expected depth, and depth-spread panels](docs/assets/reconstruction/yosemite-road-r6-observed-path-audit.gif)](docs/assets/reconstruction/yosemite-road-r6-observed-path-audit.mp4)
+[![Animated HD excerpt of the Servo Yosemite road r9 observed-path audit with RGB, expected depth, and depth-spread panels](docs/assets/reconstruction/yosemite-road-r9-observed-path-audit.gif)](docs/assets/reconstruction/yosemite-road-r9-observed-path-audit.mp4)
 
 <p align="center">
-  <strong><a href="docs/assets/reconstruction/yosemite-road-r6-observed-path-audit.mp4">Play the full 24.83-second, 1920 x 360 r6 MP4</a></strong>
+  <strong><a href="docs/assets/reconstruction/yosemite-road-r9-observed-path-audit.mp4">Play the full 24.83-second, 1920 x 360 r9 MP4</a></strong>
 </p>
 
 ### Gerrard Hall — 100 multi-view photographs
@@ -27,7 +27,7 @@
   <strong><a href="docs/assets/reconstruction/gerrard-observed-path-audit.mp4">Play the full 6.63-second, 1920 x 418 MP4</a></strong>
 </p>
 
-The animated previews play directly on the README; selecting either preview opens its higher-resolution H.264 video. The Yosemite result is a real, hash-bound audit of the serialized r6 PLY at 745 registered and between-camera poses. It reached 23.87 dB / 0.791 SSIM on 47 unseen frames and 25.25 dB / 0.846 SSIM when the exact PLY was reloaded at all 373 registered views. These are engineering artifacts, not collision or photorealism claims: foliage, monocular depth ambiguity, and unobserved geometry remain visible. See the [asset notice](docs/assets/reconstruction/README.md) for exact provenance and limits.
+The animated previews play directly on the README; selecting either preview opens its higher-resolution H.264 video. The Yosemite r9 clip is a real, hash-bound audit of a serialized diagnostic PLY at 745 registered and between-camera poses. It reached 22.19 dB / 0.707 SSIM on held-out views and 23.04 dB / 0.731 SSIM on registered views, but was rejected: finite-splat sky alpha p95 was 0.975 (release limit 0.10) and minimum path support was 0.572 (release limit 0.90). It is public failure evidence, not a published world, collision geometry, or a photorealism claim. See the [asset notice](docs/assets/reconstruction/README.md) for exact provenance and limits.
 
 <p align="center">
   <img alt="Qt 6.11" src="https://img.shields.io/badge/Qt-6.11-41CD52?logo=qt&logoColor=white">
@@ -141,11 +141,12 @@ Then open **Create World**, add overlapping images or a mostly static video, cho
 
 | Capture | Result | Interpretation |
 | --- | --- | --- |
-| Yosemite road video · Fidelity r6 | 1,486,817 cleaned SH3 Gaussians · held-out 23.87 dB / 0.791 · exact-PLY registered path 25.25 dB / 0.846 | Preferred observed-corridor world; full path stays upright and continuous, while close foliage and monocular depth remain limited |
+| Yosemite road video · r9 diagnostic | 707,794 cleaned SH3 Gaussians · held-out 22.19 dB / 0.707 · registered 23.04 dB / 0.731 | Rejected: finite sky geometry remains in observed sky and path support falls below the required floor; never shown as a usable world |
+| Yosemite road video · Fidelity r6 (historical) | 1,486,817 cleaned SH3 Gaussians · held-out 23.87 dB / 0.791 · exact-PLY registered path 25.25 dB / 0.846 | Stronger observed-corridor visual reference, while close foliage and monocular depth remain limited |
 | Gerrard Hall · 100 photographs | 577,553 cleaned SH3 Gaussians · 18.05 dB PSNR · 0.657 SSIM | Coherent engineering benchmark; still below final photorealistic acceptance |
 | One-way road video · earlier pipeline | 14.75 dB PSNR · 0.410 SSIM with severe mixed-depth layers | Rejected by the current quality policy; not presented as a usable world |
 
-The video above shows the r6 Yosemite road exact-PLY path audit. Exact metrics, failure analysis, and remaining reconstruction work are recorded in the [world reconstruction plan](docs/WORLD_RECONSTRUCTION_PLAN.md). The earlier Gerrard Hall audit remains in [`docs/assets/reconstruction`](docs/assets/reconstruction/README.md).
+The video above shows the r9 Yosemite road exact-PLY failure audit. Exact metrics, failure analysis, and remaining reconstruction work are recorded in the [world reconstruction plan](docs/WORLD_RECONSTRUCTION_PLAN.md). The stronger historical r6 and Gerrard Hall audits remain documented in [`docs/assets/reconstruction`](docs/assets/reconstruction/README.md).
 
 ## What is Servo's and what is open source?
 
