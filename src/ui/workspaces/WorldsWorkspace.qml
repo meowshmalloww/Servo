@@ -17,8 +17,10 @@ Item {
         return value === undefined || value === null ? "" : value;
     }
     readonly property string selectedPlyPath: root.selectedWorld
-                                                ? String(root.selectedWorld.plyPath || "")
-                                                : ""
+                                                 ? String(root.selectedWorld.plyPath || "")
+                                                 : ""
+    readonly property bool selectedWorldPublished: root.hasSelection
+                                                 && root.selectedWorld.published === true
     property string noticeText: ""
     property bool exploreMode: false
     property bool moveForward: false
@@ -347,6 +349,7 @@ Item {
                             required property string qualityLabel
                             required property string qualityTone
                             required property url previewUrl
+                            required property bool published
 
                             width: worldList.width
                             height: 98
@@ -425,8 +428,11 @@ Item {
 
                                     Text {
                                         Layout.fillWidth: true
-                                        text: worldDelegate.gaussianText + " splats · "
-                                              + worldDelegate.sizeText
+                                        text: worldDelegate.published
+                                              ? worldDelegate.gaussianText + " splats · "
+                                                + worldDelegate.sizeText
+                                              : "No PLY — quality gate failed · "
+                                                + worldDelegate.sizeText
                                         color: Theme.textSecondary
                                         font.family: Theme.monoFont
                                         font.pixelSize: 8
@@ -465,7 +471,7 @@ Item {
                                ? "No matching worlds" : "No created worlds"
                         description: WorldLibraryModel.filterText.length > 0
                                      ? "Change the search text to show more worlds."
-                                     : "A verified reconstruction appears here automatically after publishing."
+                                      : "Published worlds and failed diagnostic runs appear here automatically."
                         actionText: WorldLibraryModel.filterText.length > 0
                                     ? "Clear search" : "Create world"
                         actionIcon: WorldLibraryModel.filterText.length > 0
@@ -561,10 +567,16 @@ Item {
                             TextButton {
                                 visible: root.hasSelection
                                 compact: true
-                                text: "Open bundle"
+                                text: root.selectedWorldPublished ? "Open bundle" : "Open job"
                                 iconSource: Theme.icon("folder")
-                                onClicked: WorldLibraryModel.openWorldFolder(
-                                               String(root.selectedWorld.worldId))
+                                onClicked: {
+                                    if (root.selectedWorldPublished)
+                                        WorldLibraryModel.openWorldFolder(
+                                                    String(root.selectedWorld.worldId));
+                                    else
+                                        WorldLibraryModel.openJobFolder(
+                                                    String(root.selectedWorld.worldId));
+                                }
                             }
                             IconButton {
                                 iconSource: Theme.icon(Session.viewportFocusMode
@@ -1029,7 +1041,9 @@ Item {
                                         }
                                         Text {
                                             Layout.fillWidth: true
-                                            text: "The verified bundle is loaded. Choose Explore to enter the interactive Vulkan Gaussian world."
+                                            text: root.selectedWorldPublished
+                                                  ? "The verified bundle is loaded. Choose Explore to enter the interactive Vulkan Gaussian world."
+                                                  : "This run failed its quality gate. Its preview is diagnostic only; no Gaussian world was exported."
                                             color: Theme.textMuted
                                             font.family: Theme.uiFont
                                             font.pixelSize: 9
@@ -1056,7 +1070,9 @@ Item {
 
                     PanelHeader {
                         title: "World details"
-                        subtitle: root.hasSelection ? "Local bundle" : "No selection"
+                        subtitle: root.hasSelection
+                                  ? (root.selectedWorldPublished ? "Local bundle" : "Failed diagnostic")
+                                  : "No selection"
                         iconSource: Theme.icon("inspector")
                         Layout.fillWidth: true
                     }

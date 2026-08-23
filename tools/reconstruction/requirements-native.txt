@@ -8,3 +8,10 @@ opencv-python==4.11.0.86
 Pillow==12.1.1
 numpy==1.26.4
 scipy==1.16.3
+# Geometry-prior runtime. Torch and TorchVision remain inherited from the
+# separately qualified PyTorch CUDA 12.8 environment so pip cannot replace the
+# CUDA build with a generic wheel while resolving this file.
+transformers==5.13.0
+easydict==1.9
+einops==0.8.2
+tqdm==4.67.3

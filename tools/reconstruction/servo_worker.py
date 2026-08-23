@@ -30,12 +30,12 @@ import threading
 import time
 import traceback
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
 
-WORKER_VERSION = "0.6.0"
-PIPELINE_REVISION = "native-colmap-servo-fidelity-gs-r6"
+WORKER_VERSION = "0.7.0"
+PIPELINE_REVISION = "native-colmap-servo-road-geometry-r7"
 REPRESENTATION_TYPE = "servo-fidelity-3dgs-v1"
 CHECKPOINT_BYTES_PER_GAUSSIAN = 768
 PLY_BYTES_PER_GAUSSIAN = 256
@@ -46,8 +46,71 @@ JOB_SCHEMA = "servo.reconstruction-job/v1"
 EVENT_SCHEMA = "servo.reconstruction-event/v1"
 RECEIPT_SCHEMA = "servo.reconstruction-receipt/v1"
 WORLD_SCHEMA = "servo.gaussian-world/v1"
-STAGES = ("hash", "extract", "pose", "train", "validate", "publish")
+STATIC_CONFIDENCE_METHOD = (
+    "DIS-bidirectional-flow-plus-COLMAP-epipolar-raw-evidence-v2"
+)
+SEMANTIC_PHOTOMETRIC_METHOD = (
+    "servo-oneformer-rigid-static-retention-flow-preserved-nonrigid-v3"
+)
+MAIN_SAMPLING_POLICY = "deterministic-weighted-shuffled-epochs/v1"
+SCREEN_SPACE_REFINEMENT_POLICY = "gsplat-default-normalized-radius/v1"
+DENSITY_REFINEMENT_POLICY = "main-fit-until-final-fit/v1"
+SEMANTIC_SKY_OPACITY_METHOD = (
+    "observed-oneformer-temporally-confirmed-sky-alpha-mean-plus-interior-tail-bce-v4"
+)
+SEMANTIC_SKY_TAIL_THRESHOLD = 0.10
+SEMANTIC_SKY_TAIL_WEIGHT = 0.05
+SEMANTIC_SKY_TAIL_BCE_EPSILON = 0.01
+SEMANTIC_SKY_TAIL_EROSION_RADIUS = 2
+SEMANTIC_SKY_TAIL_EROSION_METHOD = (
+    "binary-morphological-erosion-non-sky-padding/v1"
+)
+CERTIFIED_SKY_EVIDENCE_SCHEMA = "servo.certified-sky-evidence/v1"
+CERTIFIED_SKY_EVIDENCE_METHOD = "oneformer-rotation-only-temporal-consensus-v1"
+CERTIFIED_SKY_EVIDENCE_DIRECTORY = "sky-evidence"
+CERTIFIED_SKY_EVIDENCE_UNKNOWN = 0
+CERTIFIED_SKY_EVIDENCE_SKY = 1
+CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY = 2
+DENSITY_GROWTH_CAP_POLICY = "freeze-growth-preserve-pruning/v1"
+ENDPOINT_SAMPLING_WINDOW = 8
+ENDPOINT_SAMPLING_MULTIPLIER = 2
+MAXIMUM_SPARSE_ANCHOR_MULTIPLIER = 4
+STAGES = ("hash", "extract", "pose", "geometry", "train", "validate", "publish")
 WINDOWS_CREATE_SUSPENDED = 0x00000004
+VIDEO_DEPTH_COMMIT = "4f5ae23172ba60fd7bc11ef671cca678842c7072"
+VIDEO_DEPTH_CHECKPOINT_SHA256 = (
+    "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609"
+)
+VIDEO_DEPTH_SOURCE_MANIFEST_SHA256 = (
+    "40d096e92b5000790416ac4cc519af64adc8cb74354490535ce73c56b39dc581"
+)
+ONEFORMER_SNAPSHOT_REVISION = "05f2812b1eccf9909b3897777450f8d68148cafc"
+# Backward-compatible internal alias for existing discovery code.  The value is
+# a Hugging Face snapshot revision, not a source-code commit.
+ONEFORMER_COMMIT = ONEFORMER_SNAPSHOT_REVISION
+ONEFORMER_CHECKPOINT_SHA256 = (
+    "909b07dbf4129c2bbb8df4498e35dcd46f305e3ec45329d3ff6d4f0360de27f3"
+)
+ONEFORMER_FILE_SHA256 = {
+    "config.json": "091cbc7c980128ae63b2a15d882923f326f85926ef163adad00c24bd90228896",
+    "preprocessor_config.json": "2c3c403d8414263e732996bb2ffeab80dd5ced0068ab11bfe5adf476ef75823c",
+    "pytorch_model.bin": ONEFORMER_CHECKPOINT_SHA256,
+    "merges.txt": "9fd691f7c8039210e0fced15865466c65820d09b63988b0174bfe25de299051a",
+    "vocab.json": "e089ad92ba36837a0d31433e555c8f45fe601ab5c221d4f607ded32d9f7a4349",
+    "tokenizer_config.json": "64dd88e64d791e3be4d38be62d7e77e0a24df9e79205ac740af505aa2e94c367",
+    "special_tokens_map.json": "c4864a9376a8401918425bed71fc14fc0e81f9b59ec45c1cf96cccb2df508eac",
+}
+PIPELINE_SOURCE_FILES = (
+    "servo_worker.py",
+    "servo_train.py",
+    "servo_priors.py",
+    "servo_geometry.py",
+    "servo_road_semantics.py",
+    "servo_sign_evidence.py",
+    "servo_environment.py",
+    "servo_audit_world.py",
+    "worker-lock.json",
+)
 
 
 class WorkerError(RuntimeError):
@@ -88,6 +151,39 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
         while chunk := stream.read(chunk_size):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def pipeline_source_manifest() -> dict[str, str]:
+    """Hash every executable r7 pipeline contract used by durable receipts.
+
+    Version strings remain useful human provenance, but they are not sufficient
+    while a pipeline is under active development.  Binding receipts to the
+    exact worker, trainer, prior builder, validator, and lock prevents a retry
+    from silently reusing artifacts produced by different code under the same
+    nominal revision.
+    """
+
+    root = Path(__file__).resolve().parent
+    manifest: dict[str, str] = {}
+    for name in PIPELINE_SOURCE_FILES:
+        path = root / name
+        if not path.is_file():
+            raise WorkerError(
+                "pipeline_snapshot_missing",
+                f"The reconstruction pipeline snapshot is missing {name}.",
+            )
+        manifest[name] = sha256_file(path)
+    return manifest
+
+
+def python_source_tree_hash(root: Path) -> str:
+    files = sorted((root / "video_depth_anything").rglob("*.py"))
+    files.extend(sorted((root / "utils").rglob("*.py")))
+    manifest = {
+        path.relative_to(root).as_posix(): sha256_file(path).removeprefix("sha256:")
+        for path in files
+    }
+    return hashlib.sha256(canonical_json(manifest)).hexdigest()
 
 
 def atomic_write_bytes(path: Path, value: bytes) -> None:
@@ -356,6 +452,63 @@ def find_vocab_tree() -> Path | None:
     return next((path.resolve() for path in candidates if path.is_file()), None)
 
 
+def find_video_depth_root() -> Path | None:
+    explicit = os.environ.get("SERVO_VIDEO_DEPTH_ANYTHING")
+    candidates = [Path(explicit)] if explicit else []
+    candidates.append(
+        local_runtime_root()
+        / "toolchain"
+        / f"video-depth-anything-{VIDEO_DEPTH_COMMIT}"
+    )
+    return next(
+        (
+            path.resolve()
+            for path in candidates
+            if (path / "video_depth_anything" / "video_depth.py").is_file()
+        ),
+        None,
+    )
+
+
+def find_video_depth_checkpoint() -> Path | None:
+    explicit = os.environ.get("SERVO_VIDEO_DEPTH_CHECKPOINT")
+    candidates = [Path(explicit)] if explicit else []
+    candidates.append(
+        local_runtime_root()
+        / "models"
+        / "video-depth-anything-small"
+        / "video_depth_anything_vits.pth"
+    )
+    return next((path.resolve() for path in candidates if path.is_file()), None)
+
+
+def find_oneformer_root() -> Path | None:
+    explicit = os.environ.get("SERVO_ONEFORMER_ADE20K")
+    candidates = [Path(explicit)] if explicit else []
+    candidates.append(
+        local_runtime_root()
+        / "models"
+        / f"oneformer-ade20k-swin-tiny-{ONEFORMER_COMMIT}"
+    )
+    required = (
+        "config.json",
+        "preprocessor_config.json",
+        "pytorch_model.bin",
+        "merges.txt",
+        "vocab.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+    )
+    return next(
+        (
+            path.resolve()
+            for path in candidates
+            if all((path / name).is_file() for name in required)
+        ),
+        None,
+    )
+
+
 def find_cuda_home() -> Path | None:
     explicit = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
     candidates = [Path(explicit)] if explicit else []
@@ -469,6 +622,11 @@ def compiler_environment() -> dict[str, str]:
             # declared.  Servo owns this child environment, so that is the
             # correct and deterministic mode.
             set_value("DISTUTILS_USE_SDK", "1")
+    # Reconstruction jobs only use content-addressed, preflight-verified local
+    # model snapshots. Never let a model loader consult or mutate a network
+    # cache while a world is being built.
+    set_value("HF_HUB_OFFLINE", "1")
+    set_value("TRANSFORMERS_OFFLINE", "1")
     return environment
 
 
@@ -628,7 +786,7 @@ def collect_preflight(verify_kernel: bool = False) -> dict[str, Any]:
             lock_ready = (
                 worker_lock.get("schema") == "servo.reconstruction-worker-lock/v1"
                 and worker_lock.get("workerVersion") == WORKER_VERSION
-                and worker_lock.get("trainerVersion") == "0.6.0"
+                and worker_lock.get("trainerVersion") == "0.7.0"
                 and worker_lock.get("pipelineRevision") == PIPELINE_REVISION
                 and worker_lock.get("representationType") == REPRESENTATION_TYPE
                 and worker_lock.get("rasterizationMode") == "antialiased"
@@ -697,7 +855,17 @@ def collect_preflight(verify_kernel: bool = False) -> dict[str, Any]:
     )
 
     python_modules: dict[str, tuple[bool, str, str]] = {}
-    for module_name in ("torch", "gsplat", "pycolmap", "cv2", "numpy", "PIL", "scipy"):
+    for module_name in (
+        "torch",
+        "torchvision",
+        "transformers",
+        "gsplat",
+        "pycolmap",
+        "cv2",
+        "numpy",
+        "PIL",
+        "scipy",
+    ):
         try:
             module = __import__(module_name)
             version = str(getattr(module, "__version__", "installed"))
@@ -739,6 +907,8 @@ def collect_preflight(verify_kernel: bool = False) -> dict[str, Any]:
         )
     )
     for display, module_name, required_prefix in (
+        ("TorchVision", "torchvision", "0.26.0+cpu"),
+        ("Transformers", "transformers", "5.13.0"),
         ("gsplat", "gsplat", "1.5.3"),
         ("PyCOLMAP", "pycolmap", "4.1.1"),
         ("OpenCV", "cv2", ""),
@@ -757,6 +927,54 @@ def collect_preflight(verify_kernel: bool = False) -> dict[str, Any]:
                 "Pinned version" if matches and required_prefix else (module_path if not installed else "Installed"),
             )
         )
+
+    video_depth_root = find_video_depth_root()
+    video_depth_source_ready = bool(
+        video_depth_root
+        and python_source_tree_hash(video_depth_root)
+        == VIDEO_DEPTH_SOURCE_MANIFEST_SHA256
+    )
+    dependencies.append(
+        dependency(
+            "Video Depth Anything source",
+            video_depth_source_ready,
+            VIDEO_DEPTH_COMMIT if video_depth_source_ready else "",
+            str(video_depth_root or ""),
+            "Pinned Apache-2.0 Small-model inference source with a verified Python manifest.",
+        )
+    )
+    video_depth_checkpoint = find_video_depth_checkpoint()
+    video_depth_checkpoint_ready = bool(
+        video_depth_checkpoint
+        and sha256_file(video_depth_checkpoint)
+        == f"sha256:{VIDEO_DEPTH_CHECKPOINT_SHA256}"
+    )
+    dependencies.append(
+        dependency(
+            "Video Depth Anything Small checkpoint",
+            video_depth_checkpoint_ready,
+            VIDEO_DEPTH_CHECKPOINT_SHA256 if video_depth_checkpoint_ready else "",
+            str(video_depth_checkpoint or ""),
+            "Apache-2.0 temporal relative-depth prior; not LiDAR or metric depth.",
+        )
+    )
+    oneformer_root = find_oneformer_root()
+    oneformer_ready = bool(
+        oneformer_root
+        and all(
+            sha256_file(oneformer_root / name) == f"sha256:{expected}"
+            for name, expected in ONEFORMER_FILE_SHA256.items()
+        )
+    )
+    dependencies.append(
+        dependency(
+            "OneFormer ADE20K Swin-tiny checkpoint",
+            oneformer_ready,
+            ONEFORMER_SNAPSHOT_REVISION if oneformer_ready else "",
+            str(oneformer_root or ""),
+            "MIT ADE20K snapshot with verified model, config, and tokenizer files.",
+        )
+    )
 
     kernel_ready: bool | None = None
     kernel_detail = "Kernel test not requested."
@@ -873,6 +1091,8 @@ class JobContext:
         self.cancel_path = self.root / "cancel.request"
         self.events = EventSink(self.job_id, self.root / "events.jsonl")
         self.lock_path = self.root / "worker.lock"
+        self.pipeline_sources = pipeline_source_manifest()
+        self.pipeline_code_hash = sha256_bytes(canonical_json(self.pipeline_sources))
         self.configuration_hash = sha256_bytes(
             canonical_json(
                 {
@@ -880,6 +1100,7 @@ class JobContext:
                     "profile": dataclasses.asdict(profile),
                     "workerVersion": WORKER_VERSION,
                     "pipelineRevision": PIPELINE_REVISION,
+                    "pipelineCodeHash": self.pipeline_code_hash,
                 }
             )
         )
@@ -2471,7 +2692,13 @@ def build_static_confidence_masks(
     training_root: Path,
     frame_timestamps: dict[str, float],
 ) -> dict[str, Any]:
-    """Write lossless confidence weights aligned to COLMAP-undistorted images."""
+    """Write lossless raw temporal weights aligned to undistorted images.
+
+    A zero means optical flow did not provide reliable static correspondence;
+    it is not proof that the observed pixel is dynamic.  The trainer combines
+    this soft evidence with the pinned semantic taxonomy so rigid static RGB is
+    never erased solely by a flow failure.
+    """
     import cv2
     import numpy as np
     import pycolmap
@@ -2640,7 +2867,9 @@ def build_static_confidence_masks(
         )
     return {
         "schema": "servo.static-confidence/v1",
-        "method": "DIS-bidirectional-flow-plus-COLMAP-epipolar-v1",
+        "method": STATIC_CONFIDENCE_METHOD,
+        "role": "raw-soft-temporal-evidence-not-semantic-exclusion",
+        "zeroWeightMeaning": "insufficient-flow-evidence-not-proven-dynamic",
         "registeredImages": len(images_by_name),
         "videoImages": video_image_count,
         "videoPairs": pair_count,
@@ -2983,17 +3212,2020 @@ def pose_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
     return metrics, artifacts
 
 
+def _geometry_contract_error(message: str) -> WorkerError:
+    return WorkerError(
+        "geometry_evidence_gate_failed",
+        message,
+        "Rebuild the geometry stage with the exact r7 pipeline snapshot; do not "
+        "reuse partial or edited evidence artifacts.",
+    )
+
+
+def _required_evidence_count(record: dict[str, Any], field: str, label: str) -> int:
+    value = record.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _geometry_contract_error(
+            f"{label} field {field} must be a non-negative integer."
+        )
+    return value
+
+
+def _required_evidence_number(
+    record: dict[str, Any], field: str, label: str
+) -> float:
+    value = record.get(field)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise _geometry_contract_error(
+            f"{label} field {field} must be a finite number."
+        )
+    return float(value)
+
+
+def validate_observed_road_surface_metrics(road: Any) -> dict[str, Any]:
+    """Fail closed when the evidence-bounded branch/intersection fit is absent."""
+
+    if not isinstance(road, dict):
+        raise _geometry_contract_error("Road-surface metrics are missing.")
+    observed = road.get("observedSurface")
+    if not isinstance(observed, dict):
+        raise _geometry_contract_error(
+            "Observed branch/intersection road-surface metrics are missing."
+        )
+    candidate_cells = _required_evidence_count(
+        observed, "candidateCellCount", "Observed road surface"
+    )
+    retained_cells = _required_evidence_count(
+        observed, "retainedCellCount", "Observed road surface"
+    )
+    components = _required_evidence_count(
+        observed, "componentCount", "Observed road surface"
+    )
+    retained_components = _required_evidence_count(
+        observed, "retainedComponentCount", "Observed road surface"
+    )
+    anchor_cells = _required_evidence_count(
+        observed, "anchorCellCount", "Observed road surface"
+    )
+    blocked_cells = _required_evidence_count(
+        observed, "blockedCellCount", "Observed road surface"
+    )
+    ambiguous_cells = _required_evidence_count(
+        observed, "ambiguousCellCount", "Observed road surface"
+    )
+    iterations = _required_evidence_count(
+        observed, "iterations", "Observed road surface"
+    )
+    inlier_ratio = _required_evidence_number(
+        observed, "inlierRatio", "Observed road surface"
+    )
+    p50_residual = _required_evidence_number(
+        observed, "p50AbsoluteResidual", "Observed road surface"
+    )
+    p95_residual = _required_evidence_number(
+        observed, "p95AbsoluteResidual", "Observed road surface"
+    )
+    maximum_residual = _required_evidence_number(
+        observed, "maxAbsoluteResidual", "Observed road surface"
+    )
+    maximum_cell_p95_residual = _required_evidence_number(
+        observed, "maximumCellP95Residual", "Observed road surface"
+    )
+    huber_scale = _required_evidence_number(
+        observed, "huberScale", "Observed road surface"
+    )
+    huber_objective = _required_evidence_number(
+        observed, "huberObjective", "Observed road surface"
+    )
+    relative_solution_change = _required_evidence_number(
+        observed, "relativeSolutionChange", "Observed road surface"
+    )
+    normalized_weight_change = _required_evidence_number(
+        observed, "normalizedWeightChange", "Observed road surface"
+    )
+    first_order_optimality = _required_evidence_number(
+        observed, "firstOrderOptimality", "Observed road surface"
+    )
+    backtracking_steps = _required_evidence_count(
+        observed, "backtrackingSteps", "Observed road surface"
+    )
+    termination_reason = observed.get("terminationReason")
+    scale_frozen = observed.get("huberScaleFrozen")
+    cycle_solution_change = observed.get("twoCycleSolutionChange")
+    cycle_weight_change = observed.get("twoCycleWeightChange")
+    allowed_termination_reasons = {
+        "no-smoothing-required",
+        "exact-fit",
+        "adaptive-huber-step-and-weight",
+        "cycle-midpoint-fixed-scale-huber",
+    }
+    if termination_reason == "cycle-midpoint-fixed-scale-huber":
+        if scale_frozen is not True:
+            raise _geometry_contract_error(
+                "Cycle-stabilized road surface did not record a frozen Huber scale."
+            )
+        cycle_solution_change = _required_evidence_number(
+            observed, "twoCycleSolutionChange", "Observed road surface"
+        )
+        cycle_weight_change = _required_evidence_number(
+            observed, "twoCycleWeightChange", "Observed road surface"
+        )
+    elif scale_frozen is not False:
+        raise _geometry_contract_error(
+            "Non-cycle road-surface solve recorded an invalid frozen-scale state."
+        )
+    maximum_consistent_cell_residual = max(
+        0.01,
+        4.0 * p95_residual,
+        maximum_residual,
+    )
+    if (
+        observed.get("model") != "sparse-connected-road-cell-graph-v1"
+        or observed.get("solverPolicy")
+        != "adaptive-huber-with-cycle-midpoint-freeze-v1"
+        or observed.get("converged") is not True
+        or termination_reason not in allowed_termination_reasons
+        or candidate_cells < 2
+        or retained_cells <= 0
+        or retained_cells > candidate_cells
+        or retained_cells / candidate_cells < 0.50
+        or components < 1
+        or retained_components < 1
+        or retained_components > components
+        or anchor_cells <= 0
+        or anchor_cells > retained_cells
+        or ambiguous_cells > blocked_cells
+        or iterations > 256
+        or not 0.65 <= inlier_ratio <= 1.0
+        or p50_residual < 0.0
+        or p95_residual < p50_residual
+        or p95_residual > 0.15
+        or maximum_residual < p95_residual
+        or maximum_cell_p95_residual < 0.0
+        or maximum_cell_p95_residual > 0.15
+        or maximum_cell_p95_residual > maximum_consistent_cell_residual
+        or huber_scale < 0.0
+        or huber_objective < 0.0
+        or relative_solution_change < 0.0
+        or relative_solution_change > 1.0e-8
+        or normalized_weight_change < 0.0
+        or normalized_weight_change > 1.0e-5
+        or first_order_optimality < 0.0
+        or first_order_optimality > 1.0e-4
+        or backtracking_steps > 1000
+        or (
+            termination_reason == "cycle-midpoint-fixed-scale-huber"
+            and (
+                huber_scale <= 0.0
+                or huber_objective <= 0.0
+                or cycle_solution_change is None
+                or cycle_weight_change is None
+                or float(cycle_solution_change) < 0.0
+                or float(cycle_solution_change) > 1.0e-5
+                or float(cycle_weight_change) < 0.0
+                or float(cycle_weight_change) > 1.0e-3
+            )
+        )
+    ):
+        raise _geometry_contract_error(
+            "Observed branch/intersection road-surface evidence did not pass its "
+            "convergence, support, or residual gate."
+        )
+    return observed
+
+
+def validate_road_surface_document(
+    document: Any,
+    road_metrics: Any,
+    *,
+    expected_images: int,
+    job_id: str,
+    profile: str,
+    pipeline_revision: str,
+    configuration_hash: str,
+) -> dict[str, Any]:
+    """Bind the published local-surface arrays to the gated metric summary."""
+
+    observed_metrics = validate_observed_road_surface_metrics(road_metrics)
+    if not isinstance(document, dict) or not isinstance(
+        document.get("observedSurface"), dict
+    ):
+        raise _geometry_contract_error("Road-surface document is malformed.")
+    observed = document["observedSurface"]
+    surface = document.get("surface")
+    if (
+        document.get("schema") != "servo.road-surface/v1"
+        or document.get("jobId") != job_id
+        or document.get("profile") != profile
+        or document.get("pipelineRevision") != pipeline_revision
+        or document.get("configurationHash") != configuration_hash
+        or document.get("sourceFrames") != expected_images
+        or document.get("metric") is not False
+        or document.get("collisionValidated") is not False
+        or document.get("scaleProvenance") != "sfm-arbitrary"
+        or not isinstance(surface, dict)
+        or surface.get("model") != road_metrics.get("model")
+    ):
+        raise _geometry_contract_error(
+            "Road-surface document provenance does not match its geometry metrics."
+        )
+
+    scalar_fields = (
+        "model",
+        "solverPolicy",
+        "candidateCellCount",
+        "retainedCellCount",
+        "componentCount",
+        "retainedComponentCount",
+        "anchorCellCount",
+        "blockedCellCount",
+        "ambiguousCellCount",
+        "maximumCellP95Residual",
+        "p50AbsoluteResidual",
+        "p95AbsoluteResidual",
+        "maxAbsoluteResidual",
+        "inlierRatio",
+        "iterations",
+        "converged",
+        "huberScale",
+        "huberScaleFrozen",
+        "huberObjective",
+        "relativeSolutionChange",
+        "normalizedWeightChange",
+        "twoCycleSolutionChange",
+        "twoCycleWeightChange",
+        "firstOrderOptimality",
+        "backtrackingSteps",
+        "terminationReason",
+    )
+    for field in scalar_fields:
+        if observed.get(field) != observed_metrics.get(field):
+            raise _geometry_contract_error(
+                f"Road-surface document field {field} diverges from its metrics."
+            )
+
+    retained = int(observed_metrics["retainedCellCount"])
+    blocked = int(observed_metrics["blockedCellCount"])
+    array_lengths = {
+        "cellIndices": retained,
+        "heights": retained,
+        "slopes": retained,
+        "supportCounts": retained,
+        "frameCounts": retained,
+        "blockedCellKeys": blocked,
+    }
+    for field, expected_length in array_lengths.items():
+        value = observed.get(field)
+        if not isinstance(value, list) or len(value) != expected_length:
+            raise _geometry_contract_error(
+                f"Road-surface document array {field} has invalid coverage."
+            )
+    if any(
+        not isinstance(value, list) or len(value) != 2
+        for value in (observed.get("gridOrigin"), observed.get("gridShape"))
+    ):
+        raise _geometry_contract_error(
+            "Road-surface document grid provenance is malformed."
+        )
+    return document
+
+
+def _road_paint_frame_key(image: str) -> str:
+    normalized = image.replace("\\", "/")
+    parts = normalized.split("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or any(part in {"", ".", ".."} for part in parts)
+        or ":" in parts[0]
+    ):
+        raise _geometry_contract_error(
+            "Road-paint frame metrics contain a non-relative image name."
+        )
+    path = PurePosixPath(normalized)
+    if not path.suffix:
+        raise _geometry_contract_error(
+            "Road-paint frame metrics contain an image name without a suffix."
+        )
+    return path.with_suffix("").as_posix().casefold()
+
+
+def _artifact_frame_map(paths: Sequence[Path], root: Path, label: str) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for path in paths:
+        try:
+            relative = path.relative_to(root)
+        except ValueError as error:
+            raise _geometry_contract_error(
+                f"{label} contains an artifact outside its stage directory."
+            ) from error
+        key = relative.with_suffix("").as_posix().casefold()
+        if key in result:
+            raise _geometry_contract_error(
+                f"{label} contains duplicate artifacts for {key}."
+            )
+        result[key] = path
+    return result
+
+
+def validate_road_paint_metrics(
+    road_paint: Any, expected_images: int
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """Validate the categorical road-paint receipt without requiring visible paint."""
+
+    if not isinstance(road_paint, dict):
+        raise _geometry_contract_error("Road-paint consensus metrics are missing.")
+    if (
+        road_paint.get("schema") != "servo.road-paint-consensus/v1"
+        or road_paint.get("method")
+        != (
+            "road-gated-absolute-color-local-ridge-plus-calibrated-"
+            "same-color-adjacent-depth-consensus-v2"
+        )
+        or road_paint.get("pretrainedWeights", object()) is not None
+        or road_paint.get("metric") is not False
+        or road_paint.get("collisionValidated") is not False
+    ):
+        raise _geometry_contract_error(
+            "Road-paint consensus provenance is missing or unsupported."
+        )
+    frames = _required_evidence_count(road_paint, "frames", "Road paint")
+    if frames != expected_images:
+        raise _geometry_contract_error(
+            "Road-paint consensus metrics do not cover every registered image."
+        )
+
+    aggregate = {
+        field: _required_evidence_count(road_paint, field, "Road paint")
+        for field in (
+            "proposalPixels",
+            "acceptedPixels",
+            "rejectedPixels",
+            "unsupportedPixels",
+            "whitePixels",
+            "yellowPixels",
+            "supportedWarpSamples",
+        )
+    }
+    pre_suppression = _required_evidence_count(
+        road_paint, "preSuppressionProposalPixels", "Road paint"
+    )
+    suppressed_frames = _required_evidence_count(
+        road_paint, "suppressedFrames", "Road paint"
+    )
+    longest_suppressed_run = _required_evidence_count(
+        road_paint, "longestConsecutiveSuppressedFrames", "Road paint"
+    )
+    resident_frames = _required_evidence_count(
+        road_paint, "maximumResidentEvidenceFrames", "Road paint"
+    )
+    occlusion_policy = road_paint.get("correspondenceOcclusionPolicy")
+    if not isinstance(occlusion_policy, dict):
+        raise _geometry_contract_error(
+            "Road-paint correspondence occlusion policy is missing."
+        )
+    nearer_observation_tolerance = _required_evidence_number(
+        occlusion_policy,
+        "nearerObservationRelativeTolerance",
+        "Road-paint correspondence occlusion policy",
+    )
+    maximum_symmetric_disagreement = _required_evidence_number(
+        occlusion_policy,
+        "maximumSymmetricRelativeDepthDisagreement",
+        "Road-paint correspondence occlusion policy",
+    )
+    if (
+        aggregate["acceptedPixels"]
+        + aggregate["rejectedPixels"]
+        + aggregate["unsupportedPixels"]
+        != aggregate["proposalPixels"]
+        or aggregate["whitePixels"] + aggregate["yellowPixels"]
+        != aggregate["acceptedPixels"]
+        or pre_suppression < aggregate["proposalPixels"]
+        or suppressed_frames > frames
+        or longest_suppressed_run > suppressed_frames
+        or longest_suppressed_run > max(3, math.ceil(frames * 0.02))
+        or resident_frames != 3
+        or not math.isclose(
+            nearer_observation_tolerance, 0.08, rel_tol=0.0, abs_tol=1.0e-12
+        )
+        or not math.isclose(
+            maximum_symmetric_disagreement,
+            0.25,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        or occlusion_policy.get("borderSampling")
+        != "finite-pixel-centres-only"
+    ):
+        raise _geometry_contract_error(
+            "Road-paint aggregate decisions or occlusion policy are internally "
+            "inconsistent."
+        )
+    accepted_fraction = _required_evidence_number(
+        road_paint, "acceptedFractionOfProposals", "Road paint"
+    )
+    expected_fraction = aggregate["acceptedPixels"] / max(
+        aggregate["proposalPixels"], 1
+    )
+    if not 0.0 <= accepted_fraction <= 1.0 or not math.isclose(
+        accepted_fraction, expected_fraction, rel_tol=1.0e-9, abs_tol=1.0e-12
+    ):
+        raise _geometry_contract_error(
+            "Road-paint accepted fraction does not match its decision counts."
+        )
+
+    extraction = road_paint.get("extractionProvenance")
+    consensus = road_paint.get("consensusProvenance")
+    if (
+        not isinstance(extraction, dict)
+        or extraction.get("schema") != "servo.road-paint-evidence/v1"
+        or extraction.get("method")
+        != "road-gated-absolute-color-local-ridge-thickness-components-v2"
+        or extraction.get("deterministic") is not True
+        or extraction.get("pretrainedWeights", object()) is not None
+        or not isinstance(consensus, dict)
+        or consensus.get("schema") != "servo.road-paint-consensus/v1"
+        or consensus.get("method") != "calibrated-dense-warp-repeat-observation-v1"
+        or consensus.get("deterministic") is not True
+        or not isinstance(consensus.get("configuration"), dict)
+        or consensus["configuration"].get("require_same_color") is not True
+    ):
+        raise _geometry_contract_error(
+            "Road-paint extraction or consensus provenance is incomplete."
+        )
+    limitations = road_paint.get("limitations")
+    if (
+        not isinstance(limitations, list)
+        or not limitations
+        or any(not isinstance(value, str) or not value.strip() for value in limitations)
+    ):
+        raise _geometry_contract_error(
+            "Road-paint evidence limitations are missing."
+        )
+
+    frame_values = road_paint.get("framesMetrics")
+    if not isinstance(frame_values, list) or len(frame_values) != expected_images:
+        raise _geometry_contract_error(
+            "Road-paint per-frame metrics do not cover every registered image."
+        )
+    frame_metrics: dict[str, dict[str, Any]] = {}
+    frame_totals = {
+        "proposalPixels": 0,
+        "acceptedPixels": 0,
+        "rejectedPixels": 0,
+        "unsupportedPixels": 0,
+    }
+    frame_suppressed_total = 0
+    measured_longest_suppressed_run = 0
+    current_suppressed_run = 0
+    for value in frame_values:
+        if not isinstance(value, dict) or not isinstance(value.get("image"), str):
+            raise _geometry_contract_error("A road-paint frame metric is malformed.")
+        key = _road_paint_frame_key(value["image"])
+        if key in frame_metrics:
+            raise _geometry_contract_error(
+                f"Road-paint metrics contain duplicate frame {value['image']}."
+            )
+        proposed = _required_evidence_count(
+            value, "proposedPixels", "Road-paint frame"
+        )
+        accepted = _required_evidence_count(
+            value, "acceptedPixels", "Road-paint frame"
+        )
+        rejected = _required_evidence_count(
+            value, "rejectedPixels", "Road-paint frame"
+        )
+        unsupported = _required_evidence_count(
+            value, "unsupportedPixels", "Road-paint frame"
+        )
+        neighbours = _required_evidence_count(
+            value, "neighbourViews", "Road-paint frame"
+        )
+        available = _required_evidence_count(
+            value, "availableObservations", "Road-paint frame"
+        )
+        extraction_suppressed = value.get("extractionSuppressed")
+        if not isinstance(extraction_suppressed, bool):
+            raise _geometry_contract_error(
+                f"Road-paint suppression state for {value['image']} is malformed."
+            )
+        frame_suppressed_total += int(extraction_suppressed)
+        if extraction_suppressed:
+            current_suppressed_run += 1
+            measured_longest_suppressed_run = max(
+                measured_longest_suppressed_run, current_suppressed_run
+            )
+        else:
+            current_suppressed_run = 0
+        if (
+            accepted + rejected + unsupported != proposed
+            or available != neighbours + 1
+            or (extraction_suppressed and proposed != 0)
+        ):
+            raise _geometry_contract_error(
+                f"Road-paint decisions for {value['image']} are inconsistent."
+            )
+        frame_metrics[key] = value
+        frame_totals["proposalPixels"] += proposed
+        frame_totals["acceptedPixels"] += accepted
+        frame_totals["rejectedPixels"] += rejected
+        frame_totals["unsupportedPixels"] += unsupported
+    for field, total in frame_totals.items():
+        if total != aggregate[field]:
+            raise _geometry_contract_error(
+                f"Road-paint per-frame {field} does not match its aggregate."
+            )
+    if (
+        frame_suppressed_total != suppressed_frames
+        or measured_longest_suppressed_run != longest_suppressed_run
+    ):
+        raise _geometry_contract_error(
+            "Road-paint per-frame suppression states do not match their aggregate."
+        )
+    return frame_metrics, aggregate
+
+
+def validate_road_paint_artifacts(
+    output: Path,
+    semantic_files: Sequence[Path],
+    road_paint: Any,
+    expected_images: int,
+) -> tuple[list[Path], list[Path]]:
+    """Verify road-paint PNG coverage and bind every file into the stage receipt."""
+
+    frame_metrics, aggregate = validate_road_paint_metrics(
+        road_paint, expected_images
+    )
+    class_root = output / "road-paint" / "classes"
+    confidence_root = output / "road-paint" / "confidence"
+    class_files = sorted(
+        path
+        for path in class_root.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".png"
+    )
+    confidence_files = sorted(
+        path
+        for path in confidence_root.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".png"
+    )
+    if len(class_files) != expected_images or len(confidence_files) != expected_images:
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Road-paint class and confidence artifacts do not cover every registered image.",
+        )
+    semantic_map = _artifact_frame_map(
+        semantic_files, output / "semantics", "Semantic evidence"
+    )
+    class_map = _artifact_frame_map(class_files, class_root, "Road-paint classes")
+    confidence_map = _artifact_frame_map(
+        confidence_files, confidence_root, "Road-paint confidence"
+    )
+    expected_keys = set(frame_metrics)
+    if (
+        set(semantic_map) != expected_keys
+        or set(class_map) != expected_keys
+        or set(confidence_map) != expected_keys
+    ):
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Road-paint artifacts do not match the registered semantic frame set.",
+        )
+
+    import cv2
+    import numpy as np
+
+    accepted_pixels = 0
+    white_pixels = 0
+    yellow_pixels = 0
+    for key in sorted(expected_keys):
+        semantic = cv2.imread(str(semantic_map[key]), cv2.IMREAD_UNCHANGED)
+        classes = cv2.imread(str(class_map[key]), cv2.IMREAD_UNCHANGED)
+        confidence = cv2.imread(str(confidence_map[key]), cv2.IMREAD_UNCHANGED)
+        if (
+            semantic is None
+            or classes is None
+            or confidence is None
+            or semantic.dtype != np.uint8
+            or classes.dtype != np.uint8
+            or confidence.dtype != np.uint8
+            or semantic.ndim != 2
+            or classes.ndim != 2
+            or confidence.ndim != 2
+            or semantic.shape != classes.shape
+            or classes.shape != confidence.shape
+        ):
+            raise _geometry_contract_error(
+                f"Road-paint artifacts for {frame_metrics[key]['image']} are not aligned uint8 PNG masks."
+            )
+        if not np.all(np.isin(classes, [0, 1, 2])):
+            raise _geometry_contract_error(
+                f"Road-paint classes for {frame_metrics[key]['image']} contain an unknown label."
+            )
+        accepted = classes != 0
+        if np.any(accepted & (semantic != 2)):
+            raise _geometry_contract_error(
+                f"Accepted road paint for {frame_metrics[key]['image']} is absent from semantic evidence."
+            )
+        frame_accepted = int(np.count_nonzero(accepted))
+        if frame_accepted != int(frame_metrics[key]["acceptedPixels"]):
+            raise _geometry_contract_error(
+                f"Road-paint class pixels for {frame_metrics[key]['image']} do not match its metrics."
+            )
+        accepted_pixels += frame_accepted
+        white_pixels += int(np.count_nonzero(classes == 1))
+        yellow_pixels += int(np.count_nonzero(classes == 2))
+    if (
+        accepted_pixels != aggregate["acceptedPixels"]
+        or white_pixels != aggregate["whitePixels"]
+        or yellow_pixels != aggregate["yellowPixels"]
+    ):
+        raise _geometry_contract_error(
+            "Road-paint artifact pixels do not match their aggregate metrics."
+        )
+    return class_files, confidence_files
+
+
+def _safe_relative_evidence_path(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise _geometry_contract_error(f"{label} must be a relative path string.")
+    normalized = value.replace("\\", "/")
+    parts = normalized.split("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or any(part in {"", ".", ".."} for part in parts)
+        or ":" in parts[0]
+    ):
+        raise _geometry_contract_error(
+            f"{label} contains an absolute, private, or traversing path."
+        )
+    return PurePosixPath(normalized).as_posix()
+
+
+def _is_sha256(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+    )
+
+
+def validate_observed_directional_environment_artifact(
+    output: Path,
+    descriptor: Any,
+    expected_images: int,
+) -> Path:
+    """Verify the observed-only sky asset before it can reach training/publish.
+
+    This deliberately validates both the descriptor and decoded RGBA pixels.
+    Transparent texels carry no invented RGB, and no finite or metric claim can
+    be smuggled into the environment layer.
+    """
+
+    import cv2
+    import numpy as np
+
+    if not isinstance(descriptor, dict):
+        raise _geometry_contract_error("Observed directional environment is missing.")
+    if (
+        descriptor.get("schema") != "servo.observed-directional-environment/v1"
+        or descriptor.get("method")
+        != "oneformer-observed-sky-equirectangular-rgba-v1"
+        or descriptor.get("projection") != "equirectangular-atan2-x-z-y-up-v1"
+        or descriptor.get("colorSpace") != "srgb"
+        or descriptor.get("alphaMeaning")
+        != "one-or-more-observed-oneformer-sky-samples-per-texel"
+        or descriptor.get("aggregation")
+        != "deterministic-mean-observed-sky-rgb-per-texel-no-inpainting-v1"
+        or descriptor.get("sourceSkyLabel") != 17
+        or descriptor.get("containsGeneratedPixels") is not False
+        or descriptor.get("finiteGeometry") is not False
+        or descriptor.get("metric") is not False
+    ):
+        raise _geometry_contract_error(
+            "Observed directional environment provenance is unsupported."
+        )
+    width = descriptor.get("width")
+    height = descriptor.get("height")
+    if (
+        isinstance(width, bool)
+        or isinstance(height, bool)
+        or not isinstance(width, int)
+        or not isinstance(height, int)
+        or width < 64
+        or height < 32
+        or width > 8192
+        or height > 4096
+        or width != height * 2
+    ):
+        raise _geometry_contract_error(
+            "Observed directional environment dimensions are invalid."
+        )
+    asset = _safe_relative_evidence_path(
+        descriptor.get("asset"), "Observed directional environment asset"
+    )
+    if asset != "environment/observed-sky-equirectangular.png":
+        raise _geometry_contract_error(
+            "Observed directional environment asset path is unsupported."
+        )
+    asset_path = (output / Path(asset)).resolve()
+    try:
+        asset_path.relative_to(output.resolve())
+    except ValueError as error:
+        raise _geometry_contract_error(
+            "Observed directional environment asset escapes its geometry stage."
+        ) from error
+    if not asset_path.is_file() or not _is_sha256(descriptor.get("assetSha256")):
+        raise _geometry_contract_error(
+            "Observed directional environment asset or hash is missing."
+        )
+    if sha256_file(asset_path) != descriptor["assetSha256"]:
+        raise _geometry_contract_error(
+            "Observed directional environment asset hash does not match."
+        )
+    rgba = cv2.imread(str(asset_path), cv2.IMREAD_UNCHANGED)
+    if (
+        rgba is None
+        or rgba.dtype != np.uint8
+        or rgba.shape != (height, width, 4)
+    ):
+        raise _geometry_contract_error(
+            "Observed directional environment must be an RGBA8 PNG."
+        )
+    alpha = rgba[..., 3]
+    if np.any((alpha != 0) & (alpha != 255)) or np.any(rgba[alpha == 0, :3] != 0):
+        raise _geometry_contract_error(
+            "Observed directional environment transparency contains generated colour."
+        )
+    observed = int(np.count_nonzero(alpha == 255))
+    for field in (
+        "imagesWithSky",
+        "sourceSkyPixels",
+        "sampledSkyPixels",
+        "observedTexels",
+    ):
+        _required_evidence_count(descriptor, field, "Observed directional environment")
+    source_images = _required_evidence_count(
+        descriptor, "sourceImages", "Observed directional environment"
+    )
+    if (
+        source_images != expected_images
+        or descriptor["imagesWithSky"] > source_images
+        or descriptor["sampledSkyPixels"] > descriptor["sourceSkyPixels"]
+        or descriptor["observedTexels"] != observed
+        or observed > width * height
+    ):
+        raise _geometry_contract_error(
+            "Observed directional environment coverage counters are inconsistent."
+        )
+    coverage = _required_evidence_number(
+        descriptor, "coverageFraction", "Observed directional environment"
+    )
+    if not 0.0 <= coverage <= 1.0 or not math.isclose(
+        coverage,
+        observed / float(width * height),
+        rel_tol=0.0,
+        abs_tol=1.0e-12,
+    ):
+        raise _geometry_contract_error(
+            "Observed directional environment coverage fraction is inconsistent."
+        )
+    return asset_path
+
+
+def validate_certified_sky_evidence_artifact(
+    output: Path,
+    descriptor: Any,
+    semantic_files: Sequence[Path],
+    expected_images: int,
+) -> list[Path]:
+    """Verify the fail-closed, multi-view sky-loss evidence bundle.
+
+    A raw semantic sky label is deliberately insufficient to suppress finite
+    Gaussian support.  This receipt binds each tri-state evidence raster to its
+    matching semantic image and allows only temporally confirmed, eroded sky
+    pixels to participate in the opacity loss.  The raw semantic masks still
+    remain the release gate, so a restricted training target cannot hide a
+    local sky failure.
+    """
+
+    import cv2
+    import numpy as np
+
+    if not isinstance(descriptor, dict):
+        raise _geometry_contract_error("Temporally certified sky evidence is missing.")
+    if (
+        descriptor.get("schema") != CERTIFIED_SKY_EVIDENCE_SCHEMA
+        or descriptor.get("method") != CERTIFIED_SKY_EVIDENCE_METHOD
+        or descriptor.get("storage")
+        != "uint8-tristate/0-unknown/1-certified-sky/2-observed-non-sky"
+        or descriptor.get("rotationOnlyInfiniteSky") is not True
+        or descriptor.get("minimumSupportingViews") != 2
+        or descriptor.get("neighbourWindow") != 4
+        or descriptor.get("erosionRadius") != 2
+        or descriptor.get("sourceSemanticLabel") != 17
+        or descriptor.get("source")
+        != "pinned-oneformer-ade20k-temporal-consensus"
+        or descriptor.get("containsGeneratedPixels") is not False
+        or descriptor.get("finiteGeometry") is not False
+        or descriptor.get("metric") is not False
+        or descriptor.get("manifest") != "sky-evidence.json"
+        or not _is_sha256(descriptor.get("manifestSha256"))
+    ):
+        raise _geometry_contract_error(
+            "Temporally certified sky-evidence provenance is unsupported."
+        )
+    manifest_path = output / "sky-evidence.json"
+    if not manifest_path.is_file() or sha256_file(manifest_path) != descriptor[
+        "manifestSha256"
+    ]:
+        raise _geometry_contract_error(
+            "Temporally certified sky-evidence manifest failed hash verification."
+        )
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, json.JSONDecodeError) as error:
+        raise _geometry_contract_error(
+            "Temporally certified sky-evidence manifest is unreadable."
+        ) from error
+    expected_manifest = {
+        key: value
+        for key, value in descriptor.items()
+        if key not in {"manifest", "manifestSha256"}
+    }
+    if manifest != expected_manifest:
+        raise _geometry_contract_error(
+            "Temporally certified sky-evidence manifest disagrees with its descriptor."
+        )
+    if len(semantic_files) != expected_images:
+        raise _geometry_contract_error(
+            "Temporally certified sky evidence cannot be bound to every camera."
+        )
+    semantic_root = output / "semantics"
+    expected_semantics: dict[str, Path] = {}
+    for semantic_path in semantic_files:
+        try:
+            relative = semantic_path.relative_to(semantic_root).as_posix()
+        except ValueError as error:
+            raise _geometry_contract_error(
+                "A semantic evidence asset escapes its geometry stage."
+            ) from error
+        if relative in expected_semantics:
+            raise _geometry_contract_error("Semantic evidence paths are ambiguous.")
+        expected_semantics[relative] = semantic_path
+    frames = manifest.get("frames")
+    if (
+        not isinstance(frames, list)
+        or len(frames) != expected_images
+        or descriptor.get("registeredImages") != expected_images
+    ):
+        raise _geometry_contract_error(
+            "Temporally certified sky-evidence coverage is incomplete."
+        )
+    root = output.resolve()
+    seen_images: set[str] = set()
+    evidence_files: list[Path] = [manifest_path]
+    totals = {
+        "certifiedSkyPixels": 0,
+        "unconfirmedSkyPixels": 0,
+    }
+    for frame in frames:
+        if not isinstance(frame, dict):
+            raise _geometry_contract_error("A certified sky-evidence frame is malformed.")
+        image = _safe_relative_evidence_path(
+            frame.get("image"), "Certified sky-evidence image"
+        )
+        asset = _safe_relative_evidence_path(
+            frame.get("asset"), "Certified sky-evidence asset"
+        )
+        expected_asset = (
+            Path(CERTIFIED_SKY_EVIDENCE_DIRECTORY) / Path(image)
+        ).with_suffix(".png").as_posix()
+        if (
+            image in seen_images
+            or image not in expected_semantics
+            or asset != expected_asset
+            or not _is_sha256(frame.get("assetSha256"))
+        ):
+            raise _geometry_contract_error(
+                "A certified sky-evidence frame path or hash is invalid."
+            )
+        seen_images.add(image)
+        evidence_path = (output / Path(asset)).resolve()
+        try:
+            evidence_path.relative_to(root)
+        except ValueError as error:
+            raise _geometry_contract_error(
+                "A certified sky-evidence asset escapes its geometry stage."
+            ) from error
+        if not evidence_path.is_file() or sha256_file(evidence_path) != frame[
+            "assetSha256"
+        ]:
+            raise _geometry_contract_error(
+                "A certified sky-evidence asset failed hash verification."
+            )
+        semantic = cv2.imread(str(expected_semantics[image]), cv2.IMREAD_UNCHANGED)
+        evidence = cv2.imread(str(evidence_path), cv2.IMREAD_UNCHANGED)
+        if (
+            semantic is None
+            or evidence is None
+            or semantic.dtype != np.uint8
+            or evidence.dtype != np.uint8
+            or semantic.ndim != 2
+            or evidence.ndim != 2
+            or evidence.shape != semantic.shape
+        ):
+            raise _geometry_contract_error(
+                "A certified sky-evidence raster does not match its semantic image."
+            )
+        allowed = (
+            (evidence == CERTIFIED_SKY_EVIDENCE_UNKNOWN)
+            | (evidence == CERTIFIED_SKY_EVIDENCE_SKY)
+            | (evidence == CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY)
+        )
+        raw_sky = semantic == 17
+        if (
+            not bool(np.all(allowed))
+            or not bool(np.all(evidence[~raw_sky] == CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY))
+            or bool(
+                np.any(
+                    (evidence == CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY)
+                    & raw_sky
+                )
+            )
+            or bool(np.any(evidence == CERTIFIED_SKY_EVIDENCE_SKY) and np.any(~raw_sky[evidence == CERTIFIED_SKY_EVIDENCE_SKY]))
+        ):
+            raise _geometry_contract_error(
+                "Certified sky evidence contains unsupported or destructive labels."
+            )
+        raw_sky_pixels = int(np.count_nonzero(raw_sky))
+        certified_sky_pixels = int(
+            np.count_nonzero(evidence == CERTIFIED_SKY_EVIDENCE_SKY)
+        )
+        observed_non_sky_pixels = int(
+            np.count_nonzero(evidence == CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY)
+        )
+        required = {
+            "rawSkyPixels": raw_sky_pixels,
+            "certifiedSkyPixels": certified_sky_pixels,
+            "unconfirmedSkyPixels": raw_sky_pixels - certified_sky_pixels,
+            "observedNonSkyPixels": semantic.size - raw_sky_pixels,
+        }
+        for field, expected in required.items():
+            if _required_evidence_count(frame, field, "Certified sky evidence") != expected:
+                raise _geometry_contract_error(
+                    "Certified sky-evidence frame counters are inconsistent."
+                )
+        interior = _required_evidence_count(
+            frame, "interiorSkyPixels", "Certified sky evidence"
+        )
+        neighbours = _required_evidence_count(
+            frame, "neighbourViews", "Certified sky evidence"
+        )
+        if (
+            certified_sky_pixels > interior
+            or interior > raw_sky_pixels
+            or observed_non_sky_pixels != semantic.size - raw_sky_pixels
+            or neighbours > 8
+        ):
+            raise _geometry_contract_error(
+                "Certified sky-evidence support counters are inconsistent."
+            )
+        totals["certifiedSkyPixels"] += certified_sky_pixels
+        totals["unconfirmedSkyPixels"] += raw_sky_pixels - certified_sky_pixels
+        evidence_files.append(evidence_path)
+    if seen_images != set(expected_semantics):
+        raise _geometry_contract_error(
+            "Certified sky evidence does not cover every semantic image."
+        )
+    for field, expected in totals.items():
+        if _required_evidence_count(descriptor, field, "Certified sky evidence") != expected:
+            raise _geometry_contract_error(
+                "Certified sky-evidence aggregate counters are inconsistent."
+            )
+    return evidence_files
+
+
+def _sign_array_sha256(value: Any) -> str:
+    import numpy as np
+
+    array = np.ascontiguousarray(value)
+    digest = hashlib.sha256()
+    digest.update(array.dtype.str.encode("ascii"))
+    digest.update(json.dumps(array.shape, separators=(",", ":")).encode("ascii"))
+    digest.update(array.tobytes())
+    return "sha256:" + digest.hexdigest()
+
+
+def _sign_proposal_mask_sha256(value: Any) -> str:
+    import numpy as np
+
+    array = np.ascontiguousarray(value, dtype=np.uint8)
+    digest = hashlib.sha256()
+    digest.update(
+        canonical_json({"dtype": str(array.dtype), "shape": list(array.shape)})
+    )
+    digest.update(array.tobytes())
+    return "sha256:" + digest.hexdigest()
+
+
+def _validate_sign_claim(value: Any, label: str) -> None:
+    if (
+        not isinstance(value, dict)
+        or value.get("state") != "unverified"
+        or value.get("value") is not None
+        or value.get("supportingObservations") != []
+        or not isinstance(value.get("reasons"), list)
+        or any(not isinstance(reason, str) for reason in value["reasons"])
+    ):
+        raise _geometry_contract_error(
+            f"{label} must remain explicitly unverified and contain no promoted value."
+        )
+
+
+def _validate_sign_plane(value: Any, label: str) -> None:
+    if not isinstance(value, dict):
+        raise _geometry_contract_error(f"{label} is malformed.")
+    for field, length in (("normal", 3), ("center", 3)):
+        vector = value.get(field)
+        if (
+            not isinstance(vector, list)
+            or len(vector) != length
+            or any(
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not math.isfinite(float(item))
+                for item in vector
+            )
+        ):
+            raise _geometry_contract_error(f"{label} field {field} is malformed.")
+    for field in ("offset", "scale", "inlierRatio", "p95InlierResidualRatio"):
+        _required_evidence_number(value, field, label)
+    for field in ("sampleCount", "inlierCount"):
+        _required_evidence_count(value, field, label)
+
+
+def validate_sign_evidence_metrics(sign_metrics: Any) -> dict[str, int]:
+    """Validate sign evidence without requiring proposals or verified geometry."""
+
+    if not isinstance(sign_metrics, dict):
+        raise _geometry_contract_error("Structured sign-evidence metrics are missing.")
+    if (
+        sign_metrics.get("schema") != "servo.sign-evidence/v1"
+        or sign_metrics.get("algorithm") != "servo-sign-plane-cleanroom/1.0.0"
+        or sign_metrics.get("containsGeneratedPixels") is not False
+        or sign_metrics.get("independentSemanticConfirmation") is not False
+        or sign_metrics.get("metric") is not False
+        or sign_metrics.get("collisionValidated") is not False
+        or sign_metrics.get("zeroVerifiedSignsIsValid") is not True
+    ):
+        raise _geometry_contract_error(
+            "Sign-evidence safety or provenance metrics are unsupported."
+        )
+    counts = {
+        field: _required_evidence_count(sign_metrics, field, "Sign evidence")
+        for field in (
+            "proposalObservations",
+            "planarObservations",
+            "tracks",
+            "geometryVerifiedObservations",
+            "geometryVerifiedTracks",
+            "regulatoryClassVerifiedTracks",
+            "textVerifiedTracks",
+        )
+    }
+    if (
+        counts["planarObservations"] > counts["proposalObservations"]
+        or counts["geometryVerifiedObservations"] > counts["planarObservations"]
+        or counts["geometryVerifiedTracks"] > counts["tracks"]
+        or counts["regulatoryClassVerifiedTracks"] != 0
+        or counts["textVerifiedTracks"] != 0
+    ):
+        raise _geometry_contract_error(
+            "Sign-evidence counts promote unsupported geometry, class, or text."
+        )
+    return counts
+
+
+def validate_sign_evidence_artifacts(
+    output: Path,
+    semantic_files: Sequence[Path],
+    sign_metrics: Any,
+    expected_images: int,
+    *,
+    job_id: str,
+    profile: str,
+    pipeline_revision: str,
+    configuration_hash: str,
+) -> list[Path]:
+    """Validate and enumerate observed-only sign evidence for receipts/publish."""
+
+    import cv2
+    import numpy as np
+
+    counts = validate_sign_evidence_metrics(sign_metrics)
+    observations_path = output / "sign-observations.json"
+    manifest_path = output / "sign-evidence.json"
+    if not observations_path.is_file() or not manifest_path.is_file():
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Structured sign evidence and broad sign observations are required artifacts.",
+        )
+    observations_document = read_json(observations_path)
+    manifest = read_json(manifest_path)
+
+    if (
+        set(observations_document)
+        != {
+            "schema",
+            "jobId",
+            "profile",
+            "pipelineRevision",
+            "configurationHash",
+            "classification",
+            "structuredEvidence",
+            "proposalSource",
+            "observations",
+            "summary",
+            "safety",
+            "requirements",
+        }
+        or set(manifest)
+        != {
+            "schema",
+            "algorithm",
+            "runtime",
+            "cameraConvention",
+            "provenance",
+            "config",
+            "researchReferences",
+            "safety",
+            "observations",
+            "tracks",
+        }
+        or observations_document.get("schema") != "servo.sign-observations/v1"
+        or observations_document.get("jobId") != job_id
+        or observations_document.get("profile") != profile
+        or observations_document.get("pipelineRevision") != pipeline_revision
+        or observations_document.get("configurationHash") != configuration_hash
+        or observations_document.get("classification")
+        != "broad-semantic-proposals-with-separate-calibrated-geometry-evidence"
+        or observations_document.get("structuredEvidence") != "sign-evidence.json"
+        or observations_document.get("requirements")
+        != (
+            "Regulatory text and class remain unverified until a separate "
+            "external recognizer agrees across at least three calibrated views."
+        )
+    ):
+        raise _geometry_contract_error(
+            "Broad sign-observation provenance does not match this reconstruction."
+        )
+    proposal_source = observations_document.get("proposalSource")
+    if (
+        not isinstance(proposal_source, dict)
+        or proposal_source.get("producer")
+        != "shi-labs/oneformer_ade20k_swin_tiny"
+        or proposal_source.get("taxonomy") != "ADE20K"
+        or proposal_source.get("classId") != 43
+        or proposal_source.get("meaning")
+        != "broad-signboard-candidate-not-regulatory-identity"
+        or proposal_source.get("exactMasksPersisted") is not True
+        or proposal_source.get("independentSemanticConfirmation") is not False
+    ):
+        raise _geometry_contract_error(
+            "Broad sign proposals lack their exact single-model provenance."
+        )
+    safety = observations_document.get("safety")
+    if (
+        not isinstance(safety, dict)
+        or safety.get("collisionReady") is not False
+        or safety.get("metricGeometry") is not False
+        or safety.get("containsGeneratedPixels") is not False
+        or safety.get("geometryDoesNotVerifyRegulatoryMeaning") is not True
+        or safety.get("proposalAndSemanticSupportShareOneModel") is not True
+        or safety.get("zeroVerifiedSignsIsValid") is not True
+    ):
+        raise _geometry_contract_error(
+            "Broad sign-observation safety limitations are missing."
+        )
+
+    if (
+        manifest.get("schema") != "servo.sign-evidence/v1"
+        or manifest.get("algorithm") != "servo-sign-plane-cleanroom/1.0.0"
+        or manifest.get("cameraConvention")
+        != "camera-to-world; camera +x right, +y down, +z forward"
+    ):
+        raise _geometry_contract_error("Structured sign evidence uses an unsupported schema.")
+    manifest_safety = manifest.get("safety")
+    if (
+        not isinstance(manifest_safety, dict)
+        or manifest_safety.get("collisionReady") is not False
+        or manifest_safety.get("metricGeometry") is not False
+        or manifest_safety.get("containsGeneratedPixels") is not False
+        or manifest_safety.get(
+            "geometryVerificationDoesNotVerifyRegulatoryMeaning"
+        )
+        is not True
+    ):
+        raise _geometry_contract_error(
+            "Structured sign evidence contains an unsupported safety claim."
+        )
+    provenance = manifest.get("provenance")
+    expected_source_hashes = {
+        "oneformer-checkpoint": "sha256:" + ONEFORMER_CHECKPOINT_SHA256,
+        "video-depth-checkpoint": "sha256:" + VIDEO_DEPTH_CHECKPOINT_SHA256,
+    }
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance)
+        != {
+            "sequence_id",
+            "coordinate_frame_id",
+            "scale_provenance",
+            "camera_source",
+            "depth_source",
+            "semantic_source",
+            "candidate_source",
+            "distortion_state",
+            "depth_alignment",
+            "contains_generated_pixels",
+            "source_hashes",
+        }
+        or provenance.get("sequence_id") != job_id
+        or provenance.get("coordinate_frame_id") != f"colmap-undistorted:{job_id}"
+        or provenance.get("scale_provenance") != "sfm-arbitrary-scale"
+        or provenance.get("distortion_state") != "undistorted"
+        or provenance.get("depth_alignment") != "camera-z-in-coordinate-frame"
+        or provenance.get("contains_generated_pixels") is not False
+        or provenance.get("source_hashes") != expected_source_hashes
+    ):
+        raise _geometry_contract_error(
+            "Structured sign evidence is not bound to the observed SfM/depth inputs."
+        )
+    for field in ("camera_source", "depth_source", "semantic_source", "candidate_source"):
+        value = provenance.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise _geometry_contract_error(
+                f"Structured sign provenance field {field} is missing."
+            )
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        raise _geometry_contract_error("Structured sign-evidence configuration is missing.")
+    if (
+        _required_evidence_count(config, "minimum_views", "Sign evidence config") < 3
+        or _required_evidence_count(
+            config, "minimum_nonadjacent_gap", "Sign evidence config"
+        )
+        < 2
+        or not 16
+        <= _required_evidence_count(
+            config, "atlas_max_dimension", "Sign evidence config"
+        )
+        <= 512
+    ):
+        raise _geometry_contract_error(
+            "Structured sign-evidence configuration weakens multi-view or atlas bounds."
+        )
+
+    manifest_observations = manifest.get("observations")
+    manifest_tracks = manifest.get("tracks")
+    public_observations = observations_document.get("observations")
+    summary = observations_document.get("summary")
+    if (
+        not isinstance(manifest_observations, list)
+        or not isinstance(manifest_tracks, list)
+        or not isinstance(public_observations, list)
+        or not isinstance(summary, dict)
+    ):
+        raise _geometry_contract_error("Structured sign-evidence records are malformed.")
+    if (
+        len(manifest_observations) != counts["proposalObservations"]
+        or len(public_observations) != counts["proposalObservations"]
+        or len(manifest_tracks) != counts["tracks"]
+    ):
+        raise _geometry_contract_error(
+            "Structured sign-evidence record counts do not match their metrics."
+        )
+    for field, expected in (
+        ("proposalObservations", counts["proposalObservations"]),
+        ("planarObservations", counts["planarObservations"]),
+        ("geometryVerifiedObservations", counts["geometryVerifiedObservations"]),
+        ("tracks", counts["tracks"]),
+        ("geometryVerifiedTracks", counts["geometryVerifiedTracks"]),
+        ("regulatoryClassVerifiedTracks", 0),
+        ("textVerifiedTracks", 0),
+    ):
+        if _required_evidence_count(summary, field, "Sign summary") != expected:
+            raise _geometry_contract_error(
+                f"Sign summary field {field} does not match structured evidence."
+            )
+
+    semantic_map = _artifact_frame_map(
+        semantic_files, output / "semantics", "Semantic evidence"
+    )
+    if len(semantic_map) != expected_images:
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Sign evidence cannot be matched to every registered semantic frame.",
+        )
+    manifest_by_id: dict[str, dict[str, Any]] = {}
+    planar_observations = 0
+    verified_observations = 0
+    for record in manifest_observations:
+        if not isinstance(record, dict):
+            raise _geometry_contract_error("A structured sign observation is malformed.")
+        if set(record) != {
+            "candidateId",
+            "frameId",
+            "frameIndex",
+            "state",
+            "reasons",
+            "evidenceSha256",
+            "signFraction",
+            "forbiddenFraction",
+            "depthCoverage",
+            "sharpness",
+            "plane",
+        }:
+            raise _geometry_contract_error(
+                "A structured sign observation contains unsupported or private fields."
+            )
+        candidate_id = record.get("candidateId")
+        if (
+            not isinstance(candidate_id, str)
+            or not re.fullmatch(r"sign-proposal-[0-9]{6}-[0-9]{4,}", candidate_id)
+            or candidate_id in manifest_by_id
+        ):
+            raise _geometry_contract_error(
+                "Structured sign observations require unique deterministic identifiers."
+            )
+        frame_id = _safe_relative_evidence_path(
+            record.get("frameId"), "Structured sign frame"
+        )
+        frame_index = _required_evidence_count(
+            record, "frameIndex", "Structured sign observation"
+        )
+        if frame_index >= expected_images or _road_paint_frame_key(frame_id) not in semantic_map:
+            raise _geometry_contract_error(
+                f"Structured sign observation {candidate_id} references an unknown frame."
+            )
+        state = record.get("state")
+        if state not in {"unverified", "geometry-verified"}:
+            raise _geometry_contract_error(
+                f"Structured sign observation {candidate_id} has an invalid state."
+            )
+        reasons = record.get("reasons")
+        if not isinstance(reasons, list) or any(not isinstance(value, str) for value in reasons):
+            raise _geometry_contract_error(
+                f"Structured sign observation {candidate_id} has malformed reasons."
+            )
+        if not _is_sha256(record.get("evidenceSha256")):
+            raise _geometry_contract_error(
+                f"Structured sign observation {candidate_id} lacks an evidence digest."
+            )
+        sign_fraction = _required_evidence_number(
+            record, "signFraction", "Structured sign observation"
+        )
+        forbidden_fraction = _required_evidence_number(
+            record, "forbiddenFraction", "Structured sign observation"
+        )
+        depth_coverage = _required_evidence_number(
+            record, "depthCoverage", "Structured sign observation"
+        )
+        sharpness = _required_evidence_number(
+            record, "sharpness", "Structured sign observation"
+        )
+        if (
+            not 0.0 <= sign_fraction <= 1.0
+            or not 0.0 <= forbidden_fraction <= 1.0
+            or not 0.0 <= depth_coverage <= 1.0
+            or sharpness < 0.0
+        ):
+            raise _geometry_contract_error(
+                f"Structured sign observation {candidate_id} has invalid evidence metrics."
+            )
+        plane = record.get("plane")
+        if plane is not None:
+            _validate_sign_plane(plane, f"Structured sign observation {candidate_id} plane")
+            planar_observations += 1
+        if state == "geometry-verified":
+            if plane is None:
+                raise _geometry_contract_error(
+                    f"Geometry-verified sign observation {candidate_id} has no plane."
+                )
+            verified_observations += 1
+        manifest_by_id[candidate_id] = record
+    if (
+        planar_observations != counts["planarObservations"]
+        or verified_observations != counts["geometryVerifiedObservations"]
+    ):
+        raise _geometry_contract_error(
+            "Structured sign-observation geometry counts are inconsistent."
+        )
+
+    proposal_root = output / "sign-proposals"
+    proposal_files = sorted(
+        path
+        for path in proposal_root.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".png"
+    ) if proposal_root.is_dir() else []
+    expected_proposal_paths: dict[str, Path] = {}
+    public_ids: set[str] = set()
+    semantic_shapes: dict[str, list[int]] = {}
+    for public in public_observations:
+        if not isinstance(public, dict):
+            raise _geometry_contract_error("A broad sign proposal is malformed.")
+        if set(public) != {
+            "candidateId",
+            "image",
+            "frameIndex",
+            "boxPriorPixels",
+            "priorSize",
+            "areaPixels",
+            "focus",
+            "classification",
+            "sourceSemanticClass",
+            "proposalMaskSha256",
+            "regulatoryTextVerified",
+            "proposalMask",
+            "geometryState",
+            "geometryReasons",
+            "geometryEvidenceSha256",
+        }:
+            raise _geometry_contract_error(
+                "A broad sign proposal contains unsupported or private fields."
+            )
+        candidate_id = public.get("candidateId")
+        if not isinstance(candidate_id, str) or candidate_id not in manifest_by_id or candidate_id in public_ids:
+            raise _geometry_contract_error(
+                "Broad sign proposals do not match structured observation identifiers."
+            )
+        public_ids.add(candidate_id)
+        structured = manifest_by_id[candidate_id]
+        image = _safe_relative_evidence_path(public.get("image"), "Broad sign image")
+        public_frame_index = _required_evidence_count(
+            public, "frameIndex", "Broad sign proposal"
+        )
+        if (
+            image != structured["frameId"]
+            or public_frame_index != structured["frameIndex"]
+            or public.get("geometryState") != structured["state"]
+            or public.get("geometryReasons") != structured["reasons"]
+            or public.get("geometryEvidenceSha256") != structured["evidenceSha256"]
+            or public.get("classification") != "broad-signboard-candidate"
+            or public.get("regulatoryTextVerified") is not False
+            or any(str(key).startswith("_") for key in public)
+        ):
+            raise _geometry_contract_error(
+                f"Broad sign proposal {candidate_id} promotes or leaks unsupported data."
+            )
+        focus = _required_evidence_number(public, "focus", "Broad sign proposal")
+        if focus < 0.0:
+            raise _geometry_contract_error(
+                f"Broad sign proposal {candidate_id} has invalid focus evidence."
+            )
+        semantic_source = public.get("sourceSemanticClass")
+        if (
+            not isinstance(semantic_source, dict)
+            or semantic_source.get("taxonomy") != "ADE20K"
+            or semantic_source.get("id") != 43
+            or semantic_source.get("meaning")
+            != "signboard-broad-proposal-not-regulatory-identity"
+        ):
+            raise _geometry_contract_error(
+                f"Broad sign proposal {candidate_id} has unsupported semantic provenance."
+            )
+        prior_size = public.get("priorSize")
+        box = public.get("boxPriorPixels")
+        if (
+            not isinstance(prior_size, list)
+            or len(prior_size) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in prior_size)
+            or not isinstance(box, list)
+            or len(box) != 4
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in box)
+        ):
+            raise _geometry_contract_error(
+                f"Broad sign proposal {candidate_id} has malformed raster coordinates."
+            )
+        x, y, width, height = box
+        if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > prior_size[0] or y + height > prior_size[1]:
+            raise _geometry_contract_error(
+                f"Broad sign proposal {candidate_id} lies outside its semantic raster."
+            )
+        semantic_key = _road_paint_frame_key(image)
+        semantic_shape = semantic_shapes.get(semantic_key)
+        if semantic_shape is None:
+            semantic_image = cv2.imread(
+                str(semantic_map[semantic_key]), cv2.IMREAD_UNCHANGED
+            )
+            if semantic_image is None or semantic_image.ndim != 2:
+                raise _geometry_contract_error(
+                    f"Broad sign proposal {candidate_id} has an unreadable semantic raster."
+                )
+            semantic_shape = [semantic_image.shape[1], semantic_image.shape[0]]
+            semantic_shapes[semantic_key] = semantic_shape
+        if semantic_shape != prior_size:
+            raise _geometry_contract_error(
+                f"Broad sign proposal {candidate_id} does not match its semantic raster."
+            )
+        expected_relative = f"sign-proposals/{candidate_id}.png"
+        if _safe_relative_evidence_path(
+            public.get("proposalMask"), "Broad sign proposal mask"
+        ) != expected_relative:
+            raise _geometry_contract_error(
+                f"Broad sign proposal {candidate_id} references the wrong exact mask."
+            )
+        mask_path = output / Path(expected_relative)
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+        if (
+            mask is None
+            or mask.dtype != np.uint8
+            or mask.ndim != 2
+            or mask.shape != (height, width)
+            or not np.all(np.isin(mask, [0, 255]))
+        ):
+            raise _geometry_contract_error(
+                f"Exact sign proposal mask {candidate_id} is malformed."
+            )
+        binary = (mask > 0).astype(np.uint8)
+        area = _required_evidence_count(public, "areaPixels", "Broad sign proposal")
+        if (
+            int(np.count_nonzero(binary)) != area
+            or public.get("proposalMaskSha256") != _sign_proposal_mask_sha256(binary)
+        ):
+            raise _geometry_contract_error(
+                f"Exact sign proposal mask {candidate_id} does not match its digest."
+            )
+        expected_proposal_paths[candidate_id] = mask_path
+    if public_ids != set(manifest_by_id) or set(proposal_files) != set(expected_proposal_paths.values()):
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Exact sign-proposal masks do not match every broad observation.",
+        )
+
+    atlas_root = output / "sign-atlases"
+    atlas_png_files = sorted(
+        path for path in atlas_root.rglob("*") if path.is_file() and path.suffix.lower() == ".png"
+    ) if atlas_root.is_dir() else []
+    evidence_map_files = sorted(
+        path for path in atlas_root.rglob("*") if path.is_file() and path.suffix.lower() == ".npz"
+    ) if atlas_root.is_dir() else []
+    expected_atlas_png: set[Path] = set()
+    expected_evidence_maps: set[Path] = set()
+    verified_tracks = 0
+    track_ids: set[str] = set()
+    for track in manifest_tracks:
+        if not isinstance(track, dict):
+            raise _geometry_contract_error("A structured sign track is malformed.")
+        if set(track) != {
+            "trackId",
+            "state",
+            "reasons",
+            "observationIds",
+            "selectedObservationIds",
+            "cameraBaselineRatio",
+            "centroidDispersionRatio",
+            "normalP95Degrees",
+            "plane",
+            "regulatoryClass",
+            "text",
+            "fusion",
+        }:
+            raise _geometry_contract_error(
+                "A structured sign track contains unsupported or private fields."
+            )
+        track_id = track.get("trackId")
+        if (
+            not isinstance(track_id, str)
+            or not re.fullmatch(r"sign-track-[0-9]{6}", track_id)
+            or track_id in track_ids
+        ):
+            raise _geometry_contract_error(
+                "Structured sign tracks require unique deterministic identifiers."
+            )
+        track_ids.add(track_id)
+        observation_ids = track.get("observationIds")
+        selected_ids = track.get("selectedObservationIds")
+        if (
+            not isinstance(observation_ids, list)
+            or not isinstance(selected_ids, list)
+            or len(observation_ids) != len(set(observation_ids))
+            or len(selected_ids) != len(set(selected_ids))
+            or not set(selected_ids).issubset(observation_ids)
+            or not set(observation_ids).issubset(manifest_by_id)
+        ):
+            raise _geometry_contract_error(
+                f"Structured sign track {track_id} has invalid observation links."
+            )
+        _validate_sign_claim(track.get("regulatoryClass"), f"{track_id} regulatory class")
+        _validate_sign_claim(track.get("text"), f"{track_id} text")
+        for field in (
+            "cameraBaselineRatio",
+            "centroidDispersionRatio",
+            "normalP95Degrees",
+        ):
+            if _required_evidence_number(track, field, f"Sign track {track_id}") < 0.0:
+                raise _geometry_contract_error(
+                    f"Sign track {track_id} field {field} cannot be negative."
+                )
+        reasons = track.get("reasons")
+        if not isinstance(reasons, list) or any(not isinstance(value, str) for value in reasons):
+            raise _geometry_contract_error(
+                f"Sign track {track_id} has malformed reasons."
+            )
+        state = track.get("state")
+        fusion = track.get("fusion")
+        plane = track.get("plane")
+        if state == "geometry-verified":
+            verified_tracks += 1
+            if fusion is None or plane is None:
+                raise _geometry_contract_error(
+                    f"Geometry-verified sign track {track_id} lacks observed plane/atlas evidence."
+                )
+        elif state == "unverified":
+            if fusion is not None:
+                raise _geometry_contract_error(
+                    f"Unverified sign track {track_id} cannot publish an evidence atlas."
+                )
+        else:
+            raise _geometry_contract_error(f"Sign track {track_id} has an invalid state.")
+        if plane is not None:
+            _validate_sign_plane(plane, f"Structured sign track {track_id} plane")
+        if fusion is None:
+            continue
+        if (
+            not isinstance(fusion, dict)
+            or fusion.get("sampling") != "nearest-observed-pixel"
+            or fusion.get("generatedPixels") is not False
+            or not _is_sha256(fusion.get("bgrSha256"))
+            or not _is_sha256(fusion.get("validMaskSha256"))
+            or not _is_sha256(fusion.get("sourceMapSha256"))
+        ):
+            raise _geometry_contract_error(
+                f"Sign atlas {track_id} lacks observed-only sampling provenance."
+            )
+        shape = fusion.get("shape")
+        observation_order = fusion.get("observationOrder")
+        if (
+            not isinstance(shape, list)
+            or len(shape) != 3
+            or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in shape)
+            or shape[2] != 3
+            or shape[0] > int(config["atlas_max_dimension"])
+            or shape[1] > int(config["atlas_max_dimension"])
+            or not isinstance(observation_order, list)
+            or not observation_order
+            or len(observation_order) != len(set(observation_order))
+            or not set(observation_order).issubset(selected_ids)
+        ):
+            raise _geometry_contract_error(f"Sign atlas {track_id} metadata is malformed.")
+        plane_bounds = fusion.get("planeBounds")
+        if (
+            not isinstance(plane_bounds, list)
+            or len(plane_bounds) != 4
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                for value in plane_bounds
+            )
+        ):
+            raise _geometry_contract_error(
+                f"Sign atlas {track_id} plane bounds are malformed."
+            )
+        atlas_path = atlas_root / f"{track_id}.png"
+        evidence_path = atlas_root / f"{track_id}-evidence.npz"
+        atlas = cv2.imread(str(atlas_path), cv2.IMREAD_COLOR)
+        if atlas is None or list(atlas.shape) != shape:
+            raise _geometry_contract_error(f"Sign atlas {track_id} is missing or malformed.")
+        try:
+            with np.load(evidence_path, allow_pickle=False) as evidence:
+                if set(evidence.files) != {
+                    "valid_mask",
+                    "support_count",
+                    "source_observation_slot",
+                }:
+                    raise _geometry_contract_error(
+                        f"Sign evidence map {track_id} contains unsupported arrays."
+                    )
+                valid_mask = np.asarray(evidence["valid_mask"])
+                support_count = np.asarray(evidence["support_count"])
+                source_slot = np.asarray(evidence["source_observation_slot"])
+        except (OSError, ValueError) as error:
+            raise _geometry_contract_error(
+                f"Sign evidence map {track_id} cannot be decoded."
+            ) from error
+        raster_shape = tuple(shape[:2])
+        if (
+            valid_mask.dtype != np.bool_
+            or support_count.dtype != np.uint16
+            or source_slot.dtype != np.int16
+            or valid_mask.shape != raster_shape
+            or support_count.shape != raster_shape
+            or source_slot.shape != raster_shape
+            or not np.any(valid_mask)
+            or np.any(support_count[valid_mask] == 0)
+            or np.any(support_count[~valid_mask] != 0)
+            or np.any(source_slot[~valid_mask] != -1)
+            or np.any(source_slot[valid_mask] < 0)
+            or np.any(source_slot[valid_mask] >= len(observation_order))
+            or np.any(atlas[~valid_mask] != 0)
+        ):
+            raise _geometry_contract_error(
+                f"Sign evidence map {track_id} violates observed-pixel provenance."
+            )
+        valid_fraction = _required_evidence_number(fusion, "validFraction", "Sign atlas")
+        maximum_support = _required_evidence_count(fusion, "maximumSupport", "Sign atlas")
+        if (
+            not math.isclose(
+                valid_fraction,
+                float(np.mean(valid_mask)),
+                rel_tol=1.0e-9,
+                abs_tol=1.0e-12,
+            )
+            or maximum_support != int(np.max(support_count))
+            or fusion["bgrSha256"] != _sign_array_sha256(atlas)
+            or fusion["validMaskSha256"] != _sign_array_sha256(valid_mask)
+            or fusion["sourceMapSha256"] != _sign_array_sha256(source_slot)
+        ):
+            raise _geometry_contract_error(
+                f"Sign atlas/evidence-map hashes for {track_id} do not match their arrays."
+            )
+        expected_atlas_png.add(atlas_path)
+        expected_evidence_maps.add(evidence_path)
+    if verified_tracks != counts["geometryVerifiedTracks"]:
+        raise _geometry_contract_error(
+            "Geometry-verified sign-track count does not match structured evidence."
+        )
+    if set(atlas_png_files) != expected_atlas_png or set(evidence_map_files) != expected_evidence_maps:
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Sign atlases/evidence maps do not match every geometry-verified track.",
+        )
+    return [manifest_path, *proposal_files, *atlas_png_files, *evidence_map_files]
+
+
+def geometry_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
+    """Build dense structural evidence before appearance optimization."""
+
+    output = context.stage_path("geometry")
+    output.mkdir(parents=True, exist_ok=True)
+    video_depth_root = find_video_depth_root()
+    depth_checkpoint = find_video_depth_checkpoint()
+    oneformer_root = find_oneformer_root()
+    if (
+        video_depth_root is None
+        or depth_checkpoint is None
+        or oneformer_root is None
+    ):
+        raise WorkerError(
+            "geometry_models_missing",
+            "The pinned depth and semantic geometry models are not provisioned.",
+            "Run tools/reconstruction/setup_native.ps1 before rebuilding the world.",
+        )
+    helper = Path(__file__).with_name("servo_priors.py")
+    run_process(
+        context,
+        "geometry",
+        [
+            sys.executable,
+            str(helper),
+            "build",
+            "--data",
+            str(context.stage_path("pose") / "training"),
+            "--output",
+            str(output),
+            "--video-depth-root",
+            str(video_depth_root),
+            "--depth-checkpoint",
+            str(depth_checkpoint),
+            "--oneformer-root",
+            str(oneformer_root),
+            "--maximum-dimension",
+            "960",
+            "--depth-input-size",
+            "518",
+            "--job-id",
+            context.job_id,
+            "--profile",
+            context.profile.name,
+            "--pipeline-revision",
+            PIPELINE_REVISION,
+            "--configuration-hash",
+            context.configuration_hash,
+        ],
+        environment=compiler_environment(),
+        timeout=90 * 60,
+    )
+    metrics_path = output / "geometry-metrics.json"
+    road_path = output / "road-surface.json"
+    signs_path = output / "sign-observations.json"
+    if not all(path.is_file() for path in (metrics_path, road_path, signs_path)):
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Depth, semantic, road-surface, and sign inference did not produce its required artifacts.",
+        )
+    metrics = read_json(metrics_path)
+    road_document = read_json(road_path)
+    pose_metrics = read_json(context.stage_path("pose") / "pose-metrics.json")
+    geometry_metrics_path = context.stage_path("geometry") / "geometry-metrics.json"
+    geometry_metrics = read_json(geometry_metrics_path)
+    expected_images = int(pose_metrics.get("registeredImages", 0))
+    depth = metrics.get("depth")
+    semantics = metrics.get("semantics")
+    road = metrics.get("roadSurface")
+    road_paint = semantics.get("roadPaint") if isinstance(semantics, dict) else None
+    observed_directional_environment = (
+        semantics.get("observedDirectionalEnvironment")
+        if isinstance(semantics, dict)
+        else None
+    )
+    certified_sky_evidence = (
+        semantics.get("certifiedSkyEvidence")
+        if isinstance(semantics, dict)
+        else None
+    )
+    sign_evidence = (
+        semantics.get("signEvidence") if isinstance(semantics, dict) else None
+    )
+    alignment = depth.get("alignment") if isinstance(depth, dict) else None
+    temporal_semantics = (
+        semantics.get("temporalConsistency")
+        if isinstance(semantics, dict)
+        else None
+    )
+    validate_road_surface_document(
+        road_document,
+        road,
+        expected_images=expected_images,
+        job_id=context.job_id,
+        profile=context.profile.name,
+        pipeline_revision=PIPELINE_REVISION,
+        configuration_hash=context.configuration_hash,
+    )
+    environment_asset = validate_observed_directional_environment_artifact(
+        output,
+        observed_directional_environment,
+        expected_images,
+    )
+    if (
+        metrics.get("schema") != "servo.geometry-priors/v1"
+        or metrics.get("jobId") != context.job_id
+        or metrics.get("profile") != context.profile.name
+        or metrics.get("pipelineRevision") != PIPELINE_REVISION
+        or metrics.get("configurationHash") != context.configuration_hash
+        or int(metrics.get("registeredImages", -1)) != expected_images
+        or metrics.get("metric") is not False
+        or metrics.get("lidar") is not False
+        or metrics.get("scaleProvenance") != "sfm-arbitrary"
+        or not isinstance(alignment, dict)
+        or float(alignment.get("inlierRatio", 0.0)) < 0.50
+        or float(alignment.get("alignedFrameRatio", 0.0)) < 0.80
+        or alignment.get("allAlignedGroupsConverged") is not True
+        # These bounds qualify a soft, arbitrary-scale training prior. They do
+        # not qualify metric depth or collision geometry; those remain blocked
+        # by the published scale/evidence contract.
+        or float(alignment.get("maximumNormalizedP95Residual", math.inf)) > 0.25
+        or float(alignment.get("minimumSupportedFrameRatio", 0.0)) < 0.90
+        or float(alignment.get("minimumSupportedWindowRatio", 0.0)) < 1.0
+        or float(alignment.get("maximumFrameNormalizedP95P90", math.inf)) > 0.35
+        or float(alignment.get("maximumWindowNormalizedP95Residual", math.inf)) > 0.35
+        or float(alignment.get("maximumWindowAbsoluteNormalizedBias", math.inf)) > 0.10
+        or float(alignment.get("minimumAlignedValidFractionP10", 0.0)) < 0.95
+        or float(alignment.get("minimumNavigableAlignedValidFractionP10", 0.0)) < 0.90
+        or not isinstance(semantics, dict)
+        or float(semantics.get("navigableSurfaceFraction", 0.0)) < 0.01
+        or not isinstance(temporal_semantics, dict)
+        or temporal_semantics.get("passes") is not True
+        or not isinstance(road, dict)
+        or road.get("converged") is not True
+        or float(road.get("inlierRatio", 0.0)) < 0.65
+        or float(road.get("coveredKnotFraction", 0.0)) < 0.60
+        or float(road.get("p95AbsoluteResidual", math.inf)) > 0.15
+    ):
+        raise WorkerError(
+            "geometry_evidence_gate_failed",
+            "Dense depth, semantics, or navigable-surface evidence is too weak for r7 Gaussian fitting.",
+            "Use a slower, sharper capture with visible ground overlap and fewer dynamic occlusions.",
+        )
+    depth_files = sorted((output / "depth").rglob("*.npz"))
+    semantic_files = sorted((output / "semantics").rglob("*.png"))
+    if len(depth_files) != expected_images or len(semantic_files) != expected_images:
+        raise WorkerError(
+            "geometry_artifact_missing",
+            "Dense geometry priors do not cover every registered camera.",
+        )
+    sky_evidence_files = validate_certified_sky_evidence_artifact(
+        output,
+        certified_sky_evidence,
+        semantic_files,
+        expected_images,
+    )
+    paint_class_files, paint_confidence_files = validate_road_paint_artifacts(
+        output,
+        semantic_files,
+        road_paint,
+        expected_images,
+    )
+    sign_evidence_files = validate_sign_evidence_artifacts(
+        output,
+        semantic_files,
+        sign_evidence,
+        expected_images,
+        job_id=context.job_id,
+        profile=context.profile.name,
+        pipeline_revision=PIPELINE_REVISION,
+        configuration_hash=context.configuration_hash,
+    )
+    artifacts = [
+        metrics_path,
+        road_path,
+        signs_path,
+        *depth_files,
+        *semantic_files,
+        *paint_class_files,
+        *paint_confidence_files,
+        environment_asset,
+        *sky_evidence_files,
+        *sign_evidence_files,
+    ]
+    return metrics, artifacts
+
+
 def train_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
     output = context.stage_path("train")
     output.mkdir(parents=True, exist_ok=True)
     training_data = context.stage_path("pose") / "training"
+    geometry_root = context.stage_path("geometry")
+    geometry_metrics_path = geometry_root / "geometry-metrics.json"
+    geometry_metrics = read_json(geometry_metrics_path)
+    semantic_metrics = geometry_metrics.get("semantics")
+    sky_color = (
+        semantic_metrics.get("skyColorSrgb")
+        if isinstance(semantic_metrics, dict)
+        else None
+    )
+    observed_directional_environment = (
+        semantic_metrics.get("observedDirectionalEnvironment")
+        if isinstance(semantic_metrics, dict)
+        else None
+    )
+    certified_sky_evidence = (
+        semantic_metrics.get("certifiedSkyEvidence")
+        if isinstance(semantic_metrics, dict)
+        else None
+    )
+    if (
+        geometry_metrics.get("schema") != "servo.geometry-priors/v1"
+        or not isinstance(sky_color, list)
+        or len(sky_color) != 3
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not 0.0 <= float(value) <= 1.0
+            for value in sky_color
+        )
+    ):
+        raise WorkerError(
+            "geometry_artifact_invalid",
+            "The committed geometry stage has invalid sky/background provenance.",
+        )
+    validate_observed_directional_environment_artifact(
+        geometry_root,
+        observed_directional_environment,
+        int(geometry_metrics.get("registeredImages", 0)),
+    )
+    geometry_semantic_files = sorted((geometry_root / "semantics").rglob("*.png"))
+    validate_certified_sky_evidence_artifact(
+        geometry_root,
+        certified_sky_evidence,
+        geometry_semantic_files,
+        int(geometry_metrics.get("registeredImages", 0)),
+    )
+    dense_depth_weight, road_surface_weight = {
+        "fidelity-12gb": (0.04, 0.10),
+        "balanced-12gb": (0.03, 0.08),
+        "recovery-12gb": (0.02, 0.06),
+    }[context.profile.name]
+    training_input_hash = context.stage_input_hash("train")
     config = {
         "schema": "servo.gsplat-training/v2",
         "jobId": context.job_id,
         "data": str(training_data),
+        "geometryRoot": str(geometry_root),
+        "geometryPriors": True,
+        "geometryPriorsSchema": geometry_metrics["schema"],
+        "geometryPriorsMetricsSha256": sha256_file(geometry_metrics_path),
         "output": str(output),
         "profile": context.profile.name,
         "pipelineRevision": PIPELINE_REVISION,
+        "pipelineCodeHash": context.pipeline_code_hash,
+        "trainingInputHash": training_input_hash,
         "dataFactor": context.profile.data_factor,
         "maxSteps": context.profile.max_steps,
         "checkpointEvery": context.profile.checkpoint_every,
@@ -3007,6 +5239,17 @@ def train_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "coarseFactor": context.profile.coarse_factor,
         "coarseSteps": context.profile.coarse_steps,
         "finalFitSteps": context.profile.final_fit_steps,
+        "mainSamplingPolicy": MAIN_SAMPLING_POLICY,
+        "endpointSamplingWindow": ENDPOINT_SAMPLING_WINDOW,
+        "endpointSamplingMultiplier": ENDPOINT_SAMPLING_MULTIPLIER,
+        "maximumSparseAnchorMultiplier": MAXIMUM_SPARSE_ANCHOR_MULTIPLIER,
+        "screenSpaceRefinementPolicy": SCREEN_SPACE_REFINEMENT_POLICY,
+        "densityRefinementPolicy": DENSITY_REFINEMENT_POLICY,
+        "growScale2d": 0.05,
+        "pruneScale2d": 0.15,
+        "refineScale2dStopIter": (
+            context.profile.max_steps - context.profile.final_fit_steps
+        ),
         "targetGaussians": context.profile.target_gaussians,
         "maxGaussians": context.profile.max_gaussians,
         "qualityGate": {
@@ -3022,17 +5265,51 @@ def train_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
             "minimumExactPlyRegisteredPsnrP10": 18.0,
             "minimumExactPlyRegisteredSsimP10": 0.60,
             "maximumConsecutiveDegradedViews": 2,
+            "maximumSkyAlphaP95": 0.10,
+            "maximumSkyAlphaAboveTenPercentFraction": 0.10,
+            "maximumViewSkyAlphaP95": 0.25,
+            "minimumRoadSurfaceSupport": 0.95,
+            "maximumRoadRelativeDepthP50": 0.10,
+            "maximumRoadRelativeDepthP95": 0.35,
+            "maximumRoadDepthAmbiguityP50": 0.20,
+            "maximumRoadDepthAmbiguityP95": 1.0,
         },
         "appearanceCompensation": context.profile.appearance_compensation,
         "appearanceLearningRate": context.profile.appearance_learning_rate,
         "appearanceRegularization": context.profile.appearance_regularization,
         "staticConfidenceMasks": True,
-        "staticConfidenceMethod": "DIS-bidirectional-flow-plus-COLMAP-epipolar-v1",
+        "staticConfidenceMethod": STATIC_CONFIDENCE_METHOD,
+        "semanticPhotometricMask": True,
+        "semanticPhotometricMaskMethod": SEMANTIC_PHOTOMETRIC_METHOD,
+        "semanticRigidStaticConfidence": 1.0,
+        "semanticVegetationConfidenceFloor": 0.0,
+        "semanticWaterConfidenceFloor": 0.0,
+        # A base mean-alpha term covers all observed semantic sky. A stronger
+        # transparent-target BCE acts only on an eroded observed-sky interior
+        # and only above the recorded tail threshold. It cannot invent sky or
+        # make an unobserved direction a geometry target.
+        "semanticSkyOpacityWeight": 0.10,
+        "semanticSkyOpacityMethod": SEMANTIC_SKY_OPACITY_METHOD,
+        "semanticSkyOpacityTailThreshold": SEMANTIC_SKY_TAIL_THRESHOLD,
+        "semanticSkyOpacityTailWeight": SEMANTIC_SKY_TAIL_WEIGHT,
+        "semanticSkyOpacityTailBceEpsilon": SEMANTIC_SKY_TAIL_BCE_EPSILON,
+        "semanticSkyOpacityTailErosionMethod": SEMANTIC_SKY_TAIL_EROSION_METHOD,
+        "semanticSkyOpacityTailErosionRadius": SEMANTIC_SKY_TAIL_EROSION_RADIUS,
+        "backgroundColorSrgb": [float(value) for value in sky_color],
+        "backgroundSource": (
+            "observed-oneformer-sky-equirectangular-plus-mean-fallback-srgb-v1"
+        ),
+        "observedDirectionalEnvironment": observed_directional_environment,
+        "certifiedSkyEvidence": certified_sky_evidence,
         "scaleRegularization": 0.001,
         "sparseDepthWeight": 0.05,
         "depthLayerVarianceWeight": 0.01,
         "depthLayerVarianceEvery": 8,
         "depthLayerVarianceStart": 1_000,
+        "denseRelativeDepthWeight": dense_depth_weight,
+        "roadSurfaceDepthWeight": road_surface_weight,
+        "denseGeometryEvery": 2,
+        "denseGeometryStart": 500,
         "maxReprojectionError": context.profile.max_reprojection_error,
         "maxVramGiB": context.profile.expected_vram_gib,
         "cancelPath": str(context.cancel_path),
@@ -3296,6 +5573,236 @@ def parse_ply_header(
     }
 
 
+def validate_training_coverage_contract(
+    training_config: dict[str, Any],
+    train_metrics: dict[str, Any],
+    cameras: dict[str, Any],
+) -> None:
+    """Bind deterministic endpoint coverage and gsplat radius refinement receipts."""
+
+    try:
+        configured_stop = int(training_config["refineScale2dStopIter"])
+        expected_stop = (
+            int(training_config["maxSteps"])
+            - int(training_config["finalFitSteps"])
+        )
+        configured_density_policy = str(
+            training_config.get(
+                "densityRefinementPolicy", DENSITY_REFINEMENT_POLICY
+            )
+        )
+        grow_scale2d = float(training_config["growScale2d"])
+        prune_scale2d = float(training_config["pruneScale2d"])
+        endpoint_window = int(training_config["endpointSamplingWindow"])
+        endpoint_multiplier = int(training_config["endpointSamplingMultiplier"])
+        maximum_sparse_multiplier = int(
+            training_config["maximumSparseAnchorMultiplier"]
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise WorkerError(
+            "invalid_metrics", "Training coverage/refinement configuration is incomplete."
+        ) from error
+    if (
+        training_config.get("mainSamplingPolicy") != MAIN_SAMPLING_POLICY
+        or endpoint_window != ENDPOINT_SAMPLING_WINDOW
+        or endpoint_multiplier != ENDPOINT_SAMPLING_MULTIPLIER
+        or maximum_sparse_multiplier != MAXIMUM_SPARSE_ANCHOR_MULTIPLIER
+        or training_config.get("screenSpaceRefinementPolicy")
+        != SCREEN_SPACE_REFINEMENT_POLICY
+        or configured_density_policy != DENSITY_REFINEMENT_POLICY
+        or not math.isclose(grow_scale2d, 0.05, rel_tol=0.0, abs_tol=1e-12)
+        or not math.isclose(prune_scale2d, 0.15, rel_tol=0.0, abs_tol=1e-12)
+        or configured_stop != expected_stop
+    ):
+        raise WorkerError(
+            "artifact_mismatch", "Training coverage/refinement configuration is unsupported."
+        )
+    refinement = train_metrics.get("screenSpaceRefinement")
+    if (
+        not isinstance(refinement, dict)
+        or refinement.get("policy") != SCREEN_SPACE_REFINEMENT_POLICY
+        or refinement.get("densityRefinementPolicy", DENSITY_REFINEMENT_POLICY)
+        != DENSITY_REFINEMENT_POLICY
+        or refinement.get("radiusNormalization") != "max-image-dimension"
+    ):
+        raise WorkerError(
+            "artifact_mismatch", "Training did not serialize screen-space refinement."
+        )
+    try:
+        metric_grow = float(refinement["growScale2d"])
+        metric_prune = float(refinement["pruneScale2d"])
+        metric_stop = int(refinement["stopIter"])
+        metric_actual_stop = int(refinement["actualStopIter"])
+        metric_growth_frozen = refinement["growthFrozenAtTarget"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise WorkerError(
+            "invalid_metrics", "Screen-space refinement receipt is invalid."
+        ) from error
+    if (
+        not math.isclose(metric_grow, grow_scale2d, rel_tol=0.0, abs_tol=1e-12)
+        or not math.isclose(metric_prune, prune_scale2d, rel_tol=0.0, abs_tol=1e-12)
+        or metric_stop != configured_stop
+        or isinstance(metric_growth_frozen, bool) is False
+        or metric_actual_stop > configured_stop
+        or (
+            metric_growth_frozen is True
+            and (
+                metric_actual_stop != configured_stop
+                or refinement.get("growthCapPolicy") != DENSITY_GROWTH_CAP_POLICY
+            )
+        )
+    ):
+        raise WorkerError(
+            "artifact_mismatch", "Screen-space refinement receipt disagrees with configuration."
+        )
+
+    sampling = train_metrics.get("mainSampling")
+    camera_records = cameras.get("cameras")
+    validation_images = cameras.get("validationImages")
+    if (
+        not isinstance(sampling, dict)
+        or not isinstance(camera_records, list)
+        or not isinstance(validation_images, list)
+    ):
+        raise WorkerError("invalid_metrics", "Training coverage receipt is missing.")
+    try:
+        receipt_endpoint_window = int(sampling["endpointWindow"])
+        receipt_endpoint_multiplier = int(sampling["endpointMultiplier"])
+        receipt_maximum_sparse_multiplier = int(
+            sampling["maximumSparseAnchorMultiplier"]
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise WorkerError(
+            "invalid_metrics", "Training coverage policy receipt is invalid."
+        ) from error
+    if (
+        sampling.get("policy") != MAIN_SAMPLING_POLICY
+        or receipt_endpoint_window != endpoint_window
+        or receipt_endpoint_multiplier != endpoint_multiplier
+        or receipt_maximum_sparse_multiplier != maximum_sparse_multiplier
+    ):
+        raise WorkerError(
+            "artifact_mismatch", "Training coverage receipt disagrees with configuration."
+        )
+    camera_names = [record.get("image") for record in camera_records]
+    if (
+        any(not isinstance(name, str) or not name for name in camera_names)
+        or any(not isinstance(name, str) or not name for name in validation_images)
+        or len(set(camera_names)) != len(camera_names)
+        or len(set(validation_images)) != len(validation_images)
+    ):
+        raise WorkerError("invalid_metrics", "Camera coverage names are invalid.")
+    validation_set = set(validation_images)
+    if not validation_set.issubset(set(camera_names)):
+        raise WorkerError("artifact_mismatch", "Validation cameras are not registered.")
+    expected_train_names = [name for name in camera_names if name not in validation_set]
+    entries = sampling.get("perImage")
+    if not isinstance(entries, list) or len(entries) != len(expected_train_names):
+        raise WorkerError("artifact_mismatch", "Training coverage does not list every trained camera.")
+    by_name: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("image"), str):
+            raise WorkerError("invalid_metrics", "Training coverage entry is invalid.")
+        name = entry["image"]
+        if name in by_name or name not in expected_train_names:
+            raise WorkerError("artifact_mismatch", "Training coverage camera set is inconsistent.")
+        by_name[name] = entry
+    if set(by_name) != set(expected_train_names):
+        raise WorkerError("artifact_mismatch", "Training coverage camera set is incomplete.")
+
+    endpoint_names: set[str] = set()
+    grouped: dict[str, list[str]] = collections.defaultdict(list)
+    for name in camera_names:
+        if name is not None:
+            grouped[PurePosixPath(name).parent.as_posix()].append(name)
+    for group, names in grouped.items():
+        if PurePosixPath(group).name.startswith("video-"):
+            window = min(endpoint_window, len(names))
+            endpoint_names.update(names[:window])
+            endpoint_names.update(names[-window:])
+    endpoint_names.intersection_update(expected_train_names)
+
+    positive_anchors: list[int] = []
+    weights: list[int] = []
+    visits: list[int] = []
+    endpoint_visits: list[int] = []
+    per_image_values: list[tuple[str, int, int, int, bool]] = []
+    for name in expected_train_names:
+        entry = by_name[name]
+        try:
+            visit = int(entry["visits"])
+            weight = int(entry["weight"])
+            anchors = int(entry["sparseAnchors"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise WorkerError("invalid_metrics", "Training coverage values are invalid.") from error
+        endpoint = entry.get("endpoint") is True
+        if visit <= 0 or weight <= 0 or weight > maximum_sparse_multiplier or anchors < 0:
+            raise WorkerError("invalid_metrics", "Training coverage values are out of range.")
+        if endpoint != (name in endpoint_names):
+            raise WorkerError("artifact_mismatch", "Endpoint coverage designation is inconsistent.")
+        if endpoint and weight < endpoint_multiplier:
+            raise WorkerError("artifact_mismatch", "Endpoint coverage weight is below 2x.")
+        if anchors > 0:
+            positive_anchors.append(anchors)
+        weights.append(weight)
+        visits.append(visit)
+        if endpoint:
+            endpoint_visits.append(visit)
+        per_image_values.append((name, visit, weight, anchors, endpoint))
+    median_anchors = float(statistics.median(positive_anchors)) if positive_anchors else 0.0
+    for _, _, weight, anchors, endpoint in per_image_values:
+        sparse_weight = (
+            maximum_sparse_multiplier
+            if anchors <= 0 and median_anchors > 0.0
+            else max(
+                1,
+                min(
+                    maximum_sparse_multiplier,
+                    math.ceil(median_anchors / max(anchors, 1)),
+                ),
+            )
+        )
+        if weight != max(endpoint_multiplier if endpoint else 1, sparse_weight):
+            raise WorkerError("artifact_mismatch", "Training coverage weight is not reproducible.")
+    try:
+        total_visits = int(sampling["totalVisits"])
+        minimum_visits = int(sampling["minimumVisits"])
+        maximum_visits = int(sampling["maximumVisits"])
+        epoch_slots = int(sampling["epochSlots"])
+        receipt_median = float(sampling["medianSparseAnchors"])
+        receipt_epochs = float(sampling["epochs"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise WorkerError("invalid_metrics", "Training coverage summary is invalid.") from error
+    if (
+        total_visits != sum(visits)
+        or total_visits != int(train_metrics.get("heldoutEvaluationStep", -1))
+        or total_visits
+        != int(training_config["maxSteps"])
+        - int(training_config["finalFitSteps"])
+        or minimum_visits != min(visits)
+        or maximum_visits != max(visits)
+        or epoch_slots != sum(weights)
+        or not math.isclose(receipt_median, median_anchors, rel_tol=0.0, abs_tol=1e-12)
+        or not math.isfinite(receipt_epochs)
+        or not math.isclose(
+            receipt_epochs,
+            total_visits / epoch_slots,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or int(sampling.get("endpointImageCount", -1)) != len(endpoint_visits)
+        or (
+            endpoint_visits
+            and int(sampling.get("minimumEndpointVisits", -1)) != min(endpoint_visits)
+        )
+        or (
+            endpoint_visits
+            and int(sampling.get("maximumEndpointVisits", -1)) != max(endpoint_visits)
+        )
+    ):
+        raise WorkerError("artifact_mismatch", "Training coverage summary is inconsistent.")
+
+
 def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
     output = context.stage_path("validate")
     output.mkdir(parents=True, exist_ok=True)
@@ -3307,6 +5814,8 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         context.stage_path("train") / "heldout-metrics.json"
     )
     pose_metrics = read_json(context.stage_path("pose") / "pose-metrics.json")
+    geometry_metrics_path = context.stage_path("geometry") / "geometry-metrics.json"
+    geometry_metrics = read_json(geometry_metrics_path)
     training_config = read_json(context.stage_path("train") / "training-config.json")
     cameras = read_json(context.stage_path("train") / "cameras.json")
     appearance = read_json(context.stage_path("train") / "appearance.json")
@@ -3348,16 +5857,33 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
     require_finite(train_metrics, "training")
     require_finite(heldout_metrics, "heldout")
     require_finite(pose_metrics, "pose")
+    require_finite(geometry_metrics, "geometry")
     if train_metrics.get("schema") != "servo.gsplat-metrics/v2":
         raise WorkerError("invalid_metrics", "Training metrics use an unsupported schema.")
     if pose_metrics.get("schema") != "servo.pose-metrics/v1":
         raise WorkerError("invalid_metrics", "Pose metrics use an unsupported schema.")
+    if geometry_metrics.get("schema") != "servo.geometry-priors/v1":
+        raise WorkerError(
+            "invalid_metrics", "Geometry-prior metrics use an unsupported schema."
+        )
     if heldout_metrics.get("schema") != "servo.gsplat-heldout-evaluation/v1":
         raise WorkerError(
             "invalid_metrics", "Held-out metrics use an unsupported schema."
         )
     if training_config.get("schema") != "servo.gsplat-training/v2":
         raise WorkerError("invalid_metrics", "Training configuration uses an unsupported schema.")
+    expected_training_input_hash = context.stage_input_hash("train")
+    if (
+        training_config.get("pipelineCodeHash") != context.pipeline_code_hash
+        or training_config.get("trainingInputHash") != expected_training_input_hash
+        or train_metrics.get("pipelineCodeHash") != context.pipeline_code_hash
+        or train_metrics.get("trainingInputHash") != expected_training_input_hash
+        or heldout_metrics.get("trainingInputHash") != expected_training_input_hash
+    ):
+        raise WorkerError(
+            "artifact_mismatch",
+            "Training artifacts are not bound to the exact pose, geometry, and pipeline snapshot.",
+        )
     if cameras.get("schema") != "servo.gaussian-cameras/v1":
         raise WorkerError("invalid_metrics", "Camera artifact uses an unsupported schema.")
     if appearance.get("schema") != "servo.gaussian-appearance/v1":
@@ -3366,6 +5892,7 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         ("training", train_metrics),
         ("held-out", heldout_metrics),
         ("pose", pose_metrics),
+        ("geometry", geometry_metrics),
     ):
         if artifact.get("jobId") != context.job_id:
             raise WorkerError("artifact_mismatch", f"{artifact_name.title()} artifact belongs to another job.")
@@ -3373,6 +5900,15 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
             raise WorkerError("artifact_mismatch", f"{artifact_name.title()} artifact uses another profile.")
     if train_metrics.get("pipelineRevision") != PIPELINE_REVISION:
         raise WorkerError("artifact_mismatch", "Training artifact uses another pipeline revision.")
+    if geometry_metrics.get("pipelineRevision") != PIPELINE_REVISION:
+        raise WorkerError(
+            "artifact_mismatch", "Geometry artifact uses another pipeline revision."
+        )
+    if geometry_metrics.get("configurationHash") != context.configuration_hash:
+        raise WorkerError(
+            "artifact_mismatch",
+            "Geometry artifact configuration hash does not match the job.",
+        )
     if heldout_metrics.get("pipelineRevision") != PIPELINE_REVISION:
         raise WorkerError(
             "artifact_mismatch", "Held-out artifact uses another pipeline revision."
@@ -3444,6 +5980,28 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         maximum_final_ssim_regression = float(
             quality_gate["maximumFinalSsimRegression"]
         )
+        maximum_sky_alpha_p95 = float(quality_gate["maximumSkyAlphaP95"])
+        maximum_sky_alpha_fraction = float(
+            quality_gate["maximumSkyAlphaAboveTenPercentFraction"]
+        )
+        maximum_view_sky_alpha_p95 = float(
+            quality_gate["maximumViewSkyAlphaP95"]
+        )
+        minimum_road_surface_support = float(
+            quality_gate["minimumRoadSurfaceSupport"]
+        )
+        maximum_road_relative_depth_p50 = float(
+            quality_gate["maximumRoadRelativeDepthP50"]
+        )
+        maximum_road_relative_depth_p95 = float(
+            quality_gate["maximumRoadRelativeDepthP95"]
+        )
+        maximum_road_ambiguity_p50 = float(
+            quality_gate["maximumRoadDepthAmbiguityP50"]
+        )
+        maximum_road_ambiguity_p95 = float(
+            quality_gate["maximumRoadDepthAmbiguityP95"]
+        )
     except (KeyError, TypeError, ValueError) as error:
         raise WorkerError(
             "invalid_metrics", "Training quality-gate thresholds are invalid."
@@ -3458,6 +6016,14 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         minimum_final_artifact_ssim,
         maximum_final_psnr_regression,
         maximum_final_ssim_regression,
+        maximum_sky_alpha_p95,
+        maximum_sky_alpha_fraction,
+        maximum_view_sky_alpha_p95,
+        minimum_road_surface_support,
+        maximum_road_relative_depth_p50,
+        maximum_road_relative_depth_p95,
+        maximum_road_ambiguity_p50,
+        maximum_road_ambiguity_p95,
     )
     if not all(math.isfinite(value) and value >= 0.0 for value in thresholds):
         raise WorkerError(
@@ -3481,6 +6047,46 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
     if not isinstance(camera_records, list) or not camera_records:
         raise WorkerError("invalid_metrics", "Camera artifact contains no cameras.")
     camera_count = len(camera_records)
+    geometry_semantics = geometry_metrics.get("semantics")
+    observed_directional_environment = (
+        geometry_semantics.get("observedDirectionalEnvironment")
+        if isinstance(geometry_semantics, dict)
+        else None
+    )
+    certified_sky_evidence = (
+        geometry_semantics.get("certifiedSkyEvidence")
+        if isinstance(geometry_semantics, dict)
+        else None
+    )
+    validate_observed_directional_environment_artifact(
+        context.stage_path("geometry"),
+        observed_directional_environment,
+        camera_count,
+    )
+    geometry_semantic_files = sorted(
+        (context.stage_path("geometry") / "semantics").rglob("*.png")
+    )
+    validate_certified_sky_evidence_artifact(
+        context.stage_path("geometry"),
+        certified_sky_evidence,
+        geometry_semantic_files,
+        camera_count,
+    )
+    trained_environment = train_metrics.get("environment")
+    if (
+        not isinstance(trained_environment, dict)
+        or training_config.get("observedDirectionalEnvironment")
+        != observed_directional_environment
+        or trained_environment.get("observedDirectionalEnvironment")
+        != observed_directional_environment
+        or trained_environment.get("backgroundSource")
+        != "observed-oneformer-sky-equirectangular-plus-mean-fallback-srgb-v1"
+    ):
+        raise WorkerError(
+            "artifact_mismatch",
+            "Directional sky evidence does not match geometry, training, and export provenance.",
+        )
+    validate_training_coverage_contract(training_config, train_metrics, cameras)
     if int(train_metrics.get("steps", -1)) != int(training_config.get("maxSteps", -2)):
         raise WorkerError("artifact_mismatch", "Training did not complete the configured step count.")
     if int(train_metrics.get("finalFitSteps", -1)) != int(training_config.get("finalFitSteps", -2)):
@@ -3543,12 +6149,17 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
     if (
         not isinstance(static_confidence, dict)
         or static_confidence.get("schema") != "servo.static-confidence/v1"
-        or static_confidence.get("method")
-        != training_config.get("staticConfidenceMethod")
+        or static_confidence.get("method") != STATIC_CONFIDENCE_METHOD
+        or static_confidence.get("role")
+        != "raw-soft-temporal-evidence-not-semantic-exclusion"
+        or static_confidence.get("zeroWeightMeaning")
+        != "insufficient-flow-evidence-not-proven-dynamic"
         or training_config.get("staticConfidenceMasks") is not True
+        or training_config.get("staticConfidenceMethod")
+        != STATIC_CONFIDENCE_METHOD
         or geometry_regularization.get("staticConfidenceMasks") is not True
         or geometry_regularization.get("staticConfidenceMethod")
-        != training_config.get("staticConfidenceMethod")
+        != STATIC_CONFIDENCE_METHOD
         or int(static_confidence.get("registeredImages", 0)) != camera_count
     ):
         raise WorkerError(
@@ -3557,6 +6168,38 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         )
     for field in ("meanCoverage", "p10Coverage", "meanZeroWeightFraction"):
         required_finite_number(static_confidence, field, "Static confidence")
+    configured_geometry_hash = training_config.get("geometryPriorsMetricsSha256")
+    if (
+        training_config.get("geometryPriors") is not True
+        or training_config.get("geometryPriorsSchema")
+        != "servo.geometry-priors/v1"
+        or configured_geometry_hash != sha256_file(geometry_metrics_path)
+        or geometry_regularization.get("geometryPriors") is not True
+        or geometry_regularization.get("geometryPriorsSchema")
+        != training_config.get("geometryPriorsSchema")
+        or geometry_regularization.get("geometryPriorsMetricsSha256")
+        != configured_geometry_hash
+        or training_config.get("certifiedSkyEvidence")
+        != certified_sky_evidence
+        or geometry_regularization.get("certifiedSkyEvidence")
+        != certified_sky_evidence
+        or training_config.get("semanticPhotometricMask") is not True
+        or training_config.get("semanticPhotometricMaskMethod")
+        != SEMANTIC_PHOTOMETRIC_METHOD
+        or geometry_regularization.get("semanticPhotometricMask") is not True
+        or geometry_regularization.get("semanticPhotometricMaskMethod")
+        != SEMANTIC_PHOTOMETRIC_METHOD
+        or geometry_regularization.get("semanticPhotometricSource")
+        != "pinned-oneformer-ade20k-observed-pixels-mapped-to-servo-taxonomy"
+        or geometry_regularization.get("semanticRigidStaticLabels")
+        != [*range(1, 16), 24, 25]
+        or geometry_regularization.get("semanticExcludedLabels")
+        != [0, 17, 18, 19, 20, 21, 22]
+    ):
+        raise WorkerError(
+            "artifact_mismatch",
+            "Dense geometry-prior provenance is missing or inconsistent.",
+        )
     try:
         configured_sparse_depth_weight = float(
             training_config["sparseDepthWeight"]
@@ -3570,6 +6213,44 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         configured_variance_start = int(
             training_config["depthLayerVarianceStart"]
         )
+        configured_dense_depth_weight = float(
+            training_config["denseRelativeDepthWeight"]
+        )
+        configured_road_surface_weight = float(
+            training_config["roadSurfaceDepthWeight"]
+        )
+        configured_sky_opacity_weight = float(
+            training_config["semanticSkyOpacityWeight"]
+        )
+        configured_sky_opacity_method = str(
+            training_config["semanticSkyOpacityMethod"]
+        )
+        configured_sky_tail_threshold = float(
+            training_config["semanticSkyOpacityTailThreshold"]
+        )
+        configured_sky_tail_weight = float(
+            training_config["semanticSkyOpacityTailWeight"]
+        )
+        configured_sky_tail_bce_epsilon = float(
+            training_config["semanticSkyOpacityTailBceEpsilon"]
+        )
+        configured_sky_tail_erosion_method = str(
+            training_config["semanticSkyOpacityTailErosionMethod"]
+        )
+        configured_sky_tail_erosion_radius = int(
+            training_config["semanticSkyOpacityTailErosionRadius"]
+        )
+        configured_rigid_static_confidence = float(
+            training_config["semanticRigidStaticConfidence"]
+        )
+        configured_vegetation_confidence_floor = float(
+            training_config["semanticVegetationConfidenceFloor"]
+        )
+        configured_water_confidence_floor = float(
+            training_config["semanticWaterConfidenceFloor"]
+        )
+        configured_dense_every = int(training_config["denseGeometryEvery"])
+        configured_dense_start = int(training_config["denseGeometryStart"])
     except (KeyError, TypeError, ValueError) as error:
         raise WorkerError(
             "invalid_metrics", "Geometry regularization configuration is invalid."
@@ -3579,6 +6260,18 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "recentSparseDepthLoss",
         "depthLayerVarianceWeight",
         "recentDepthLayerVarianceLoss",
+        "denseRelativeDepthWeight",
+        "roadSurfaceDepthWeight",
+        "recentDenseRelativeDepthLoss",
+        "recentRoadSurfaceDepthLoss",
+        "semanticSkyOpacityWeight",
+        "semanticSkyOpacityTailThreshold",
+        "semanticSkyOpacityTailWeight",
+        "semanticSkyOpacityTailBceEpsilon",
+        "recentSemanticSkyOpacityLoss",
+        "semanticRigidStaticConfidence",
+        "semanticVegetationConfidenceFloor",
+        "semanticWaterConfidenceFloor",
     ):
         required_finite_number(
             geometry_regularization, metric_field, "Geometry regularization"
@@ -3601,10 +6294,157 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         or int(geometry_regularization.get("depthLayerVarianceStart", -1))
         != configured_variance_start
         or int(geometry_regularization.get("sparseDepthSamples", 0)) <= 0
+        or not math.isclose(
+            float(geometry_regularization["denseRelativeDepthWeight"]),
+            configured_dense_depth_weight,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(geometry_regularization["roadSurfaceDepthWeight"]),
+            configured_road_surface_weight,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or configured_sky_opacity_method != SEMANTIC_SKY_OPACITY_METHOD
+        or not math.isclose(
+            configured_sky_tail_threshold,
+            SEMANTIC_SKY_TAIL_THRESHOLD,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            configured_sky_tail_weight,
+            SEMANTIC_SKY_TAIL_WEIGHT,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            configured_sky_tail_bce_epsilon,
+            SEMANTIC_SKY_TAIL_BCE_EPSILON,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or configured_sky_tail_erosion_method
+        != SEMANTIC_SKY_TAIL_EROSION_METHOD
+        or configured_sky_tail_erosion_radius
+        != SEMANTIC_SKY_TAIL_EROSION_RADIUS
+        or geometry_regularization.get("semanticSkyOpacityMethod")
+        != configured_sky_opacity_method
+        or geometry_regularization.get("semanticSkyOpacitySource")
+        != "oneformer-rotation-only-temporally-confirmed-sky-alpha-zero"
+        or not math.isclose(
+            float(geometry_regularization["semanticSkyOpacityWeight"]),
+            configured_sky_opacity_weight,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(geometry_regularization["semanticSkyOpacityTailThreshold"]),
+            configured_sky_tail_threshold,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(geometry_regularization["semanticSkyOpacityTailWeight"]),
+            configured_sky_tail_weight,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(geometry_regularization["semanticSkyOpacityTailBceEpsilon"]),
+            configured_sky_tail_bce_epsilon,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or geometry_regularization.get("semanticSkyOpacityTailErosionMethod")
+        != configured_sky_tail_erosion_method
+        or int(
+            geometry_regularization.get("semanticSkyOpacityTailErosionRadius", -1)
+        )
+        != configured_sky_tail_erosion_radius
+        or not math.isclose(
+            float(geometry_regularization["semanticRigidStaticConfidence"]),
+            configured_rigid_static_confidence,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(geometry_regularization["semanticVegetationConfidenceFloor"]),
+            configured_vegetation_confidence_floor,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            float(geometry_regularization["semanticWaterConfidenceFloor"]),
+            configured_water_confidence_floor,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            configured_rigid_static_confidence, 1.0, rel_tol=0.0, abs_tol=1e-12
+        )
+        or not math.isclose(
+            configured_vegetation_confidence_floor,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            configured_water_confidence_floor,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or int(geometry_regularization.get("denseGeometryEvery", -1))
+        != configured_dense_every
+        or int(geometry_regularization.get("denseGeometryStart", -1))
+        != configured_dense_start
+        or int(geometry_regularization.get("denseGeometrySteps", 0)) <= 0
+        or int(geometry_regularization.get("denseRelativeDepthSamples", 0)) <= 0
+        or int(geometry_regularization.get("roadSurfaceDepthSamples", 0)) <= 0
     ):
         raise WorkerError(
             "artifact_mismatch",
             "Geometry regularization receipt is inconsistent or empty.",
+        )
+    semantic_pixel_counts = (
+        geometry_metrics.get("semantics", {}).get("pixelCounts", {})
+        if isinstance(geometry_metrics.get("semantics"), dict)
+        else {}
+    )
+    try:
+        semantic_sky_pixels = int(semantic_pixel_counts.get("17", 0))
+        certified_sky_pixels = int(certified_sky_evidence["certifiedSkyPixels"])
+        sky_opacity_steps = int(
+            geometry_regularization.get("semanticSkyOpacitySteps", -1)
+        )
+        sky_opacity_samples = int(
+            geometry_regularization.get("semanticSkyOpacitySamples", -1)
+        )
+    except (TypeError, ValueError) as error:
+        raise WorkerError(
+            "invalid_metrics", "Semantic sky-opacity counters are invalid."
+        ) from error
+    if (
+        configured_sky_opacity_weight <= 0.0
+        or sky_opacity_steps < 0
+        or sky_opacity_samples < 0
+        or sky_opacity_steps > int(training_config.get("maxSteps", -1))
+        or sky_opacity_samples < sky_opacity_steps
+        or (
+            certified_sky_pixels > 0
+            and (sky_opacity_steps <= 0 or sky_opacity_samples <= 0)
+        )
+        or (
+            certified_sky_pixels == 0
+            and (sky_opacity_steps != 0 or sky_opacity_samples != 0)
+        )
+        or (semantic_sky_pixels > 0 and certified_sky_pixels <= 0)
+    ):
+        raise WorkerError(
+            "artifact_mismatch",
+            "Semantic sky-opacity regularization did not match the observed sky evidence.",
         )
     first_variance_step = (
         (configured_variance_start + configured_variance_every - 1)
@@ -3644,6 +6484,8 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         or int(checkpoint_reference.get("step", -2)) != heldout_step - 1
         or checkpoint_reference.get("configurationHash")
         != context.configuration_hash
+        or checkpoint_reference.get("trainingInputHash")
+        != expected_training_input_hash
     ):
         raise WorkerError(
             "artifact_mismatch", "Held-out checkpoint metadata is inconsistent."
@@ -3716,6 +6558,26 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
             "artifact_mismatch",
             "Final-artifact validation did not render every published camera.",
         )
+    final_semantic_geometry = final_artifact_validation.get("semanticGeometry")
+    if not isinstance(final_semantic_geometry, dict):
+        raise WorkerError(
+            "invalid_metrics", "Final-artifact semantic geometry metrics are missing."
+        )
+    semantic_values = {
+        field: required_finite_number(
+            final_semantic_geometry, field, "Final semantic geometry"
+        )
+        for field in (
+            "skyAlphaP95",
+            "skyAlphaAboveTenPercentFraction",
+            "maximumViewSkyAlphaP95",
+            "roadSupportFraction",
+            "roadRelativeDepthP50",
+            "roadRelativeDepthP95",
+            "roadDepthAmbiguityP50",
+            "roadDepthAmbiguityP95",
+        )
+    }
     if (
         final_psnr < minimum_final_artifact_psnr
         or final_ssim < minimum_final_artifact_ssim
@@ -3726,6 +6588,15 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         - maximum_final_psnr_regression
         or final_ssim < float(train_metrics["ssimMean"])
         - maximum_final_ssim_regression
+        or semantic_values["skyAlphaP95"] > maximum_sky_alpha_p95
+        or semantic_values["skyAlphaAboveTenPercentFraction"]
+        > maximum_sky_alpha_fraction
+        or semantic_values["maximumViewSkyAlphaP95"] > maximum_view_sky_alpha_p95
+        or semantic_values["roadSupportFraction"] < minimum_road_surface_support
+        or semantic_values["roadRelativeDepthP50"] > maximum_road_relative_depth_p50
+        or semantic_values["roadRelativeDepthP95"] > maximum_road_relative_depth_p95
+        or semantic_values["roadDepthAmbiguityP50"] > maximum_road_ambiguity_p50
+        or semantic_values["roadDepthAmbiguityP95"] > maximum_road_ambiguity_p95
     ):
         raise WorkerError(
             "quality_gate_failed",
@@ -3806,6 +6677,14 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
             "minimumFinalArtifactSsim": minimum_final_artifact_ssim,
             "maximumFinalPsnrRegression": maximum_final_psnr_regression,
             "maximumFinalSsimRegression": maximum_final_ssim_regression,
+            "maximumSkyAlphaP95": maximum_sky_alpha_p95,
+            "maximumSkyAlphaAboveTenPercentFraction": maximum_sky_alpha_fraction,
+            "maximumViewSkyAlphaP95": maximum_view_sky_alpha_p95,
+            "minimumRoadSurfaceSupport": minimum_road_surface_support,
+            "maximumRoadRelativeDepthP50": maximum_road_relative_depth_p50,
+            "maximumRoadRelativeDepthP95": maximum_road_relative_depth_p95,
+            "maximumRoadDepthAmbiguityP50": maximum_road_ambiguity_p50,
+            "maximumRoadDepthAmbiguityP95": maximum_road_ambiguity_p95,
             "preferredPsnr": 23.0,
             "preferredSsim": 0.75,
             "artifactMaximums": hard_artifact_gates,
@@ -3936,6 +6815,8 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "jobId",
         "profile",
         "pipelineRevision",
+        "pipelineCodeHash",
+        "trainingInputHash",
         "dataFactor",
         "maxSteps",
         "checkpointEvery",
@@ -3949,6 +6830,15 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "coarseFactor",
         "coarseSteps",
         "finalFitSteps",
+        "mainSamplingPolicy",
+        "endpointSamplingWindow",
+        "endpointSamplingMultiplier",
+        "maximumSparseAnchorMultiplier",
+        "screenSpaceRefinementPolicy",
+        "densityRefinementPolicy",
+        "growScale2d",
+        "pruneScale2d",
+        "refineScale2dStopIter",
         "targetGaussians",
         "maxGaussians",
         "qualityGate",
@@ -3957,11 +6847,34 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "appearanceRegularization",
         "staticConfidenceMasks",
         "staticConfidenceMethod",
+        "geometryPriors",
+        "geometryPriorsSchema",
+        "geometryPriorsMetricsSha256",
+        "semanticPhotometricMask",
+        "semanticPhotometricMaskMethod",
+        "semanticRigidStaticConfidence",
+        "semanticVegetationConfidenceFloor",
+        "semanticWaterConfidenceFloor",
+        "semanticSkyOpacityWeight",
+        "semanticSkyOpacityMethod",
+        "semanticSkyOpacityTailThreshold",
+        "semanticSkyOpacityTailWeight",
+        "semanticSkyOpacityTailBceEpsilon",
+        "semanticSkyOpacityTailErosionMethod",
+        "semanticSkyOpacityTailErosionRadius",
+        "backgroundColorSrgb",
+        "backgroundSource",
+        "observedDirectionalEnvironment",
+        "certifiedSkyEvidence",
         "scaleRegularization",
         "sparseDepthWeight",
         "depthLayerVarianceWeight",
         "depthLayerVarianceEvery",
         "depthLayerVarianceStart",
+        "denseRelativeDepthWeight",
+        "roadSurfaceDepthWeight",
+        "denseGeometryEvery",
+        "denseGeometryStart",
         "maxReprojectionError",
         "maxVramGiB",
         "configurationHash",
@@ -3973,6 +6886,96 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
     }
     atomic_write_json(attempt / "training-config.json", public_training_config)
     copied["trainingConfig"] = "training-config.json"
+    geometry_root = context.stage_path("geometry")
+    geometry_metrics_source = geometry_root / "geometry-metrics.json"
+    road_surface_source = geometry_root / "road-surface.json"
+    sign_observations_source = geometry_root / "sign-observations.json"
+    geometry_metrics = read_json(geometry_metrics_source)
+    geometry_semantics = geometry_metrics.get("semantics")
+    observed_directional_environment = (
+        geometry_semantics.get("observedDirectionalEnvironment")
+        if isinstance(geometry_semantics, dict)
+        else None
+    )
+    certified_sky_evidence = (
+        geometry_semantics.get("certifiedSkyEvidence")
+        if isinstance(geometry_semantics, dict)
+        else None
+    )
+    sign_metrics = (
+        geometry_semantics.get("signEvidence")
+        if isinstance(geometry_semantics, dict)
+        else None
+    )
+    geometry_semantic_files = sorted((geometry_root / "semantics").rglob("*.png"))
+    pose_metrics_for_signs = read_json(
+        context.stage_path("pose") / "pose-metrics.json"
+    )
+    environment_source = validate_observed_directional_environment_artifact(
+        geometry_root,
+        observed_directional_environment,
+        int(pose_metrics_for_signs.get("registeredImages", 0)),
+    )
+    sky_evidence_sources = validate_certified_sky_evidence_artifact(
+        geometry_root,
+        certified_sky_evidence,
+        geometry_semantic_files,
+        int(pose_metrics_for_signs.get("registeredImages", 0)),
+    )
+    sign_evidence_sources = validate_sign_evidence_artifacts(
+        geometry_root,
+        geometry_semantic_files,
+        sign_metrics,
+        int(pose_metrics_for_signs.get("registeredImages", 0)),
+        job_id=context.job_id,
+        profile=context.profile.name,
+        pipeline_revision=PIPELINE_REVISION,
+        configuration_hash=context.configuration_hash,
+    )
+    for source, destination_name, artifact_key in (
+        (geometry_metrics_source, "geometry-metrics.json", "geometryMetrics"),
+        (road_surface_source, "road-surface.json", "roadSurface"),
+        (sign_observations_source, "sign-observations.json", "signObservations"),
+        (sky_evidence_sources[0], "sky-evidence.json", "certifiedSkyEvidence"),
+    ):
+        shutil.copy2(source, attempt / destination_name)
+        copied[artifact_key] = destination_name
+    environment_relative = Path(
+        _safe_relative_evidence_path(
+            observed_directional_environment.get("asset"),
+            "Observed directional environment asset",
+        )
+    )
+    environment_destination = attempt / environment_relative
+    environment_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(environment_source, environment_destination)
+    copied["observedDirectionalEnvironment"] = environment_relative.as_posix()
+    for source in sky_evidence_sources[1:]:
+        relative = source.relative_to(geometry_root)
+        destination = attempt / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    copied["certifiedSkyEvidenceMasks"] = CERTIFIED_SKY_EVIDENCE_DIRECTORY
+    published_sign_files = [attempt / "sign-observations.json"]
+    for source in sign_evidence_sources:
+        relative = source.relative_to(geometry_root)
+        destination = attempt / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        published_sign_files.append(destination)
+    copied["signEvidence"] = "sign-evidence.json"
+    if any(path.parts[0] == "sign-proposals" for path in (
+        source.relative_to(geometry_root) for source in sign_evidence_sources
+    )):
+        copied["signProposalMasks"] = "sign-proposals"
+    if any(path.parts[0] == "sign-atlases" for path in (
+        source.relative_to(geometry_root) for source in sign_evidence_sources
+    )):
+        copied["signAtlasesAndEvidenceMaps"] = "sign-atlases"
+    published_sign_hashes = {
+        path.relative_to(attempt).as_posix(): sha256_file(path)
+        for path in sorted(published_sign_files)
+    }
     sparse_source = context.stage_path("pose") / "training" / "sparse"
     sparse_destination = attempt / "colmap-sparse"
     shutil.copytree(sparse_source, sparse_destination)
@@ -4010,6 +7013,8 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "workerVersion": WORKER_VERSION,
         "pipelineRevision": PIPELINE_REVISION,
         "configurationHash": context.configuration_hash,
+        "pipelineCodeHash": context.pipeline_code_hash,
+        "pipelineSources": context.pipeline_sources,
         "profile": context.profile.name,
         "representationType": REPRESENTATION_TYPE,
         "coordinateSystem": {
@@ -4026,6 +7031,7 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
             "antialiasCompensation": training_metrics["rasterizationMode"]
             == "antialiased",
         },
+        "environment": training_metrics["environment"],
         "provenance": "observed",
         "runtime": {
             **training_metrics["runtime"],
@@ -4049,6 +7055,42 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
             "geometryRegularization": training_metrics[
                 "geometryRegularization"
             ],
+        },
+        "geometryEvidence": {
+            "schema": geometry_metrics["schema"],
+            "pipeline": geometry_metrics["pipeline"],
+            "scaleProvenance": geometry_metrics["scaleProvenance"],
+            "metric": geometry_metrics["metric"],
+            "lidar": geometry_metrics["lidar"],
+            "temperature": geometry_metrics["temperature"],
+            "collisionValidated": geometry_metrics["collisionValidated"],
+            "depth": geometry_metrics["depth"],
+            "semantics": geometry_metrics["semantics"],
+            "roadSurface": geometry_metrics["roadSurface"],
+            "signArtifacts": {
+                "manifest": "sign-evidence.json",
+                "observations": "sign-observations.json",
+                "proposalMasks": sorted(
+                    path
+                    for path in published_sign_hashes
+                    if path.startswith("sign-proposals/")
+                ),
+                "atlases": sorted(
+                    path
+                    for path in published_sign_hashes
+                    if path.startswith("sign-atlases/") and path.endswith(".png")
+                ),
+                "evidenceMaps": sorted(
+                    path
+                    for path in published_sign_hashes
+                    if path.startswith("sign-atlases/") and path.endswith(".npz")
+                ),
+                "hashes": published_sign_hashes,
+                "regulatoryClassVerified": False,
+                "textVerified": False,
+                "containsGeneratedPixels": False,
+            },
+            "limitations": geometry_metrics["limitations"],
         },
         "training": {
             "steps": training_metrics["steps"],
@@ -4091,6 +7133,16 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         ],
         environment=compiler_environment(),
     )
+    trained_environment = training_metrics.get("environment")
+    if (
+        not isinstance(trained_environment, dict)
+        or trained_environment.get("observedDirectionalEnvironment")
+        != observed_directional_environment
+    ):
+        raise WorkerError(
+            "training_artifact_invalid",
+            "The trained world did not preserve the committed directional sky evidence.",
+        )
     audit_metrics_path = audit_output / "observed-path-audit.json"
     audit_video_path = audit_output / "observed-path-audit.mp4"
     if not audit_metrics_path.is_file() or not audit_video_path.is_file():
@@ -4108,6 +7160,7 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         != int(training_metrics["gaussians"])
         or int(audit_metrics.get("shDegree", -1))
         != int(training_config["shDegree"])
+        or audit_metrics.get("environment") != manifest["environment"]
     ):
         raise WorkerError(
             "path_audit_failed",
@@ -4229,6 +7282,7 @@ STAGE_RUNNERS: dict[str, Callable[[JobContext], tuple[dict[str, Any], list[Path]
     "hash": full_hash_stage,
     "extract": extract_stage,
     "pose": pose_stage,
+    "geometry": geometry_stage,
     "train": train_stage,
     "validate": validate_stage,
     "publish": publish_stage,

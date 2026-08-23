@@ -3,12 +3,15 @@
 
 #include <QElapsedTimer>
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
 #include <QMatrix4x4>
 #include <QMetaObject>
 #include <QPointer>
@@ -32,6 +35,8 @@ struct GaussianSceneData
 {
     QByteArray payload;
     QVector<QVector3D> centers;
+    QVector3D backgroundColorSrgb { 0.0f, 0.0f, 0.0f };
+    QImage observedDirectionalEnvironment;
     QVector3D initialPosition { 0.0f, 0.0f, 2.0f };
     QVector3D initialForward { 0.0f, 0.0f, -1.0f };
     QVector3D initialUp { 0.0f, 1.0f, 0.0f };
@@ -260,6 +265,10 @@ bool readInitialCamera(const QString &plyPath,
 LoadResult loadGaussianScene(const QString &path)
 {
     LoadResult result;
+    Servo::Rendering::GaussianWorldEnvironment environment;
+    if (!Servo::Rendering::readGaussianWorldEnvironment(path, &environment, &result.error)) {
+        return result;
+    }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         result.error = QStringLiteral("Unable to open the Gaussian PLY: %1").arg(file.errorString());
@@ -308,6 +317,8 @@ LoadResult loadGaussianScene(const QString &path)
     }
 
     auto scene = std::make_shared<GaussianSceneData>();
+    scene->backgroundColorSrgb = environment.backgroundColorSrgb;
+    scene->observedDirectionalEnvironment = environment.observedDirectionalRgba;
     scene->payload = file.read(payloadBytes);
     if (scene->payload.size() != payloadBytes) {
         result.error = QStringLiteral("The Gaussian PLY could not be read completely.");
@@ -412,6 +423,7 @@ struct alignas(16) CameraUniforms
     float camera[4];
     float viewportFocal[4];
     float parameters[4];
+    float environmentFallback[4];
 };
 
 struct alignas(16) RadixConfig
@@ -423,6 +435,221 @@ struct alignas(16) RadixConfig
 };
 
 } // namespace
+
+bool Servo::Rendering::readGaussianWorldEnvironment(const QString &plyPath,
+                                                     GaussianWorldEnvironment *environment,
+                                                     QString *error)
+{
+    if (!environment) {
+        if (error)
+            *error = QStringLiteral("The Gaussian environment output is null.");
+        return false;
+    }
+    *environment = GaussianWorldEnvironment {};
+    if (error)
+        error->clear();
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+
+    const QDir bundleDirectory = QFileInfo(plyPath).dir();
+    QFile manifestFile(bundleDirectory.filePath(QStringLiteral("world.json")));
+    if (!manifestFile.exists())
+        return true; // Standalone and pre-manifest PLYs retain the black fallback.
+    if (!manifestFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return fail(QStringLiteral("Unable to read the Gaussian world manifest: %1")
+                        .arg(manifestFile.errorString()));
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(manifestFile.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        return fail(QStringLiteral("The Gaussian world manifest is malformed: %1")
+                        .arg(parseError.errorString()));
+    }
+
+    const QJsonObject manifest = document.object();
+    QString pipelineRevision = manifest.value(QStringLiteral("pipelineRevision")).toString();
+    if (pipelineRevision.isEmpty()) {
+        pipelineRevision = manifest.value(QStringLiteral("training"))
+                               .toObject()
+                               .value(QStringLiteral("configuration"))
+                               .toObject()
+                               .value(QStringLiteral("pipelineRevision"))
+                               .toString();
+    }
+
+    const QJsonValue environmentValue = manifest.value(QStringLiteral("environment"));
+    if (environmentValue.isUndefined()) {
+        if (pipelineRevision.endsWith(QStringLiteral("-r6")))
+            return true;
+        return fail(QStringLiteral(
+            "The Gaussian world manifest is missing environment.backgroundColorSrgb."));
+    }
+    if (!environmentValue.isObject())
+        return fail(QStringLiteral("The Gaussian world environment must be an object."));
+    const QJsonObject environmentObject = environmentValue.toObject();
+
+    const QJsonValue backgroundValue = environmentObject.value(QStringLiteral("backgroundColorSrgb"));
+    if (!backgroundValue.isArray()) {
+        return fail(QStringLiteral(
+            "environment.backgroundColorSrgb must be an array of three numbers."));
+    }
+    const QJsonArray components = backgroundValue.toArray();
+    if (components.size() != 3) {
+        return fail(QStringLiteral(
+            "environment.backgroundColorSrgb must contain exactly three numbers."));
+    }
+    std::array<float, 3> backgroundValues {};
+    for (int component = 0; component < 3; ++component) {
+        const QJsonValue value = components.at(component);
+        const double number = value.toDouble(std::numeric_limits<double>::quiet_NaN());
+        if (!value.isDouble() || !std::isfinite(number) || number < 0.0 || number > 1.0) {
+            return fail(QStringLiteral(
+                "environment.backgroundColorSrgb values must be finite numbers within [0,1]."));
+        }
+        backgroundValues[size_t(component)] = float(number);
+    }
+    environment->backgroundColorSrgb = QVector3D(backgroundValues[0],
+                                                  backgroundValues[1],
+                                                  backgroundValues[2]);
+
+    const QString directionalSource = QStringLiteral(
+        "observed-oneformer-sky-equirectangular-plus-mean-fallback-srgb-v1");
+    const QJsonValue descriptorValue = environmentObject.value(
+        QStringLiteral("observedDirectionalEnvironment"));
+    if (descriptorValue.isUndefined()) {
+        if (environmentObject.value(QStringLiteral("backgroundSource")).toString()
+            == directionalSource) {
+            return fail(QStringLiteral(
+                "The world declares directional sky evidence but its descriptor is missing."));
+        }
+        return true; // Historical verified worlds use their recorded constant fallback.
+    }
+    if (!descriptorValue.isObject()) {
+        return fail(QStringLiteral("observedDirectionalEnvironment must be an object."));
+    }
+    const QJsonObject descriptor = descriptorValue.toObject();
+    if (descriptor.value(QStringLiteral("schema")).toString()
+            != QStringLiteral("servo.observed-directional-environment/v1")
+        || descriptor.value(QStringLiteral("method")).toString()
+               != QStringLiteral("oneformer-observed-sky-equirectangular-rgba-v1")
+        || descriptor.value(QStringLiteral("projection")).toString()
+               != QStringLiteral("equirectangular-atan2-x-z-y-up-v1")) {
+        return fail(QStringLiteral("Observed directional sky evidence has an unsupported contract."));
+    }
+    if (descriptor.value(QStringLiteral("colorSpace")).toString() != QStringLiteral("srgb")
+        || descriptor.value(QStringLiteral("containsGeneratedPixels")).toBool(true)
+        || descriptor.value(QStringLiteral("finiteGeometry")).toBool(true)
+        || descriptor.value(QStringLiteral("metric")).toBool(true)) {
+        return fail(QStringLiteral("Observed directional sky evidence has unsafe provenance."));
+    }
+    const QString asset = descriptor.value(QStringLiteral("asset")).toString();
+    if (asset != QStringLiteral("environment/observed-sky-equirectangular.png")) {
+        return fail(QStringLiteral("Observed directional sky asset path is not canonical."));
+    }
+    const QString expectedHash = descriptor.value(QStringLiteral("assetSha256")).toString();
+    const QRegularExpression sha256Pattern(QStringLiteral("^sha256:[0-9a-f]{64}$"));
+    if (!sha256Pattern.match(expectedHash).hasMatch()) {
+        return fail(QStringLiteral("Observed directional sky asset hash is invalid."));
+    }
+    const auto boundedInteger = [&descriptor](const QString &name,
+                                               int minimum,
+                                               int maximum,
+                                               int *result) {
+        const QJsonValue value = descriptor.value(name);
+        const double number = value.toDouble(std::numeric_limits<double>::quiet_NaN());
+        if (!value.isDouble() || !std::isfinite(number) || std::floor(number) != number
+            || number < minimum || number > maximum) {
+            return false;
+        }
+        *result = int(number);
+        return true;
+    };
+    int width = 0;
+    int height = 0;
+    if (!boundedInteger(QStringLiteral("width"), 64, 8192, &width)
+        || !boundedInteger(QStringLiteral("height"), 32, 4096, &height)
+        || width != height * 2) {
+        return fail(QStringLiteral(
+            "Observed directional sky dimensions must be 2:1 within the supported range."));
+    }
+    const QJsonValue label = descriptor.value(QStringLiteral("sourceSkyLabel"));
+    if (!label.isDouble() || label.toInt(-1) != 17) {
+        return fail(QStringLiteral("Observed directional sky evidence must use the pinned sky label."));
+    }
+
+    const QString assetPath = bundleDirectory.filePath(asset);
+    QFile assetFile(assetPath);
+    if (!assetFile.open(QIODevice::ReadOnly)) {
+        return fail(QStringLiteral("Unable to read observed directional sky asset: %1")
+                        .arg(assetFile.errorString()));
+    }
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    while (!assetFile.atEnd())
+        digest.addData(assetFile.read(1024 * 1024));
+    const QString actualHash = QStringLiteral("sha256:")
+                                   + QString::fromLatin1(digest.result().toHex());
+    assetFile.close();
+    if (actualHash != expectedHash)
+        return fail(QStringLiteral("Observed directional sky PNG hash does not match world.json."));
+
+    QImage image(assetPath);
+    if (image.isNull() || image.size() != QSize(width, height)) {
+        return fail(QStringLiteral("Observed directional sky PNG dimensions are invalid."));
+    }
+    image = image.convertToFormat(QImage::Format_RGBA8888);
+    for (int row = 0; row < image.height(); ++row) {
+        const QRgb *pixels = reinterpret_cast<const QRgb *>(image.constScanLine(row));
+        for (int column = 0; column < image.width(); ++column) {
+            const QRgb pixel = pixels[column];
+            if (qAlpha(pixel) != 0 && qAlpha(pixel) != 255) {
+                return fail(QStringLiteral(
+                    "Observed directional sky alpha must be exact observed/unobserved coverage."));
+            }
+            if (qAlpha(pixel) == 0
+                && (qRed(pixel) != 0 || qGreen(pixel) != 0 || qBlue(pixel) != 0)) {
+                return fail(QStringLiteral(
+                    "Unobserved directional sky texels must have zero RGB padding."));
+            }
+        }
+    }
+    environment->observedDirectionalRgba = image;
+    environment->hasObservedDirectionalEnvironment = true;
+    return true;
+}
+
+bool Servo::Rendering::readGaussianWorldBackground(const QString &plyPath,
+                                                    QVector3D *backgroundColorSrgb,
+                                                    QString *error)
+{
+    if (!backgroundColorSrgb) {
+        if (error)
+            *error = QStringLiteral("The Gaussian background output is null.");
+        return false;
+    }
+    GaussianWorldEnvironment environment;
+    if (!readGaussianWorldEnvironment(plyPath, &environment, error))
+        return false;
+    *backgroundColorSrgb = environment.backgroundColorSrgb;
+    return true;
+}
+
+QColor Servo::Rendering::gaussianAccumulationClearColor(
+    const QVector3D &backgroundColorSrgb,
+    int visualizationMode)
+{
+    Q_UNUSED(backgroundColorSrgb);
+    // Keep transmittance in the alpha target.  Appearance is composited over
+    // the recorded directional/constant environment once, in the presentation
+    // pass.  Clearing this pass to a colour would bake an incorrect fallback
+    // behind every low-opacity splat and make the final composition impossible.
+    if (visualizationMode != 0)
+        return QColor::fromRgbF(0.0f, 0.0f, 0.0f, 1.0f);
+    return QColor::fromRgbF(0.0f, 0.0f, 0.0f, 0.0f);
+}
 
 class GaussianSplatRenderer final : public QQuickRhiItemRenderer
 {
@@ -471,6 +698,7 @@ private:
     std::unique_ptr<QRhiTexture> m_hdrTexture;
     std::unique_ptr<QRhiTextureRenderTarget> m_hdrRenderTarget;
     std::unique_ptr<QRhiRenderPassDescriptor> m_hdrRenderPassDescriptor;
+    std::unique_ptr<QRhiTexture> m_environmentTexture;
     std::unique_ptr<QRhiSampler> m_presentSampler;
     std::unique_ptr<QRhiShaderResourceBindings> m_presentBindings;
     std::unique_ptr<QRhiGraphicsPipeline> m_presentPipeline;
@@ -889,6 +1117,7 @@ void GaussianSplatRenderer::resetResources()
     m_hdrRenderTarget.reset();
     m_hdrRenderPassDescriptor.reset();
     m_hdrTexture.reset();
+    m_environmentTexture.reset();
     m_uniformBuffer.reset();
     m_radixConfigBuffer.reset();
     m_digitBasesBuffer.reset();
@@ -961,6 +1190,17 @@ bool GaussianSplatRenderer::createSceneResources(QRhiCommandBuffer *commandBuffe
         return false;
     }
 
+    // A 1x1 transparent image keeps the presentation bindings stable for
+    // standalone and legacy worlds.  It samples the recorded mean/black
+    // fallback rather than inventing a directional sky texture.
+    QImage environmentImage = m_scene->observedDirectionalEnvironment;
+    if (environmentImage.isNull()) {
+        environmentImage = QImage(1, 1, QImage::Format_RGBA8888);
+        environmentImage.fill(Qt::transparent);
+    } else {
+        environmentImage = environmentImage.convertToFormat(QImage::Format_RGBA8888);
+    }
+
     m_splatBuffer.reset(m_rhi->newBuffer(QRhiBuffer::Immutable,
                                           QRhiBuffer::StorageBuffer,
                                           quint32(m_scene->payload.size())));
@@ -995,12 +1235,15 @@ bool GaussianSplatRenderer::createSceneResources(QRhiCommandBuffer *commandBuffe
     m_uniformBuffer.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic,
                                             QRhiBuffer::UniformBuffer,
                                             sizeof(CameraUniforms)));
+    m_environmentTexture.reset(m_rhi->newTexture(QRhiTexture::RGBA8,
+                                                   environmentImage.size()));
     if (!m_splatBuffer->create() || !m_projectedBuffer->create()
         || !m_depthKeyBuffers[0]->create() || !m_depthKeyBuffers[1]->create()
         || !m_orderBuffers[0]->create() || !m_orderBuffers[1]->create()
         || !m_groupHistogramBuffer->create() || !m_groupPrefixBuffer->create()
         || !m_digitTotalsBuffer->create() || !m_digitBasesBuffer->create()
-        || !m_radixConfigBuffer->create() || !m_uniformBuffer->create()) {
+        || !m_radixConfigBuffer->create() || !m_uniformBuffer->create()
+        || !m_environmentTexture->create()) {
         return false;
     }
     m_splatBuffer->setName("Servo Gaussian attributes");
@@ -1015,6 +1258,7 @@ bool GaussianSplatRenderer::createSceneResources(QRhiCommandBuffer *commandBuffe
     m_digitBasesBuffer->setName("Servo radix digit bases");
     m_radixConfigBuffer->setName("Servo radix configurations");
     m_uniformBuffer->setName("Servo Gaussian camera uniforms");
+    m_environmentTexture->setName("Servo observed directional sky evidence");
 
     m_bindings.reset(m_rhi->newShaderResourceBindings());
     m_bindings->setBindings({
@@ -1182,6 +1426,7 @@ bool GaussianSplatRenderer::createSceneResources(QRhiCommandBuffer *commandBuffe
 
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->uploadStaticBuffer(m_splatBuffer.get(), m_scene->payload);
+    updates->uploadTexture(m_environmentTexture.get(), environmentImage);
     for (quint32 pass = 0; pass < kRadixPassCount; ++pass) {
         const RadixConfig config { quint32(m_scene->count),
                                    m_computeWorkgroupCount,
@@ -1204,7 +1449,7 @@ bool GaussianSplatRenderer::ensureRenderResources(const QSize &outputSize)
     if (!m_rhi || outputSize.isEmpty() || !m_bindings || !m_renderPassDescriptor)
         return false;
     if (m_renderResourceSize == outputSize && m_hdrTexture && m_hdrRenderTarget
-        && m_hdrRenderPassDescriptor && m_pipeline && m_presentPipeline) {
+        && m_hdrRenderPassDescriptor && m_environmentTexture && m_pipeline && m_presentPipeline) {
         return true;
     }
 
@@ -1284,6 +1529,15 @@ bool GaussianSplatRenderer::ensureRenderResources(const QSize &outputSize)
             QRhiShaderResourceBinding::FragmentStage,
             m_hdrTexture.get(),
             m_presentSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(
+            1,
+            QRhiShaderResourceBinding::FragmentStage,
+            m_environmentTexture.get(),
+            m_presentSampler.get()),
+        QRhiShaderResourceBinding::uniformBuffer(
+            2,
+            QRhiShaderResourceBinding::FragmentStage,
+            m_uniformBuffer.get()),
     });
     if (!m_presentBindings->create())
         return false;
@@ -1309,6 +1563,11 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     QElapsedTimer frame;
     frame.start();
     if (!m_scene) {
+        // Scene clearing happens on the GUI thread.  Release the previous
+        // PLY, compute buffers, and directional image on the render thread
+        // before presenting the empty state so a deleted world frees VRAM.
+        if (m_uploadedScene)
+            resetResources();
         commandBuffer->beginPass(renderTarget(), QColor(QStringLiteral("#151719")), { 1.0f, 0 });
         commandBuffer->endPass();
         return;
@@ -1358,6 +1617,10 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     uniforms.parameters[1] = kNearPlane;
     uniforms.parameters[2] = float(m_scene->count);
     uniforms.parameters[3] = float(m_visualizationMode);
+    uniforms.environmentFallback[0] = m_scene->backgroundColorSrgb.x();
+    uniforms.environmentFallback[1] = m_scene->backgroundColorSrgb.y();
+    uniforms.environmentFallback[2] = m_scene->backgroundColorSrgb.z();
+    uniforms.environmentFallback[3] = 1.0f;
 
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->updateDynamicBuffer(m_uniformBuffer.get(), 0, sizeof(uniforms), &uniforms);
@@ -1401,11 +1664,13 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     m_lastSortMilliseconds = 0.0;
     ++m_orderUpdatesSinceReport;
 
-    // Match gsplat training/audit semantics.  A colored accumulation clear
-    // contributes T*background wherever alpha is below one and visibly alters
-    // low-opacity foliage, sky, and reconstruction gaps.
+    // RGB remains premultiplied by finite-splat alpha.  The presentation pass
+    // combines the remaining transmittance with only observed directional sky
+    // evidence (or its explicit constant fallback), matching trainer/audit.
     commandBuffer->beginPass(m_hdrRenderTarget.get(),
-                             QColor(Qt::black),
+                             Servo::Rendering::gaussianAccumulationClearColor(
+                                 m_scene->backgroundColorSrgb,
+                                 m_visualizationMode),
                              { 1.0f, 0 });
     if (m_visibleCount > 0) {
         commandBuffer->setGraphicsPipeline(m_pipeline.get());

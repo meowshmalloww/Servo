@@ -1,4 +1,5 @@
 #include "ReconstructionController.h"
+#include "ReconstructionPaths.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -17,6 +18,8 @@ private slots:
     void acceptsLegacyBareHashes();
     void rejectsArtifactHashMismatch();
     void rejectsHashPathOutsideBundle();
+    void labelsRoadGeometryStage();
+    void sharesWorkerRuntimeRoot();
 
 private:
     struct BundleFixture {
@@ -34,7 +37,7 @@ private:
 
 namespace {
 constexpr auto worldId = "world-test-id";
-constexpr auto pipelineRevision = "native-colmap-servo-fidelity-gs-r6";
+constexpr auto pipelineRevision = "native-colmap-servo-road-geometry-r7";
 }
 
 void ReconstructionControllerTests::acceptsAlgorithmQualifiedHashes()
@@ -110,6 +113,19 @@ void ReconstructionControllerTests::rejectsHashPathOutsideBundle()
                                                                 &error));
     QCOMPARE(error,
              QStringLiteral("Hash entry '../outside.bin' is malformed or points outside the bundle."));
+}
+
+void ReconstructionControllerTests::labelsRoadGeometryStage()
+{
+    QCOMPARE(ReconstructionController::stageLabel(QStringLiteral("geometry")),
+             QStringLiteral("Building depth, semantics, and road geometry"));
+}
+
+void ReconstructionControllerTests::sharesWorkerRuntimeRoot()
+{
+    QCOMPARE(Servo::ReconstructionPaths::localRuntimeRootFor(
+                 QStringLiteral("C:/Servo-test/AppData/Local")),
+             QStringLiteral("C:/Servo-test/AppData/Local/Servo/reconstruction"));
 }
 
 ReconstructionControllerTests::BundleFixture

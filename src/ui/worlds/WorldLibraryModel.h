@@ -54,7 +54,9 @@ public:
         SizeTextRole,
         RepresentationRole,
         PipelineRevisionRole,
-        ScaleTextRole
+        ScaleTextRole,
+        PublishedRole,
+        FailureTextRole
     };
     Q_ENUM(Role)
 

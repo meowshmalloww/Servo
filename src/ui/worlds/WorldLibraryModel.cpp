@@ -1,4 +1,5 @@
 #include "WorldLibraryModel.h"
+#include "../reconstruction/ReconstructionPaths.h"
 
 #include <QDesktopServices>
 #include <QDir>
@@ -11,7 +12,6 @@
 #include <QJsonObject>
 #include <QLocale>
 #include <QSaveFile>
-#include <QStandardPaths>
 #include <QTimer>
 #include <QtConcurrentRun>
 
@@ -24,6 +24,8 @@ namespace {
 constexpr auto worldSchema = "servo.gaussian-world/v1";
 constexpr auto catalogSchema = "servo.world-library/v1";
 constexpr qint64 maximumJsonBytes = 16LL * 1024LL * 1024LL;
+constexpr qint64 maximumEventLogBytes = 32LL * 1024LL * 1024LL;
+constexpr qint64 maximumEventLineBytes = 16LL * 1024LL * 1024LL;
 
 #ifdef Q_OS_WIN
 constexpr Qt::CaseSensitivity pathSensitivity = Qt::CaseInsensitive;
@@ -140,6 +142,44 @@ QString firstPreview(const QString &worldPath, const QJsonObject &artifacts)
     return pathInside(canonicalOrAbsolute(worldPath), candidate) ? candidate : QString();
 }
 
+QString firstDiagnosticPreview(const QString &jobPath)
+{
+    const QString directoryPath = resolveExistingPath(
+        jobPath, QStringLiteral("stages/train/validation"));
+    const QFileInfo directoryInfo(directoryPath);
+    if (directoryPath.isEmpty() || !directoryInfo.isDir())
+        return {};
+
+    const QFileInfoList images = QDir(directoryPath).entryInfoList(
+        { QStringLiteral("compare-*.png"), QStringLiteral("*.png"), QStringLiteral("*.jpg") },
+        QDir::Files | QDir::Readable | QDir::NoDotAndDotDot,
+        QDir::Name);
+    if (images.isEmpty())
+        return {};
+    const QString candidate = canonicalOrAbsolute(images.first().absoluteFilePath());
+    return pathInside(canonicalOrAbsolute(jobPath), candidate) ? candidate : QString();
+}
+
+bool isTerminalFailedJob(const QString &jobPath)
+{
+    QFile events(QDir(jobPath).filePath(QStringLiteral("events.jsonl")));
+    if (!events.exists() || events.size() <= 0 || events.size() > maximumEventLogBytes
+        || !events.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    QByteArray terminalEvent;
+    while (!events.atEnd()) {
+        const QByteArray line = events.readLine(maximumEventLineBytes + 1);
+        if (line.size() > maximumEventLineBytes)
+            return false;
+        if (!line.trimmed().isEmpty())
+            terminalEvent = line;
+    }
+    return terminalEvent.contains("\"event\":\"job_failed\"")
+           && terminalEvent.contains("\"state\":\"failed\"");
+}
+
 qint64 jsonInteger(const QJsonValue &value, qint64 fallback = 0)
 {
     if (value.isDouble())
@@ -174,6 +214,8 @@ struct WorldLibraryModel::WorldEntry {
     QString representation;
     QString pipelineRevision;
     QString scaleText;
+    bool published = true;
+    QString failureText;
 };
 
 struct WorldLibraryModel::DeleteResult {
@@ -259,6 +301,10 @@ QVariant WorldLibraryModel::data(const QModelIndex &index, int role) const
         return entry.pipelineRevision;
     case ScaleTextRole:
         return entry.scaleText;
+    case PublishedRole:
+        return entry.published;
+    case FailureTextRole:
+        return entry.failureText;
     default:
         return {};
     }
@@ -292,6 +338,8 @@ QHash<int, QByteArray> WorldLibraryModel::roleNames() const
         { RepresentationRole, "representation" },
         { PipelineRevisionRole, "pipelineRevision" },
         { ScaleTextRole, "scaleText" },
+        { PublishedRole, "published" },
+        { FailureTextRole, "failureText" },
     };
 }
 
@@ -585,14 +633,14 @@ void WorldLibraryModel::clearLastError()
 
 QString WorldLibraryModel::defaultJobsRoot()
 {
-    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-        .filePath(QStringLiteral("reconstruction/jobs"));
+    return QDir(Servo::ReconstructionPaths::localRuntimeRoot())
+        .filePath(QStringLiteral("jobs"));
 }
 
 QString WorldLibraryModel::defaultCatalogPath()
 {
-    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
-        .filePath(QStringLiteral("reconstruction/world-library.json"));
+    return QDir(Servo::ReconstructionPaths::localRuntimeRoot())
+        .filePath(QStringLiteral("world-library.json"));
 }
 
 QVector<WorldLibraryModel::WorldEntry> WorldLibraryModel::scanJobs(
@@ -613,25 +661,73 @@ QVector<WorldLibraryModel::WorldEntry> WorldLibraryModel::scanJobs(
             continue;
 
         const QString jobPath = canonicalOrAbsolute(jobDirectory.absoluteFilePath());
+        QJsonObject job;
+        if (!readJsonObject(QDir(jobPath).filePath(QStringLiteral("job.json")), &job))
+            continue;
+        const QString jobId = job.value(QStringLiteral("jobId")).toString();
+        if (jobId.isEmpty()
+            || QString::compare(jobId, jobDirectory.fileName(), Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+
         const QString worldPath = canonicalOrAbsolute(
             QDir(jobPath).filePath(QStringLiteral("stages/publish/world")));
         QJsonObject manifest;
-        QJsonObject job;
-        if (!readJsonObject(QDir(worldPath).filePath(QStringLiteral("world.json")),
-                            &manifest)
-            || manifest.value(QStringLiteral("schema")).toString()
-                   != QLatin1StringView(worldSchema)
-            || !readJsonObject(QDir(jobPath).filePath(QStringLiteral("job.json")), &job)) {
+        const bool hasWorldManifest = readJsonObject(
+                                          QDir(worldPath).filePath(QStringLiteral("world.json")),
+                                          &manifest)
+                                      && manifest.value(QStringLiteral("schema")).toString()
+                                             == QLatin1StringView(worldSchema);
+        if (!hasWorldManifest) {
+            QJsonObject heldout;
+            if (!readJsonObject(
+                    QDir(jobPath).filePath(QStringLiteral("stages/train/heldout-metrics.json")),
+                    &heldout)
+                || heldout.value(QStringLiteral("schema")).toString()
+                       != QLatin1StringView("servo.gsplat-heldout-evaluation/v1")
+                || !isTerminalFailedJob(jobPath)) {
+                continue;
+            }
+
+            WorldEntry entry;
+            entry.worldId = jobId;
+            entry.jobPath = jobPath;
+            entry.worldPath = worldPath;
+            entry.originalName = sanitizeDisplayName(
+                job.value(QStringLiteral("worldName")).toString());
+            if (entry.originalName.isEmpty())
+                entry.originalName = QStringLiteral("World %1").arg(jobId.left(8));
+            entry.displayName = sanitizeDisplayName(aliases.value(jobId));
+            if (entry.displayName.isEmpty())
+                entry.displayName = entry.originalName;
+            entry.sourceSummary = sourceSummary(job.value(QStringLiteral("sources")).toArray());
+            entry.createdAt = QDateTime::fromString(
+                job.value(QStringLiteral("createdAt")).toString(), Qt::ISODateWithMs);
+            if (!entry.createdAt.isValid())
+                entry.createdAt = QFileInfo(QDir(jobPath).filePath(QStringLiteral("job.json")))
+                                      .lastModified();
+            entry.createdText = QLocale().toString(entry.createdAt.toLocalTime(),
+                                                   QLocale::ShortFormat);
+            entry.profile = job.value(QStringLiteral("profile")).toString();
+            entry.qualityTier = QStringLiteral("failed");
+            entry.psnr = heldout.value(QStringLiteral("psnrMean")).toDouble(-1.0);
+            entry.ssim = heldout.value(QStringLiteral("ssimMean")).toDouble(-1.0);
+            entry.representation = QStringLiteral("No publishable Gaussian world");
+            entry.pipelineRevision = heldout.value(QStringLiteral("pipelineRevision")).toString();
+            entry.scaleText = QStringLiteral("not exported");
+            entry.published = false;
+            entry.failureText = QStringLiteral(
+                "Held-out quality gate failed; no publishable Gaussian world was exported.");
+            const QString previewPath = firstDiagnosticPreview(jobPath);
+            if (!previewPath.isEmpty())
+                entry.previewUrl = QUrl::fromLocalFile(previewPath);
+            entry.sizeBytes = directorySize(jobPath);
+            result.append(std::move(entry));
             continue;
         }
 
         const QString worldId = manifest.value(QStringLiteral("worldId")).toString();
-        const QString jobId = job.value(QStringLiteral("jobId")).toString();
-        if (worldId.isEmpty() || worldId != jobId
-            || QString::compare(worldId,
-                                jobDirectory.fileName(),
-                                Qt::CaseInsensitive)
-                   != 0) {
+        if (worldId.isEmpty() || worldId != jobId) {
             continue;
         }
 
@@ -991,6 +1087,8 @@ QVariantMap WorldLibraryModel::entryMap(const WorldEntry &entry) const
         { QStringLiteral("representation"), entry.representation },
         { QStringLiteral("pipelineRevision"), entry.pipelineRevision },
         { QStringLiteral("scaleText"), entry.scaleText },
+        { QStringLiteral("published"), entry.published },
+        { QStringLiteral("failureText"), entry.failureText },
     };
 }
 

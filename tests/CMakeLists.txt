@@ -80,10 +80,55 @@ target_link_libraries(GaussianPathSmoothingTests
 
 add_test(NAME GaussianPathSmoothingTests COMMAND GaussianPathSmoothingTests)
 
+qt_add_executable(GaussianSortStabilityTests
+    GaussianSortStabilityTests.cpp
+)
+
+target_compile_definitions(GaussianSortStabilityTests PRIVATE
+    SERVO_GAUSSIAN_PREPROCESS_SHADER="${CMAKE_SOURCE_DIR}/src/ui/rendering/shaders/gaussian_preprocess.comp"
+)
+
+target_link_libraries(GaussianSortStabilityTests
+    PRIVATE
+        Qt6::Gui
+        Qt6::Test
+)
+
+add_test(NAME GaussianSortStabilityTests COMMAND GaussianSortStabilityTests)
+
+qt_add_executable(GaussianWorldEnvironmentTests
+    GaussianWorldEnvironmentTests.cpp
+    ../src/ui/rendering/GaussianSplatView.cpp
+    ../src/ui/rendering/GaussianSplatView.h
+    ../src/ui/rendering/GaussianPathSmoothing.cpp
+    ../src/ui/rendering/GaussianPathSmoothing.h
+)
+
+target_include_directories(GaussianWorldEnvironmentTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui/rendering
+)
+
+target_link_libraries(GaussianWorldEnvironmentTests
+    PRIVATE
+        Qt6::Concurrent
+        Qt6::GuiPrivate
+        Qt6::Quick
+        Qt6::Test
+)
+
+add_test(NAME GaussianWorldEnvironmentTests COMMAND GaussianWorldEnvironmentTests)
+
 find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
 add_test(
     NAME ReconstructionWorkerTests
     COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_CURRENT_SOURCE_DIR}/python
             -p test_reconstruction_worker.py
+)
+
+add_test(
+    NAME ReconstructionReleaseContractTests
+    COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_CURRENT_SOURCE_DIR}/python
+            -p test_reconstruction_release.py
 )

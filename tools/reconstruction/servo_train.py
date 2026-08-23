@@ -32,13 +32,52 @@ from collections.abc import Mapping
 from typing import Any, Iterator, Sequence
 
 
-TRAINER_VERSION = "0.6.0"
+TRAINER_VERSION = "0.7.0"
 CONFIG_SCHEMA = "servo.gsplat-training/v2"
 METRICS_SCHEMA = "servo.gsplat-metrics/v2"
 CHECKPOINT_SCHEMA = "servo.gsplat-checkpoint/v2"
 REPRESENTATION_TYPE = "servo-fidelity-3dgs-v1"
 C0 = 0.28209479177387814
 OPACITY_RESET_SEMANTICS = "servo-gsplat-1.5.3-fix-v2"
+STATIC_CONFIDENCE_METHOD = (
+    "DIS-bidirectional-flow-plus-COLMAP-epipolar-raw-evidence-v2"
+)
+SEMANTIC_PHOTOMETRIC_METHOD = (
+    "servo-oneformer-rigid-static-retention-flow-preserved-nonrigid-v3"
+)
+VALIDATION_STRIDE = 8
+VALIDATION_OFFSET = 4
+ENDPOINT_SAMPLING_WINDOW = 8
+ENDPOINT_SAMPLING_MULTIPLIER = 2
+MAXIMUM_SPARSE_ANCHOR_MULTIPLIER = 4
+MAIN_SAMPLING_POLICY = "deterministic-weighted-shuffled-epochs/v1"
+SCREEN_SPACE_REFINEMENT_POLICY = "gsplat-default-normalized-radius/v1"
+DENSITY_REFINEMENT_POLICY = "main-fit-until-final-fit/v1"
+DIAGNOSTIC_FIXED_DENSITY_REFINEMENT_POLICY = (
+    "fixed-early-density-then-appearance/v1"
+)
+DIAGNOSTIC_FIXED_DENSITY_REFINEMENT_STOP = 4_500
+VIDEO_CAPTURE_BOTTOM_EXCLUSION_FRACTION = 0.04
+SEMANTIC_SKY_OPACITY_METHOD = (
+    "observed-oneformer-temporally-confirmed-sky-alpha-mean-plus-interior-tail-bce-v4"
+)
+SEMANTIC_SKY_DIAGNOSTIC_ABLATION_METHOD = (
+    "observed-oneformer-sky-alpha-mean-l1-v1-diagnostic-ablation"
+)
+DIAGNOSTIC_PROVENANCE_SCHEMA = "servo.diagnostic-training-provenance/v1"
+SEMANTIC_SKY_TAIL_THRESHOLD = 0.10
+SEMANTIC_SKY_TAIL_WEIGHT = 0.05
+SEMANTIC_SKY_TAIL_BCE_EPSILON = 0.01
+SEMANTIC_SKY_TAIL_EROSION_RADIUS = 2
+SEMANTIC_SKY_TAIL_EROSION_METHOD = (
+    "binary-morphological-erosion-non-sky-padding/v1"
+)
+CERTIFIED_SKY_EVIDENCE_SCHEMA = "servo.certified-sky-evidence/v1"
+CERTIFIED_SKY_EVIDENCE_METHOD = "oneformer-rotation-only-temporal-consensus-v1"
+CERTIFIED_SKY_EVIDENCE_DIRECTORY = "sky-evidence"
+CERTIFIED_SKY_EVIDENCE_SKY = 1
+CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY = 2
+DENSITY_GROWTH_CAP_POLICY = "freeze-growth-preserve-pruning/v1"
 
 
 class TrainingError(RuntimeError):
@@ -47,6 +86,101 @@ class TrainingError(RuntimeError):
 
 class TrainingCancelled(TrainingError):
     """A cooperative cancellation after the last verified checkpoint."""
+
+
+def is_nonpublishable_diagnostic_config(config: Mapping[str, Any]) -> bool:
+    """Return whether a config is explicitly sealed as a diagnostic artifact."""
+
+    provenance = config.get("diagnosticProvenance")
+    return bool(
+        isinstance(provenance, Mapping)
+        and provenance.get("schema") == DIAGNOSTIC_PROVENANCE_SCHEMA
+        and provenance.get("nonPublishable") is True
+    )
+
+
+def supported_density_refinement_contract(
+    config: Mapping[str, Any],
+    *,
+    policy: str,
+    stop_iter: int,
+    main_fit_stop_iter: int,
+    coarse_steps: int,
+    dense_geometry_start: int,
+) -> bool:
+    """Accept the release density window or one sealed appearance ablation.
+
+    Long visual convergence cannot be assessed by extending the screen-space
+    prune phase indefinitely: that keeps removing valid small splats after
+    density has already stabilized. The early-stop option is deliberately
+    sealed to non-publishable diagnostics. A released world must keep the
+    existing complete-main-fit refinement contract unless it receives its own
+    separately reviewed release policy.
+    """
+
+    if policy == DENSITY_REFINEMENT_POLICY:
+        return stop_iter == main_fit_stop_iter
+    return bool(
+        is_nonpublishable_diagnostic_config(config)
+        and policy == DIAGNOSTIC_FIXED_DENSITY_REFINEMENT_POLICY
+        and stop_iter == DIAGNOSTIC_FIXED_DENSITY_REFINEMENT_STOP
+        and max(coarse_steps, dense_geometry_start) < stop_iter < main_fit_stop_iter
+    )
+
+
+def supported_semantic_sky_opacity_contract(
+    config: Mapping[str, Any],
+    *,
+    method: str,
+    tail_threshold: float,
+    tail_weight: float,
+    tail_bce_epsilon: float,
+    tail_erosion_method: str,
+    tail_erosion_radius: int,
+) -> bool:
+    """Accept the release loss or one sealed diagnostic control only.
+
+    The zero-tail control exists solely to separate the effect of the recent
+    growth/pruning lifecycle repair from the stronger sky-tail objective.  It
+    is deliberately impossible in a publishable configuration, preventing an
+    A/B shortcut from silently becoming a release recipe.
+    """
+
+    shared = (
+        math.isclose(
+            tail_threshold,
+            SEMANTIC_SKY_TAIL_THRESHOLD,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and math.isclose(
+            tail_bce_epsilon,
+            SEMANTIC_SKY_TAIL_BCE_EPSILON,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and tail_erosion_method == SEMANTIC_SKY_TAIL_EROSION_METHOD
+        and tail_erosion_radius == SEMANTIC_SKY_TAIL_EROSION_RADIUS
+    )
+    return bool(
+        shared
+        and (
+            (
+                method == SEMANTIC_SKY_OPACITY_METHOD
+                and math.isclose(
+                    tail_weight,
+                    SEMANTIC_SKY_TAIL_WEIGHT,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            )
+            or (
+                is_nonpublishable_diagnostic_config(config)
+                and method == SEMANTIC_SKY_DIAGNOSTIC_ABLATION_METHOD
+                and math.isclose(tail_weight, 0.0, rel_tol=0.0, abs_tol=1e-12)
+            )
+        )
+    )
 
 
 def canonical_json(value: Any) -> bytes:
@@ -125,6 +259,251 @@ class ImageRecord:
     sparse_depths: Any
 
 
+@dataclasses.dataclass(frozen=True)
+class TrainingSamplingPlan:
+    epoch_slots: tuple[int, ...]
+    weights: dict[int, int]
+    endpoint_indices: frozenset[int]
+    sparse_anchor_counts: dict[int, int]
+    median_sparse_anchors: float
+
+
+def bracketed_validation_indices(
+    indices: Sequence[int],
+    *,
+    stride: int = VALIDATION_STRIDE,
+    offset: int = VALIDATION_OFFSET,
+    endpoint_guard: int = 1,
+) -> set[int]:
+    """Return deterministic held-out indices with trained neighbors on both sides.
+
+    Video endpoints are reconstruction evidence, not honest novel-view probes: an
+    endpoint has observations on only one temporal side.  Keep a configurable
+    endpoint window in training and hold out only regularly spaced interior views.
+    """
+
+    ordered = list(indices)
+    if stride <= 1 or not 0 <= offset < stride:
+        raise TrainingError("The validation stride and offset are invalid.")
+    guard = max(1, int(endpoint_guard))
+    if len(ordered) <= guard * 2:
+        return set()
+    return {
+        index
+        for ordinal, index in enumerate(ordered)
+        if ordinal % stride == offset
+        and guard <= ordinal < len(ordered) - guard
+    }
+
+
+def build_training_sampling_plan(
+    records: Sequence[ImageRecord],
+    train_indices: Sequence[int],
+    sequence_groups: Sequence[Sequence[int]],
+    *,
+    endpoint_window: int = ENDPOINT_SAMPLING_WINDOW,
+    endpoint_multiplier: int = ENDPOINT_SAMPLING_MULTIPLIER,
+    maximum_sparse_multiplier: int = MAXIMUM_SPARSE_ANCHOR_MULTIPLIER,
+) -> TrainingSamplingPlan:
+    """Build a deterministic integer-weighted camera epoch.
+
+    Every trained camera occurs at least once.  Capture endpoints receive at
+    least two slots, while cameras with unusually few SfM depth anchors receive
+    up to four slots using a bounded inverse-median rule.  Taking the maximum,
+    rather than multiplying both weights, prevents endpoint scenes from
+    monopolizing an epoch.
+    """
+
+    ordered_train = [int(index) for index in train_indices]
+    if not ordered_train or len(set(ordered_train)) != len(ordered_train):
+        raise TrainingError("Training sampling requires unique camera indices.")
+    if endpoint_window <= 0 or endpoint_multiplier < 2:
+        raise TrainingError("Endpoint sampling must reserve a positive 2x window.")
+    if maximum_sparse_multiplier < endpoint_multiplier:
+        raise TrainingError("Sparse-anchor sampling has an invalid multiplier cap.")
+    train_set = set(ordered_train)
+    endpoint_indices: set[int] = set()
+    for group in sequence_groups:
+        ordered_group = [int(index) for index in group]
+        if not ordered_group:
+            continue
+        window = min(endpoint_window, len(ordered_group))
+        endpoint_indices.update(ordered_group[:window])
+        endpoint_indices.update(ordered_group[-window:])
+    endpoint_indices.intersection_update(train_set)
+
+    sparse_anchor_counts = {
+        index: int(len(records[index].sparse_depths)) for index in ordered_train
+    }
+    positive_counts = sorted(
+        count for count in sparse_anchor_counts.values() if count > 0
+    )
+    if positive_counts:
+        middle = len(positive_counts) // 2
+        if len(positive_counts) % 2:
+            median_sparse_anchors = float(positive_counts[middle])
+        else:
+            median_sparse_anchors = float(
+                (positive_counts[middle - 1] + positive_counts[middle]) / 2.0
+            )
+    else:
+        median_sparse_anchors = 0.0
+
+    weights: dict[int, int] = {}
+    epoch_slots: list[int] = []
+    for index in ordered_train:
+        anchors = sparse_anchor_counts[index]
+        sparse_weight = (
+            maximum_sparse_multiplier
+            if anchors <= 0 and median_sparse_anchors > 0.0
+            else max(
+                1,
+                min(
+                    maximum_sparse_multiplier,
+                    math.ceil(median_sparse_anchors / max(anchors, 1)),
+                ),
+            )
+        )
+        endpoint_weight = endpoint_multiplier if index in endpoint_indices else 1
+        weight = max(endpoint_weight, sparse_weight)
+        weights[index] = weight
+        epoch_slots.extend([index] * weight)
+    return TrainingSamplingPlan(
+        epoch_slots=tuple(epoch_slots),
+        weights=weights,
+        endpoint_indices=frozenset(endpoint_indices),
+        sparse_anchor_counts=sparse_anchor_counts,
+        median_sparse_anchors=median_sparse_anchors,
+    )
+
+
+def freeze_density_growth_at_target(strategy: Any) -> None:
+    """Freeze gsplat growth without disabling its scheduled pruning pass.
+
+    ``DefaultStrategy.step_post_backward`` returns before both growth *and*
+    pruning when ``step >= refine_stop_iter``. Reusing that stop switch for a
+    Gaussian-count budget therefore leaves oversized screen-space splats in
+    the scene. The default strategy also allows screen-radius-only splitting,
+    so both its gradient and screen-radius growth triggers must be disabled.
+    Its refinement stop remains untouched: opacity and screen-size pruning
+    continue until the configured geometry-freeze step.
+    """
+
+    strategy.grow_grad2d = math.inf
+    strategy.grow_scale2d = math.inf
+
+
+class DeterministicWeightedEpochSampler:
+    """Resume-safe shuffled epochs whose order is content-bound."""
+
+    def __init__(self, slots: Sequence[int], seed: str, phase: str) -> None:
+        self._slots = tuple(int(index) for index in slots)
+        if not self._slots:
+            raise TrainingError("A deterministic sampling epoch cannot be empty.")
+        self._seed = str(seed)
+        self._phase = str(phase)
+        self._epoch = -1
+        self._order: list[int] = []
+
+    def index(self, offset: int) -> int:
+        if offset < 0:
+            raise TrainingError("A deterministic sampling offset cannot be negative.")
+        epoch = offset // len(self._slots)
+        if epoch != self._epoch:
+            self._epoch = epoch
+            self._order = list(self._slots)
+            random.Random(f"{self._seed}:{self._phase}:{epoch}").shuffle(self._order)
+        return self._order[offset % len(self._slots)]
+
+
+def semantic_sparse_point_filter(
+    reconstruction: Any,
+    point_ids: Any,
+    semantic_root: Path,
+) -> tuple[Any, dict[str, Any]]:
+    """Reject sparse seeds consistently observed as sky or dynamic content.
+
+    COLMAP may triangulate clouds, sky edges, reflections, vehicles, or people.
+    Zeroing their later photometric loss is insufficient because an initialized
+    Gaussian can otherwise survive without receiving an opacity gradient.  This
+    filter votes only at the point's own calibrated track observations and
+    requires repeated semantic evidence, so a single segmentation mistake does
+    not remove an otherwise reliable static point.
+    """
+
+    import cv2
+    import numpy as np
+
+    image_masks: dict[int, Any] = {}
+    image_sizes: dict[int, tuple[int, int]] = {}
+    missing_images = 0
+    for image_id, image in reconstruction.images.items():
+        semantic_path = semantic_root / Path(image.name).with_suffix(".png")
+        semantic = cv2.imread(str(semantic_path), cv2.IMREAD_GRAYSCALE)
+        if semantic is None:
+            missing_images += 1
+            continue
+        camera = reconstruction.cameras[image.camera_id]
+        image_masks[int(image_id)] = semantic
+        image_sizes[int(image_id)] = (int(camera.width), int(camera.height))
+
+    identifiers = np.asarray(point_ids, dtype=np.int64)
+    keep = np.ones(len(identifiers), dtype=bool)
+    excluded_labels = {0, 17, 18, 19, 20, 21, 22}
+    classified_points = 0
+    rejected_points = 0
+    sky_rejected = 0
+    dynamic_rejected = 0
+    observations = 0
+    for ordinal, point_id in enumerate(identifiers.tolist()):
+        point = reconstruction.points3D[int(point_id)]
+        labels: list[int] = []
+        for element in point.track.elements:
+            image_id = int(element.image_id)
+            semantic = image_masks.get(image_id)
+            source_size = image_sizes.get(image_id)
+            if semantic is None or source_size is None:
+                continue
+            image = reconstruction.images[image_id]
+            point_index = int(element.point2D_idx)
+            if point_index < 0 or point_index >= len(image.points2D):
+                continue
+            xy = np.asarray(image.points2D[point_index].xy, dtype=np.float64)
+            if xy.shape != (2,) or not np.isfinite(xy).all():
+                continue
+            source_width, source_height = source_size
+            x = int(np.clip(round((xy[0] + 0.5) * semantic.shape[1] / source_width - 0.5), 0, semantic.shape[1] - 1))
+            y = int(np.clip(round((xy[1] + 0.5) * semantic.shape[0] / source_height - 0.5), 0, semantic.shape[0] - 1))
+            labels.append(int(semantic[y, x]))
+        observations += len(labels)
+        if len(labels) < 2:
+            continue
+        classified_points += 1
+        excluded = sum(label in excluded_labels for label in labels)
+        if excluded / len(labels) < 0.60:
+            continue
+        keep[ordinal] = False
+        rejected_points += 1
+        sky_votes = sum(label == 17 for label in labels)
+        dynamic_votes = sum(18 <= label <= 22 for label in labels)
+        if sky_votes >= dynamic_votes:
+            sky_rejected += 1
+        else:
+            dynamic_rejected += 1
+
+    return keep, {
+        "method": "calibrated-track-semantic-majority-v1",
+        "minimumObservations": 2,
+        "exclusionVoteFraction": 0.60,
+        "classifiedPoints": classified_points,
+        "rejectedPoints": rejected_points,
+        "skyRejectedPoints": sky_rejected,
+        "dynamicRejectedPoints": dynamic_rejected,
+        "semanticObservations": observations,
+        "missingSemanticImages": missing_images,
+    }
+
+
 class ColmapDataset:
     def __init__(
         self,
@@ -133,6 +512,9 @@ class ColmapDataset:
         cache_size: int = 8,
         max_point_error: float = 3.0,
         require_static_masks: bool = False,
+        geometry_root: Path | None = None,
+        require_geometry_priors: bool = False,
+        require_certified_sky_evidence: bool = False,
     ) -> None:
         import numpy as np
         import pycolmap
@@ -141,6 +523,18 @@ class ColmapDataset:
         self.factor = max(1, int(factor))
         self.image_root = self.root / "images"
         self.mask_root = self.root / "masks"
+        self.geometry_root = geometry_root.resolve() if geometry_root else None
+        self.depth_prior_root = (
+            self.geometry_root / "depth" if self.geometry_root else None
+        )
+        self.semantic_prior_root = (
+            self.geometry_root / "semantics" if self.geometry_root else None
+        )
+        self.certified_sky_evidence_root = (
+            self.geometry_root / CERTIFIED_SKY_EVIDENCE_DIRECTORY
+            if self.geometry_root
+            else None
+        )
         sparse_candidates = [self.root / "sparse", self.root / "sparse" / "0"]
         model_root = next(
             (candidate for candidate in sparse_candidates if candidate.is_dir() and any(candidate.glob("cameras.*"))),
@@ -175,6 +569,25 @@ class ColmapDataset:
             xyz = xyz[indices]
             rgb = rgb[indices]
             point_ids = point_ids[indices]
+
+        semantic_seed_stats: dict[str, Any] = {
+            "method": "disabled",
+            "rejectedPoints": 0,
+        }
+        if self.semantic_prior_root is not None and self.semantic_prior_root.is_dir():
+            semantic_keep, semantic_seed_stats = semantic_sparse_point_filter(
+                reconstruction,
+                point_ids,
+                self.semantic_prior_root,
+            )
+            xyz = xyz[semantic_keep]
+            rgb = rgb[semantic_keep]
+            point_ids = point_ids[semantic_keep]
+            if len(xyz) < 100:
+                raise TrainingError(
+                    "Fewer than 100 reliable static sparse points remain after "
+                    "semantic sky/dynamic filtering."
+                )
 
         raw_records: list[tuple[str, Path, int, str, Any, Any, int, int]] = []
         camera_centers = []
@@ -268,6 +681,7 @@ class ColmapDataset:
             "maximumReprojectionError": max_point_error,
             "sceneFilterRadius": scene_filter_radius,
             "reliableSceneRadius": reliable_scene_radius,
+            "semanticSparsePointFilter": semantic_seed_stats,
         }
         xyz = (xyz - center[None, :]) * scale
         self.points = xyz.astype(np.float32, copy=False)
@@ -362,26 +776,49 @@ class ColmapDataset:
         self.validation_indices: set[int] = set()
         self.path_stress_indices: set[int] = set()
         static_indices: list[int] = []
+        sequence_groups: list[list[int]] = []
         for group, indices in sorted(grouped.items()):
-            if Path(group).name.startswith("video-") and len(indices) >= 5:
+            if Path(group).name.startswith("video-"):
+                sequence_groups.append(indices)
                 # The hard novel-view gate is distributed over the whole
                 # capture, so every withheld view remains bracketed by observed
-                # neighbors.  A contiguous missing-corridor test requires a
-                # separate training run; excluding that block from this same
-                # state would contaminate the interleaved metric and needlessly
-                # remove capture-path geometry from the deliverable.
-                self.validation_indices.update(
-                    index for ordinal, index in enumerate(indices) if ordinal % 8 == 4
-                )
+                # neighbors. Endpoint windows remain training evidence because
+                # they have observations on only one temporal side.
+                if len(indices) >= 5:
+                    self.validation_indices.update(
+                        bracketed_validation_indices(
+                            indices,
+                            endpoint_guard=ENDPOINT_SAMPLING_WINDOW,
+                        )
+                    )
             else:
                 static_indices.extend(indices)
         self.validation_indices.update(
-            index for ordinal, index in enumerate(static_indices) if ordinal % 8 == 4
+            bracketed_validation_indices(
+                static_indices,
+                endpoint_guard=1,
+            )
         )
         if not self.validation_indices:
-            self.validation_indices = {len(self.records) - 1}
+            fallback_candidates = [
+                index
+                for indices in sequence_groups
+                for index in indices[1:-1]
+            ]
+            if not fallback_candidates:
+                fallback_candidates = static_indices[1:-1]
+            if not fallback_candidates:
+                fallback_candidates = list(range(1, len(self.records) - 1))
+            if not fallback_candidates:
+                raise TrainingError(
+                    "The validation policy has no interior camera to hold out."
+                )
+            self.validation_indices = {
+                fallback_candidates[len(fallback_candidates) // 2]
+            }
         self.validation_policy = (
-            "interleaved-every-8th-video-and-stills/final-all-camera-audit-v3"
+            "interleaved-every-8th-interior-bracketed-endpoint-guard-8/"
+            "final-all-camera-audit-v4"
         )
         excluded_indices = self.validation_indices
         self.train_indices = [
@@ -389,6 +826,11 @@ class ColmapDataset:
         ]
         if not self.train_indices:
             raise TrainingError("The validation policy left no images for training.")
+        self.training_sampling_plan = build_training_sampling_plan(
+            self.records,
+            self.train_indices,
+            sequence_groups,
+        )
         missing_masks = [
             record.name
             for record in self.records
@@ -403,7 +845,52 @@ class ColmapDataset:
         self.initialization_stats["staticConfidenceMasks"] = (
             len(self.records) - len(missing_masks)
         )
+        missing_geometry: list[str] = []
+        if self.geometry_root is not None:
+            for record in self.records:
+                depth_path = self.depth_prior_root / Path(record.name).with_suffix(".npz")
+                semantic_path = self.semantic_prior_root / Path(record.name).with_suffix(".png")
+                if not depth_path.is_file() or not semantic_path.is_file():
+                    missing_geometry.append(record.name)
+        elif require_geometry_priors:
+            missing_geometry = [record.name for record in self.records]
+        if require_geometry_priors and missing_geometry:
+            raise TrainingError(
+                "Dense geometry priors are missing for registered images: "
+                + ", ".join(missing_geometry[:5])
+            )
+        self.geometry_priors = self.geometry_root is not None and not missing_geometry
+        self.initialization_stats["geometryPriors"] = (
+            len(self.records) - len(missing_geometry) if self.geometry_root else 0
+        )
+        missing_sky_evidence: list[str] = []
+        if self.certified_sky_evidence_root is not None:
+            missing_sky_evidence = [
+                record.name
+                for record in self.records
+                if not (
+                    self.certified_sky_evidence_root
+                    / Path(record.name).with_suffix(".png")
+                ).is_file()
+            ]
+        elif require_certified_sky_evidence:
+            missing_sky_evidence = [record.name for record in self.records]
+        if require_certified_sky_evidence and missing_sky_evidence:
+            raise TrainingError(
+                "Temporally certified sky evidence is missing for registered images: "
+                + ", ".join(missing_sky_evidence[:5])
+            )
+        self.certified_sky_evidence = (
+            self.certified_sky_evidence_root is not None and not missing_sky_evidence
+        )
+        self.initialization_stats["certifiedSkyEvidence"] = (
+            len(self.records) - len(missing_sky_evidence)
+            if self.certified_sky_evidence_root is not None
+            else 0
+        )
         self._cache: collections.OrderedDict[int, Any] = collections.OrderedDict()
+        self._prior_cache: collections.OrderedDict[int, Any] = collections.OrderedDict()
+        self._sky_evidence_cache: collections.OrderedDict[int, Any] = collections.OrderedDict()
         self._cache_size = max(1, cache_size)
 
     def __len__(self) -> int:
@@ -449,6 +936,101 @@ class ColmapDataset:
             torch.from_numpy(record.calibration.copy()),
             cached[1],
         )
+
+    def load_priors(self, index: int) -> tuple[Any, Any, Any]:
+        """Load relative depth, road-surface depth, and stable semantic IDs."""
+
+        import cv2
+        import numpy as np
+        import torch
+
+        if not self.geometry_priors or self.depth_prior_root is None or self.semantic_prior_root is None:
+            raise TrainingError("Dense geometry priors were not configured for this dataset.")
+        cached = self._prior_cache.pop(index, None)
+        if cached is None:
+            record = self.records[index]
+            depth_path = self.depth_prior_root / Path(record.name).with_suffix(".npz")
+            semantic_path = self.semantic_prior_root / Path(record.name).with_suffix(".png")
+            try:
+                with np.load(depth_path, allow_pickle=False) as archive:
+                    relative = np.asarray(
+                        archive["relative_inverse_depth"], dtype=np.float32
+                    ).copy()
+                    road_depth = np.asarray(
+                        archive["road_surface_depth"], dtype=np.float32
+                    ).copy()
+            except (OSError, KeyError, ValueError) as error:
+                raise TrainingError(
+                    f"Unable to load dense depth prior {depth_path.name}: {error}"
+                ) from error
+            semantic = cv2.imread(str(semantic_path), cv2.IMREAD_GRAYSCALE)
+            if semantic is None:
+                raise TrainingError(f"Unable to load semantic prior {semantic_path.name}.")
+            if relative.ndim != 2 or road_depth.shape != relative.shape or semantic.shape != relative.shape:
+                raise TrainingError(
+                    f"Geometry prior shapes disagree for {record.name}."
+                )
+            if not np.isfinite(relative).all() or bool((relative < 0.0).any()):
+                raise TrainingError(
+                    f"Relative depth prior is invalid for {record.name}."
+                )
+            cached = (
+                torch.from_numpy(relative),
+                torch.from_numpy(road_depth),
+                torch.from_numpy(semantic.copy()),
+            )
+        self._prior_cache[index] = cached
+        while len(self._prior_cache) > self._cache_size:
+            self._prior_cache.popitem(last=False)
+        return cached
+
+    def load_certified_sky_evidence(self, index: int) -> Any:
+        """Load one tri-state, hash-bound sky-evidence raster.
+
+        The trainer treats value 1 as the sole allowed opacity-loss target.
+        Value 2 is observed non-sky evidence; 0 remains unknown.  This avoids
+        converting uncertain OneFormer sky boundaries into destructive targets.
+        """
+
+        import cv2
+        import numpy as np
+        import torch
+
+        if (
+            not self.certified_sky_evidence
+            or self.certified_sky_evidence_root is None
+        ):
+            raise TrainingError("Temporally certified sky evidence was not configured.")
+        cached = self._sky_evidence_cache.pop(index, None)
+        if cached is None:
+            record = self.records[index]
+            path = self.certified_sky_evidence_root / Path(record.name).with_suffix(
+                ".png"
+            )
+            raw = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            if raw is None or raw.dtype != np.uint8:
+                raise TrainingError(f"Unable to load certified sky evidence {path.name}.")
+            _, _, semantic = self.load_priors(index)
+            if raw.shape != tuple(semantic.shape):
+                raise TrainingError(
+                    f"Certified sky evidence dimensions disagree for {record.name}."
+                )
+            if not np.all(
+                np.isin(
+                    raw,
+                    [
+                        0,
+                        CERTIFIED_SKY_EVIDENCE_SKY,
+                        CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY,
+                    ],
+                )
+            ):
+                raise TrainingError(f"Certified sky evidence labels are invalid for {record.name}.")
+            cached = torch.from_numpy(raw.copy())
+        self._sky_evidence_cache[index] = cached
+        while len(self._sky_evidence_cache) > self._cache_size:
+            self._sky_evidence_cache.popitem(last=False)
+        return cached
 
 
 def nearest_scales(points: Any) -> Any:
@@ -747,6 +1329,7 @@ def checkpoint_payload(
         "pipelineRevision": config.get("pipelineRevision"),
         "step": step,
         "configurationHash": config["configurationHash"],
+        "trainingInputHash": config["trainingInputHash"],
         "normalization": dataset.normalization,
         "splats": {name: value.detach().cpu() for name, value in parameters.items()},
         "optimizers": {name: optimizer.state_dict() for name, optimizer in optimizers.items()},
@@ -849,6 +1432,8 @@ def save_checkpoint(
             raise TrainingError("Checkpoint verification failed.")
         if verification.get("configurationHash") != config["configurationHash"]:
             raise TrainingError("Checkpoint configuration hash changed during save.")
+        if verification.get("trainingInputHash") != config["trainingInputHash"]:
+            raise TrainingError("Checkpoint training-input hash changed during save.")
         os.replace(temporary, path)
     finally:
         with contextlib.suppress(FileNotFoundError):
@@ -861,6 +1446,7 @@ def save_checkpoint(
         "sha256": digest,
         "bytes": path.stat().st_size,
         "configurationHash": config["configurationHash"],
+        "trainingInputHash": config["trainingInputHash"],
     }
     atomic_json(path.with_suffix(".json"), checkpoint_receipt)
     atomic_json(
@@ -938,6 +1524,13 @@ def load_checkpoint(checkpoint_dir: Path, config: dict[str, Any]) -> dict[str, A
                 "configuration_changed",
             )
             return None
+        if pointer_value.get("trainingInputHash") != config["trainingInputHash"]:
+            archive_checkpoints(
+                checkpoint_dir,
+                "incompatible-input",
+                "The training inputs changed; archived old checkpoints.",
+            )
+            return None
         receipts[str(pointer_value.get("path", ""))] = pointer_value
     for receipt_path in checkpoint_dir.glob("checkpoint-*.json"):
         try:
@@ -959,7 +1552,10 @@ def load_checkpoint(checkpoint_dir: Path, config: dict[str, Any]) -> dict[str, A
     current_configuration_seen = False
     failures: list[str] = []
     for receipt in candidates:
-        if receipt.get("configurationHash") != config["configurationHash"]:
+        if (
+            receipt.get("configurationHash") != config["configurationHash"]
+            or receipt.get("trainingInputHash") != config["trainingInputHash"]
+        ):
             continue
         current_configuration_seen = True
         name = str(receipt.get("path", ""))
@@ -990,6 +1586,7 @@ def load_checkpoint(checkpoint_dir: Path, config: dict[str, Any]) -> dict[str, A
             or checkpoint.get("trainerVersion") != TRAINER_VERSION
             or checkpoint.get("pipelineRevision") != config.get("pipelineRevision")
             or checkpoint.get("configurationHash") != config["configurationHash"]
+            or checkpoint.get("trainingInputHash") != config["trainingInputHash"]
         ):
             failures.append(f"{name} uses an incompatible schema or runtime")
             continue
@@ -1061,6 +1658,7 @@ def rasterize(
     eps2d: float,
     render_mode: str = "RGB",
     colors_override: Any | None = None,
+    backgrounds: Any | None = None,
 ) -> tuple[Any, Any, dict[str, Any]]:
     import torch
     from gsplat.rendering import rasterization
@@ -1070,6 +1668,7 @@ def rasterize(
         if colors_override is not None
         else torch.cat([parameters["sh0"], parameters["shN"]], dim=1)
     )
+    color_channels = 3 if sh_degree is not None else int(colors.shape[-1])
     rendered, alpha, information = rasterization(
         means=parameters["means"],
         quats=parameters["quats"],
@@ -1090,8 +1689,211 @@ def rasterize(
         sh_degree=sh_degree,
         near_plane=0.01,
         far_plane=1e4,
+        # gsplat 1.5.3 rejects camera-shaped backgrounds in packed mode after
+        # internally appending the depth channel.  Render transparent, then
+        # perform the equivalent alpha composite on color channels only.
+        backgrounds=None,
+    )
+    rendered = composite_raster_background(
+        rendered,
+        alpha,
+        backgrounds,
+        render_mode,
+        color_channels,
     )
     return rendered, alpha, information
+
+
+def composite_raster_background(
+    rendered: Any,
+    alpha: Any,
+    backgrounds: Any | None,
+    render_mode: str,
+    color_channels: int,
+) -> Any:
+    """Composite color features without changing depth or auxiliary channels."""
+    import torch
+
+    if backgrounds is None or render_mode in {"D", "ED"}:
+        return rendered
+    if render_mode not in {"RGB", "RGB+D", "RGB+ED"}:
+        raise TrainingError(f"Unsupported gsplat render mode: {render_mode}")
+    expected_channels = color_channels + (
+        1 if render_mode in {"RGB+D", "RGB+ED"} else 0
+    )
+    if color_channels < 1 or int(rendered.shape[-1]) != expected_channels:
+        raise TrainingError(
+            "The gsplat raster output does not match the requested color/depth "
+            f"layout ({tuple(rendered.shape)}, {render_mode}, {color_channels})."
+        )
+    constant_shape = tuple(rendered.shape[:-3]) + (color_channels,)
+    image_shape = tuple(rendered.shape[:-1]) + (color_channels,)
+    if tuple(backgrounds.shape) not in {constant_shape, image_shape}:
+        raise TrainingError(
+            "The raster background must be either camera-constant or an exact "
+            "per-pixel color image; "
+            f"got {tuple(backgrounds.shape)} for {tuple(rendered.shape)}."
+        )
+    if tuple(alpha.shape) != tuple(rendered.shape[:-1]) + (1,):
+        raise TrainingError(
+            "The gsplat alpha shape does not match the raster output: "
+            f"{tuple(alpha.shape)} versus {tuple(rendered.shape)}."
+        )
+
+    background = backgrounds
+    if tuple(background.shape) == constant_shape:
+        while background.ndim < rendered.ndim:
+            background = background.unsqueeze(-2)
+    composited = (
+        rendered[..., :color_channels]
+        + (1.0 - alpha) * background
+    )
+    if expected_channels == color_channels:
+        return composited
+    return torch.cat([composited, rendered[..., color_channels:]], dim=-1)
+
+
+def load_observed_directional_environment(
+    geometry_root: Path | None,
+    descriptor: Any,
+    device: str,
+) -> Any | None:
+    """Load verified observed sky evidence from the committed geometry stage.
+
+    ``geometryRoot`` is intentionally the only allowed private filesystem root.
+    The public descriptor contains a bundle-relative asset path and hash, so a
+    training config cannot redirect the renderer to an arbitrary local image.
+    ``None`` remains a legacy/direct-diagnostic fallback; production worker
+    configs require the descriptor before this trainer is launched.
+    """
+
+    if descriptor is None:
+        return None
+    if geometry_root is None:
+        raise TrainingError(
+            "Observed directional environment requires a committed geometry root."
+        )
+    try:
+        from servo_environment import EnvironmentError, load_observed_directional_environment as load_environment
+
+        return load_environment(geometry_root, descriptor, device=device)
+    except (EnvironmentError, OSError, ValueError) as error:
+        raise TrainingError(
+            f"Observed directional environment evidence is invalid: {error}"
+        ) from error
+
+
+def validate_certified_sky_evidence_descriptor(
+    geometry_root: Path | None,
+    descriptor: Any,
+) -> dict[str, Any]:
+    """Bind temporal sky evidence to the immutable geometry-stage receipt."""
+
+    if geometry_root is None or not isinstance(descriptor, dict):
+        raise TrainingError("Temporally certified sky-evidence provenance is incomplete.")
+    if (
+        descriptor.get("schema") != CERTIFIED_SKY_EVIDENCE_SCHEMA
+        or descriptor.get("method") != CERTIFIED_SKY_EVIDENCE_METHOD
+        or descriptor.get("rotationOnlyInfiniteSky") is not True
+        or descriptor.get("containsGeneratedPixels") is not False
+        or descriptor.get("manifest") != "sky-evidence.json"
+    ):
+        raise TrainingError("Temporally certified sky-evidence policy is unsupported.")
+    expected_hash = descriptor.get("manifestSha256")
+    if not isinstance(expected_hash, str) or not expected_hash.startswith("sha256:"):
+        raise TrainingError("Temporally certified sky-evidence manifest hash is invalid.")
+    manifest_path = geometry_root / "sky-evidence.json"
+    if not manifest_path.is_file() or sha256_file(manifest_path) != expected_hash:
+        raise TrainingError("Temporally certified sky-evidence manifest failed hash verification.")
+    try:
+        with manifest_path.open("r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except (OSError, json.JSONDecodeError) as error:
+        raise TrainingError("Temporally certified sky-evidence manifest is unreadable.") from error
+    expected_manifest = {
+        key: value
+        for key, value in descriptor.items()
+        if key not in {"manifest", "manifestSha256"}
+    }
+    if manifest != expected_manifest:
+        raise TrainingError("Temporally certified sky-evidence manifest disagrees with config.")
+    frames = manifest.get("frames")
+    if not isinstance(frames, list) or int(manifest.get("registeredImages", -1)) != len(frames):
+        raise TrainingError("Temporally certified sky-evidence frame receipt is malformed.")
+    seen_images: set[str] = set()
+    root = geometry_root.resolve()
+    for frame in frames:
+        if not isinstance(frame, dict):
+            raise TrainingError("Temporally certified sky-evidence frame is malformed.")
+        image = frame.get("image")
+        asset = frame.get("asset")
+        asset_hash = frame.get("assetSha256")
+        if (
+            not isinstance(image, str)
+            or not image
+            or not isinstance(asset, str)
+            or not asset
+            or not isinstance(asset_hash, str)
+            or not asset_hash.startswith("sha256:")
+            or image in seen_images
+        ):
+            raise TrainingError("Temporally certified sky-evidence frame identity is invalid.")
+        seen_images.add(image)
+        image_path = Path(image)
+        relative_asset = Path(asset)
+        expected_asset = (
+            Path(CERTIFIED_SKY_EVIDENCE_DIRECTORY) / image_path.with_suffix(".png")
+        )
+        if (
+            image_path.is_absolute()
+            or relative_asset.is_absolute()
+            or ".." in image_path.parts
+            or ".." in relative_asset.parts
+            or relative_asset.as_posix() != expected_asset.as_posix()
+        ):
+            raise TrainingError("Temporally certified sky-evidence asset escapes its geometry bundle.")
+        resolved = (geometry_root / relative_asset).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as error:
+            raise TrainingError("Temporally certified sky-evidence asset escapes its geometry bundle.") from error
+        if not resolved.is_file() or sha256_file(resolved) != asset_hash:
+            raise TrainingError("Temporally certified sky-evidence asset failed hash verification.")
+    return descriptor
+
+
+def directional_raster_background(
+    environment: Any | None,
+    camera_to_world: Any,
+    calibration: Any,
+    width: int,
+    height: int,
+    fallback: Any,
+) -> tuple[Any, Any | None]:
+    """Return a captured directional background or the explicit mean fallback.
+
+    Only RGB is later composited behind the Gaussian alpha.  Geometry/depth
+    outputs never receive the background, preserving their physical meaning.
+    """
+
+    if environment is None:
+        return fallback, None
+    try:
+        from servo_environment import EnvironmentError, sample_observed_directional_environment_for_camera
+
+        with __import__("torch").no_grad():
+            return sample_observed_directional_environment_for_camera(
+                environment,
+                camera_to_world,
+                calibration,
+                width,
+                height,
+                fallback,
+            )
+    except EnvironmentError as error:
+        raise TrainingError(
+            f"Observed directional environment sampling failed: {error}"
+        ) from error
 
 
 def sparse_depth_consistency_loss(
@@ -1204,6 +2006,503 @@ def depth_layer_variance_loss(expected_depth: Any, second_moment: Any, alpha: An
     return relative_variance[valid].clamp(max=4.0).mean()
 
 
+def semantic_sky_tail_interior_mask(
+    semantic: Any,
+    *,
+    erosion_radius: int = SEMANTIC_SKY_TAIL_EROSION_RADIUS,
+    sky_label: int = 17,
+) -> Any:
+    """Return only observed-sky pixels safely away from semantic boundaries.
+
+    OneFormer labels are useful observed evidence, but a one-pixel sky/tree or
+    sky/mountain boundary is not a reliable reason to erase finite geometry.
+    The normal mean-alpha term still covers all observed sky.  The stronger
+    high-opacity tail term uses an eroded sky interior with explicit non-sky
+    image padding, so border pixels and uncertain object boundaries cannot
+    receive the stronger correction.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    if semantic.ndim != 4 or semantic.shape[-1] != 1:
+        raise TrainingError(
+            "Semantic sky-tail erosion requires a [camera,height,width,1] tensor."
+        )
+    if (
+        isinstance(erosion_radius, bool)
+        or not isinstance(erosion_radius, int)
+        or erosion_radius < 0
+        or isinstance(sky_label, bool)
+        or not isinstance(sky_label, int)
+    ):
+        raise TrainingError("Semantic sky-tail erosion radius is invalid.")
+    sky = semantic == sky_label
+    if erosion_radius == 0:
+        return sky
+    non_sky = (~sky).to(dtype=torch.float32).permute(0, 3, 1, 2)
+    # Padding with non-sky evidence makes a sky label on an image boundary
+    # ineligible for the stronger loss as well.
+    padded = functional.pad(
+        non_sky,
+        (erosion_radius, erosion_radius, erosion_radius, erosion_radius),
+        mode="constant",
+        value=1.0,
+    )
+    nearby_non_sky = functional.max_pool2d(
+        padded,
+        kernel_size=erosion_radius * 2 + 1,
+        stride=1,
+    )
+    return (nearby_non_sky == 0.0).permute(0, 2, 3, 1)
+
+
+def semantic_sky_opacity_loss(
+    alpha: Any,
+    semantic: Any,
+    *,
+    evidence: Any | None = None,
+    tail_threshold: float = SEMANTIC_SKY_TAIL_THRESHOLD,
+    tail_weight: float = 0.0,
+    tail_bce_epsilon: float = SEMANTIC_SKY_TAIL_BCE_EPSILON,
+    tail_erosion_radius: int = SEMANTIC_SKY_TAIL_EROSION_RADIUS,
+) -> tuple[Any, int]:
+    """Remove finite Gaussian support from pixels observed as sky.
+
+    Sky is represented by the separately recorded environment background, not
+    by finite scene Gaussians.  The loss is intentionally one-sided: it drives
+    accumulated opacity toward zero only on observed semantic-sky pixels and
+    never forces non-sky pixels opaque.  This follows the sky-opacity objective
+    used by outdoor Gaussian reconstruction systems while remaining honest in
+    genuinely unobserved regions.  The loss is a direct mean-alpha penalty,
+    rather than a generative sky completion objective: every non-finite value
+    is ignored, every finite observed-sky contribution gets the same bounded
+    corrective gradient, and no unobserved direction is assigned a target.
+    Servo's controlled road A/B selected this L1 formulation over BCE, so its
+    evidence contract deliberately records the measured-better formulation.
+
+    A pooled L1 average can still hide a nearly opaque finite splat in a small
+    part of one sky view.  When the caller enables the tail term, pixels above
+    a recorded opacity threshold receive a stable transparent-target BCE
+    penalty.  The term is computed inside the current camera only, so every
+    training view has its own tail correction rather than sky-rich frames
+    diluting sparse-sky frames.  It remains one-sided and is never applied to
+    unobserved, non-sky, or actor pixels.
+    """
+
+    import torch
+
+    if alpha.shape != semantic.shape or alpha.ndim != 4 or alpha.shape[-1] != 1:
+        raise TrainingError(
+            "Semantic sky-opacity loss requires matching [camera,height,width,1] tensors."
+        )
+    if (
+        not math.isfinite(tail_threshold)
+        or not 0.0 <= tail_threshold < 1.0
+        or not math.isfinite(tail_weight)
+        or tail_weight < 0.0
+        or not math.isfinite(tail_bce_epsilon)
+        or not 0.0 < tail_bce_epsilon < 1.0
+        or isinstance(tail_erosion_radius, bool)
+        or not isinstance(tail_erosion_radius, int)
+        or tail_erosion_radius < 0
+    ):
+        raise TrainingError("Semantic sky-tail settings are invalid.")
+    sky = semantic == 17
+    if evidence is not None:
+        if (
+            evidence.shape != semantic.shape
+            or evidence.ndim != 4
+            or evidence.shape[-1] != 1
+        ):
+            raise TrainingError(
+                "Certified sky evidence requires matching [camera,height,width,1] tensors."
+            )
+        if not bool(
+            (
+                (evidence == 0)
+                | (evidence == CERTIFIED_SKY_EVIDENCE_SKY)
+                | (evidence == CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY)
+            ).all()
+        ):
+            raise TrainingError("Certified sky evidence contains an unknown label.")
+        sky = sky & (evidence == CERTIFIED_SKY_EVIDENCE_SKY)
+    valid = sky & torch.isfinite(alpha)
+    samples = int(valid.sum().item())
+    if samples == 0:
+        return torch.nan_to_num(alpha).sum() * 0.0, 0
+    sky_alpha = alpha[valid]
+    loss = sky_alpha.mean()
+    if tail_weight <= 0.0:
+        return loss, samples
+    # Only the observed, non-boundary high-opacity sky tail is strengthened.
+    # Epsilon keeps the transparent-target BCE finite and caps the derivative
+    # near alpha=1 without zeroing its corrective gradient.
+    tail_source = evidence if evidence is not None else semantic
+    tail_label = CERTIFIED_SKY_EVIDENCE_SKY if evidence is not None else 17
+    tail_mask = (
+        semantic_sky_tail_interior_mask(
+            tail_source,
+            erosion_radius=tail_erosion_radius,
+            sky_label=tail_label,
+        )
+        & torch.isfinite(alpha)
+        & (alpha > tail_threshold)
+    )
+    tail_alpha = alpha[tail_mask]
+    if tail_alpha.numel() == 0:
+        return loss, samples
+    transparent_bce = (
+        -torch.log1p(-tail_alpha + tail_bce_epsilon)
+        + math.log1p(tail_bce_epsilon)
+    ).mean()
+    return loss + tail_weight * transparent_bce, samples
+
+
+def semantic_sky_view_diagnostic(
+    alpha: Any,
+    semantic: Any,
+    image: str,
+) -> dict[str, Any] | None:
+    """Describe finite-splat support in one observed semantic-sky view."""
+
+    import torch
+
+    if alpha.shape != semantic.shape or alpha.ndim != 4 or alpha.shape[-1] != 1:
+        raise TrainingError(
+            "Semantic sky diagnostics require matching [camera,height,width,1] tensors."
+        )
+    if not isinstance(image, str) or not image:
+        raise TrainingError("Semantic sky diagnostics require an image name.")
+    values = alpha[(semantic == 17) & torch.isfinite(alpha)]
+    if values.numel() == 0:
+        return None
+    values = values.float()
+    return {
+        "image": image,
+        "skyPixels": int(values.numel()),
+        "skyAlphaMean": float(values.mean().item()),
+        "skyAlphaP50": float(torch.quantile(values, 0.50).item()),
+        "skyAlphaP95": float(torch.quantile(values, 0.95).item()),
+        "skyAlphaP99": float(torch.quantile(values, 0.99).item()),
+        "skyAlphaAboveTenPercentFraction": float(
+            (values > SEMANTIC_SKY_TAIL_THRESHOLD).float().mean().item()
+        ),
+    }
+
+
+def fuse_semantic_photometric_confidence(
+    temporal_confidence: Any,
+    semantic: Any,
+    *,
+    rigid_static_confidence: float = 1.0,
+    vegetation_confidence_floor: float = 0.0,
+    water_confidence_floor: float = 0.0,
+    hard_exclusion: Any | None = None,
+) -> Any:
+    """Fuse raw temporal evidence without erasing observed static RGB.
+
+    Bidirectional flow failure is ambiguous: it may indicate a transient object,
+    but it also occurs on low-texture asphalt, image borders, thin structures,
+    and disocclusions.  Treating a zero flow weight as a hard exclusion created
+    permanent holes in rigid road and foreground geometry.  Stable semantic
+    classes therefore retain their observed RGB at full weight.  Vegetation and
+    water retain their raw temporal evidence rather than receiving an artificial
+    floor: their motion and occlusion are genuinely ambiguous in a single drive.
+    Unknown, sky, and actor classes remain exactly zero (fail closed).  A
+    hard exclusion is applied last.  It represents pixels that are known not
+    to belong to the reconstructed world (for example the capture vehicle at
+    the bottom of a driving video), so a broad semantic label such as ROAD
+    must never turn that evidence back on.
+
+    The semantic IDs are Servo's stable safety taxonomy:
+    rigid static = 1..15, 24, 25; vegetation = 16; sky = 17;
+    dynamic actors = 18..22; water = 23; unknown = 0.
+    """
+
+    import torch
+
+    if (
+        temporal_confidence.shape != semantic.shape
+        or temporal_confidence.ndim != 4
+        or temporal_confidence.shape[-1] != 1
+    ):
+        raise TrainingError(
+            "Semantic photometric fusion requires matching "
+            "[camera,height,width,1] tensors."
+        )
+    for name, value in (
+        ("rigid static confidence", rigid_static_confidence),
+        ("vegetation confidence floor", vegetation_confidence_floor),
+        ("water confidence floor", water_confidence_floor),
+    ):
+        if not math.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
+            raise TrainingError(f"The semantic {name} must be finite and in [0,1].")
+    if not bool(torch.isfinite(temporal_confidence).all().item()):
+        raise TrainingError("Temporal photometric confidence contains non-finite values.")
+    if bool(
+        ((temporal_confidence < 0.0) | (temporal_confidence > 1.0)).any().item()
+    ):
+        raise TrainingError("Temporal photometric confidence must remain in [0,1].")
+
+    labels = semantic.to(dtype=torch.int64)
+    rigid_static = ((labels >= 1) & (labels <= 15)) | (labels == 24) | (labels == 25)
+    vegetation = labels == 16
+    water = labels == 23
+    fused = torch.zeros_like(temporal_confidence)
+    fused = torch.where(
+        rigid_static,
+        torch.full_like(fused, float(rigid_static_confidence)),
+        fused,
+    )
+    fused = torch.where(
+        vegetation,
+        torch.maximum(
+            temporal_confidence,
+            torch.full_like(fused, float(vegetation_confidence_floor)),
+        ),
+        fused,
+    )
+    fused = torch.where(
+        water,
+        torch.maximum(
+            temporal_confidence,
+            torch.full_like(fused, float(water_confidence_floor)),
+        ),
+        fused,
+    )
+    if hard_exclusion is None:
+        return fused
+    if hard_exclusion.shape != temporal_confidence.shape:
+        raise TrainingError(
+            "Semantic photometric hard exclusion must match [camera,height,width,1]."
+        )
+    if hard_exclusion.dtype != torch.bool:
+        raise TrainingError("Semantic photometric hard exclusion must be boolean.")
+    return torch.where(hard_exclusion, torch.zeros_like(fused), fused)
+
+
+def video_capture_bottom_exclusion_mask(
+    record_name: str,
+    height: int,
+    width: int,
+    device: str,
+) -> Any | None:
+    """Return the immutable vehicle/dashboard exclusion for video frames only.
+
+    The worker writes this same lower strip as zero confidence before training.
+    It is represented separately here because semantic retention intentionally
+    restores static road/curb evidence where optical flow fails, but must not
+    restore the camera vehicle merely because a semantic model calls it road.
+    """
+
+    import torch
+
+    if height <= 0 or width <= 0:
+        raise TrainingError("Capture exclusion requires a positive image shape.")
+    if not Path(record_name).parent.name.startswith("video-"):
+        return None
+    bottom = max(1, round(height * VIDEO_CAPTURE_BOTTOM_EXCLUSION_FRACTION))
+    exclusion = torch.zeros((1, height, width, 1), dtype=torch.bool, device=device)
+    exclusion[:, -bottom:, :, :] = True
+    return exclusion
+
+
+def resize_geometry_priors(
+    relative_inverse_depth: Any,
+    road_surface_depth: Any,
+    semantic: Any,
+    height: int,
+    width: int,
+    device: str,
+) -> tuple[Any, Any, Any, Any, Any]:
+    """Resize priors and keep appearance masking separate from geometry weights."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    relative = relative_inverse_depth.to(
+        device=device, dtype=torch.float32, non_blocking=True
+    ).view(1, 1, *relative_inverse_depth.shape)
+    road = road_surface_depth.to(
+        device=device, dtype=torch.float32, non_blocking=True
+    ).view(1, 1, *road_surface_depth.shape)
+    labels = semantic.to(
+        device=device, dtype=torch.float32, non_blocking=True
+    ).view(1, 1, *semantic.shape)
+    relative = functional.interpolate(
+        relative, size=(height, width), mode="bilinear", align_corners=False
+    ).permute(0, 2, 3, 1)
+    road_valid_source = (road > 0.0).to(torch.float32)
+    road_support = functional.interpolate(
+        road_valid_source,
+        size=(height, width),
+        mode="area" if height <= road.shape[-2] and width <= road.shape[-1] else "bilinear",
+        **(
+            {}
+            if height <= road.shape[-2] and width <= road.shape[-1]
+            else {"align_corners": False}
+        ),
+    )
+    road_weighted = functional.interpolate(
+        road * road_valid_source,
+        size=(height, width),
+        mode="area" if height <= road.shape[-2] and width <= road.shape[-1] else "bilinear",
+        **(
+            {}
+            if height <= road.shape[-2] and width <= road.shape[-1]
+            else {"align_corners": False}
+        ),
+    )
+    road = torch.where(
+        road_support >= 0.50,
+        road_weighted / road_support.clamp_min(1e-6),
+        torch.zeros_like(road_weighted),
+    ).permute(0, 2, 3, 1)
+    labels = functional.interpolate(
+        labels, size=(height, width), mode="nearest"
+    ).to(torch.int64).permute(0, 2, 3, 1)
+    photometric_mask = torch.ones_like(relative)
+    geometry_confidence = torch.ones_like(relative)
+    excluded = (
+        (labels == 0)
+        | (labels == 17)
+        | ((labels >= 18) & (labels <= 22))
+    )
+    photometric_mask[excluded] = 0.0
+    geometry_confidence[excluded] = 0.0
+    # These are conservative geometry weights, not model probabilities.  They
+    # must never reduce the observed-RGB loss: moving foliage and water have
+    # weak surface depth but their visible appearance still needs full detail.
+    geometry_confidence[labels == 16] = 0.20
+    geometry_confidence[labels == 23] = 0.10
+    return relative, road, labels, photometric_mask, geometry_confidence
+
+
+def resize_certified_sky_evidence(
+    evidence: Any,
+    height: int,
+    width: int,
+    device: str,
+) -> Any:
+    """Resize tri-state sky evidence without inventing fractional labels."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    if evidence.ndim != 2:
+        raise TrainingError("Certified sky evidence must be a two-dimensional raster.")
+    labels = evidence.to(device=device, dtype=torch.float32, non_blocking=True).view(
+        1, 1, *evidence.shape
+    )
+    labels = functional.interpolate(labels, size=(height, width), mode="nearest")
+    labels = labels.to(torch.int64).permute(0, 2, 3, 1)
+    valid = (
+        (labels == 0)
+        | (labels == CERTIFIED_SKY_EVIDENCE_SKY)
+        | (labels == CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY)
+    )
+    if not bool(valid.all()):
+        raise TrainingError("Certified sky evidence labels are invalid after resize.")
+    return labels
+
+
+def dense_geometry_prior_loss(
+    expected_depth: Any,
+    alpha: Any,
+    relative_inverse_depth: Any,
+    road_surface_depth: Any,
+    semantic: Any,
+    confidence: Any,
+    maximum_samples: int = 32768,
+) -> tuple[Any, Any, int, int]:
+    """Match relative depth ordering and a robustly fitted road surface.
+
+    Video Depth Anything Small predicts affine-relative inverse depth.  The
+    weighted Pearson term is therefore intentionally invariant to unknown
+    global scale and shift.  Road pixels additionally use the SfM-aligned,
+    robust piecewise surface in the same arbitrary normalized frame as gsplat.
+    Neither term is interpreted as LiDAR or metres.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    zero = expected_depth.sum() * 0.0
+    predicted_depth = expected_depth[..., 0]
+    support = alpha[..., 0]
+    prior = relative_inverse_depth[..., 0]
+    labels = semantic[..., 0]
+    weights = confidence[..., 0] * support.clamp(0.0, 1.0)
+    valid = (
+        torch.isfinite(predicted_depth)
+        & (predicted_depth > 1e-4)
+        & torch.isfinite(prior)
+        & (prior > 1e-6)
+        & torch.isfinite(weights)
+        & (weights > 0.05)
+        & (support >= 0.25)
+    )
+    flat_indices = torch.nonzero(valid.reshape(-1), as_tuple=False).reshape(-1)
+    if len(flat_indices) > maximum_samples:
+        selection = torch.linspace(
+            0,
+            len(flat_indices) - 1,
+            maximum_samples,
+            device=flat_indices.device,
+        ).round().long()
+        flat_indices = flat_indices[selection]
+    relative_count = int(len(flat_indices))
+    relative_loss = zero
+    if relative_count >= 64:
+        inverse = predicted_depth.reciprocal().reshape(-1)[flat_indices]
+        target = prior.reshape(-1)[flat_indices]
+        sample_weights = weights.reshape(-1)[flat_indices]
+        weight_sum = sample_weights.sum().clamp_min(1e-6)
+        inverse_centered = inverse - (sample_weights * inverse).sum() / weight_sum
+        target_centered = target - (sample_weights * target).sum() / weight_sum
+        covariance = (sample_weights * inverse_centered * target_centered).sum()
+        inverse_energy = (sample_weights * inverse_centered.square()).sum()
+        target_energy = (sample_weights * target_centered.square()).sum()
+        correlation = covariance / torch.sqrt(
+            (inverse_energy * target_energy).clamp_min(1e-12)
+        )
+        relative_loss = 1.0 - correlation.clamp(-1.0, 1.0)
+
+    road_target = road_surface_depth[..., 0]
+    road_label = (labels == 1) | (labels == 2) | (labels == 5) | (labels == 25)
+    road_valid = (
+        road_label
+        & torch.isfinite(road_target)
+        & (road_target > 1e-4)
+        & torch.isfinite(predicted_depth)
+        & (predicted_depth > 1e-4)
+        & (support >= 0.35)
+        & (confidence[..., 0] > 0.20)
+    )
+    road_indices = torch.nonzero(road_valid.reshape(-1), as_tuple=False).reshape(-1)
+    if len(road_indices) > maximum_samples:
+        selection = torch.linspace(
+            0,
+            len(road_indices) - 1,
+            maximum_samples,
+            device=road_indices.device,
+        ).round().long()
+        road_indices = road_indices[selection]
+    road_count = int(len(road_indices))
+    road_loss = zero
+    if road_count >= 64:
+        predicted = predicted_depth.reshape(-1)[road_indices]
+        target = road_target.reshape(-1)[road_indices]
+        relative_residual = (predicted - target) / target.clamp_min(1e-4)
+        road_loss = functional.smooth_l1_loss(
+            relative_residual,
+            torch.zeros_like(relative_residual),
+            beta=0.05,
+        )
+    return relative_loss, road_loss, relative_count, road_count
+
+
 def validate_parameters(parameters: Any) -> None:
     import torch
 
@@ -1298,6 +2597,8 @@ def evaluate(
     indices: Sequence[int] | None = None,
     cancel_path: Path | None = None,
     phase: str = "validation",
+    background_color: Any | None = None,
+    directional_environment: Any | None = None,
 ) -> dict[str, Any]:
     import numpy as np
     import torch
@@ -1307,6 +2608,13 @@ def evaluate(
     psnr_values: list[float] = []
     ssim_values: list[float] = []
     ambiguity_samples: list[Any] = []
+    sky_alpha_samples: list[Any] = []
+    sky_alpha_views: list[dict[str, Any]] = []
+    dynamic_alpha_samples: list[Any] = []
+    road_relative_error_samples: list[Any] = []
+    road_ambiguity_samples: list[Any] = []
+    road_supported_pixels = 0
+    road_target_pixels = 0
     evaluation_indices = sorted(
         dataset.validation_indices if indices is None else set(indices)
     )
@@ -1327,6 +2635,14 @@ def evaluate(
             camera = camera_cpu.to(device).unsqueeze(0)
             calibration = calibration_cpu.to(device).unsqueeze(0)
             height, width = pixels.shape[1:3]
+            raster_background, _ = directional_raster_background(
+                directional_environment,
+                camera,
+                calibration,
+                width,
+                height,
+                background_color,
+            )
             rendered_depth, alpha, _ = rasterize(
                 parameters,
                 camera,
@@ -1339,6 +2655,7 @@ def evaluate(
                 rasterization_mode,
                 eps2d,
                 render_mode="RGB+ED",
+                backgrounds=raster_background,
             )
             rendered = rendered_depth[..., :3].clamp(0.0, 1.0)
             mse = torch.mean((rendered - pixels).square()).clamp_min(1e-12)
@@ -1378,6 +2695,49 @@ def evaluate(
             sampled = relative_std[:, ::4, ::4][valid[:, ::4, ::4]]
             if sampled.numel() > 0:
                 ambiguity_samples.append(sampled.float().cpu().numpy())
+            if dataset.geometry_priors:
+                relative_cpu, road_cpu, semantic_cpu = dataset.load_priors(index)
+                _, road_prior, semantic_prior, _, _ = resize_geometry_priors(
+                    relative_cpu,
+                    road_cpu,
+                    semantic_cpu,
+                    height,
+                    width,
+                    device,
+                )
+                labels = semantic_prior[..., 0]
+                support = alpha[..., 0]
+                sky = labels == 17
+                if bool(sky.any()):
+                    sky_values = support[sky]
+                    sky_alpha_samples.append(sky_values[::4].float().cpu().numpy())
+                    sky_diagnostic = semantic_sky_view_diagnostic(
+                        alpha,
+                        semantic_prior,
+                        dataset.records[index].name,
+                    )
+                    if sky_diagnostic is not None:
+                        sky_alpha_views.append(sky_diagnostic)
+                dynamic = (labels >= 18) & (labels <= 22)
+                if bool(dynamic.any()):
+                    dynamic_alpha_samples.append(
+                        support[dynamic][::4].float().cpu().numpy()
+                    )
+                road_target = road_prior[..., 0]
+                road_valid = torch.isfinite(road_target) & (road_target > 1e-4)
+                road_target_pixels += int(torch.count_nonzero(road_valid).item())
+                road_supported = road_valid & torch.isfinite(depth) & (depth > 1e-4) & (support >= 0.5)
+                road_supported_pixels += int(torch.count_nonzero(road_supported).item())
+                if bool(road_supported.any()):
+                    relative_error = (
+                        (depth - road_target).abs() / road_target.clamp_min(1e-4)
+                    )
+                    road_relative_error_samples.append(
+                        relative_error[road_supported][::4].float().cpu().numpy()
+                    )
+                    road_ambiguity_samples.append(
+                        relative_std[road_supported][::4].float().cpu().numpy()
+                    )
     emit(
         "evaluation_progress",
         phase=phase,
@@ -1389,6 +2749,26 @@ def evaluate(
     if not ambiguity_samples:
         raise TrainingError("Held-out renders contain no supported depth samples.")
     ambiguity = np.concatenate(ambiguity_samples)
+    sky_alpha = (
+        np.concatenate(sky_alpha_samples)
+        if sky_alpha_samples
+        else np.empty(0, dtype=np.float32)
+    )
+    dynamic_alpha = (
+        np.concatenate(dynamic_alpha_samples)
+        if dynamic_alpha_samples
+        else np.empty(0, dtype=np.float32)
+    )
+    road_relative_error = (
+        np.concatenate(road_relative_error_samples)
+        if road_relative_error_samples
+        else np.empty(0, dtype=np.float32)
+    )
+    road_ambiguity = (
+        np.concatenate(road_ambiguity_samples)
+        if road_ambiguity_samples
+        else np.empty(0, dtype=np.float32)
+    )
     return {
         "validationImages": len(psnr_values),
         "psnrMean": float(np.mean(psnr_values)),
@@ -1402,6 +2782,48 @@ def evaluate(
             "Relative standard deviation of composited camera-space depth; "
             "this detects mixed Gaussian layers and is not metric depth error."
         ),
+        "semanticGeometry": {
+            "meaning": (
+                "Image-space consistency against r7 semantic and SfM-aligned "
+                "navigable-surface priors; this is not metric or collision validation."
+            ),
+            "skySamples": int(sky_alpha.size),
+            "skyAlphaP95": float(np.percentile(sky_alpha, 95))
+            if sky_alpha.size
+            else 0.0,
+            "skyAlphaAboveTenPercentFraction": float(np.mean(sky_alpha > 0.10))
+            if sky_alpha.size
+            else 0.0,
+            "maximumViewSkyAlphaP95": max(
+                (float(view["skyAlphaP95"]) for view in sky_alpha_views),
+                default=0.0,
+            ),
+            "skyViewCount": len(sky_alpha_views),
+            "worstSkyViews": sorted(
+                sky_alpha_views,
+                key=lambda view: (-float(view["skyAlphaP95"]), str(view["image"])),
+            )[:16],
+            "dynamicSamples": int(dynamic_alpha.size),
+            "dynamicAlphaP95": float(np.percentile(dynamic_alpha, 95))
+            if dynamic_alpha.size
+            else None,
+            "roadTargetPixels": road_target_pixels,
+            "roadSupportedPixels": road_supported_pixels,
+            "roadSupportFraction": road_supported_pixels / max(road_target_pixels, 1),
+            "roadRelativeDepthSamples": int(road_relative_error.size),
+            "roadRelativeDepthP50": float(np.percentile(road_relative_error, 50))
+            if road_relative_error.size
+            else None,
+            "roadRelativeDepthP95": float(np.percentile(road_relative_error, 95))
+            if road_relative_error.size
+            else None,
+            "roadDepthAmbiguityP50": float(np.percentile(road_ambiguity, 50))
+            if road_ambiguity.size
+            else None,
+            "roadDepthAmbiguityP95": float(np.percentile(road_ambiguity, 95))
+            if road_ambiguity.size
+            else None,
+        },
     }
 
 
@@ -1567,6 +2989,10 @@ def train(config_path: Path) -> int:
         raise TrainingError(
             f"Expected reconstruction representation {REPRESENTATION_TYPE}."
         )
+    for field in ("configurationHash", "pipelineCodeHash", "trainingInputHash"):
+        value = config.get(field)
+        if not isinstance(value, str) or not value.startswith("sha256:"):
+            raise TrainingError(f"Training configuration is missing a valid {field}.")
     if not torch.cuda.is_available():
         raise TrainingError("PyTorch cannot access an NVIDIA CUDA device.")
     max_vram_gib = float(config.get("maxVramGiB", 0.0))
@@ -1584,13 +3010,115 @@ def train(config_path: Path) -> int:
     output.mkdir(parents=True, exist_ok=True)
     cancel_path = Path(config["cancelPath"])
     set_determinism(42)
+    geometry_root = (
+        Path(config["geometryRoot"])
+        if isinstance(config.get("geometryRoot"), str)
+        else None
+    )
+    configured_semantic_sky_method = str(
+        config.get("semanticSkyOpacityMethod", "")
+    )
+    semantic_photometric_method = str(
+        config.get("semanticPhotometricMaskMethod", "")
+    )
+    try:
+        semantic_rigid_static_confidence = float(
+            config["semanticRigidStaticConfidence"]
+        )
+        semantic_vegetation_confidence_floor = float(
+            config["semanticVegetationConfidenceFloor"]
+        )
+        semantic_water_confidence_floor = float(
+            config["semanticWaterConfidenceFloor"]
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise TrainingError(
+            "Semantic photometric-confidence policy is incomplete."
+        ) from error
+    if (
+        config.get("staticConfidenceMasks") is not True
+        or config.get("staticConfidenceMethod") != STATIC_CONFIDENCE_METHOD
+        or config.get("semanticPhotometricMask") is not True
+        or semantic_photometric_method != SEMANTIC_PHOTOMETRIC_METHOD
+        or not math.isclose(
+            semantic_rigid_static_confidence, 1.0, rel_tol=0.0, abs_tol=1e-12
+        )
+        or not math.isclose(
+            semantic_vegetation_confidence_floor,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            semantic_water_confidence_floor,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    ):
+        raise TrainingError(
+            "The static/semantic photometric-confidence evidence contract is unsupported."
+        )
+    expected_geometry_hash = config.get("geometryPriorsMetricsSha256")
+    certified_sky_evidence_descriptor: dict[str, Any] | None = None
+    if config.get("geometryPriors") is True:
+        if (
+            geometry_root is None
+            or config.get("geometryPriorsSchema") != "servo.geometry-priors/v1"
+            or not isinstance(expected_geometry_hash, str)
+            or not expected_geometry_hash.startswith("sha256:")
+        ):
+            raise TrainingError("Dense geometry-prior provenance is incomplete.")
+        geometry_metrics_path = geometry_root / "geometry-metrics.json"
+        if (
+            not geometry_metrics_path.is_file()
+            or sha256_file(geometry_metrics_path) != expected_geometry_hash
+        ):
+            raise TrainingError("Dense geometry-prior metrics failed hash verification.")
+        if config.get("semanticPhotometricMask") is not True:
+            raise TrainingError(
+                "r7 geometry priors require semantic exclusion during appearance fitting."
+            )
+        if configured_semantic_sky_method == SEMANTIC_SKY_OPACITY_METHOD:
+            certified_sky_evidence_descriptor = validate_certified_sky_evidence_descriptor(
+                geometry_root,
+                config.get("certifiedSkyEvidence"),
+            )
     dataset = ColmapDataset(
         Path(config["data"]),
         int(config["dataFactor"]),
         max_point_error=float(config.get("maxReprojectionError", 3.0)),
         require_static_masks=config.get("staticConfidenceMasks") is True,
+        geometry_root=geometry_root,
+        require_geometry_priors=config.get("geometryPriors") is True,
+        require_certified_sky_evidence=(
+            configured_semantic_sky_method == SEMANTIC_SKY_OPACITY_METHOD
+        ),
     )
     device = "cuda:0"
+    background_values = config.get("backgroundColorSrgb", [0.0, 0.0, 0.0])
+    if (
+        not isinstance(background_values, list)
+        or len(background_values) != 3
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not 0.0 <= float(value) <= 1.0
+            for value in background_values
+        )
+    ):
+        raise TrainingError("backgroundColorSrgb must contain three finite [0,1] values.")
+    background_color = torch.tensor(
+        [float(value) for value in background_values],
+        device=device,
+        dtype=torch.float32,
+    ).view(1, 3)
+    directional_environment = load_observed_directional_environment(
+        geometry_root,
+        config.get("observedDirectionalEnvironment"),
+        device,
+    )
     sh_degree = int(config.get("shDegree", 3))
     packed = bool(config.get("packed", True))
     max_steps = int(config["maxSteps"])
@@ -1602,6 +3130,23 @@ def train(config_path: Path) -> int:
     coarse_factor = int(config.get("coarseFactor", 1))
     coarse_steps = int(config.get("coarseSteps", 0))
     final_fit_steps = int(config.get("finalFitSteps", 0))
+    main_sampling_policy = str(config.get("mainSamplingPolicy", ""))
+    endpoint_sampling_window = int(config.get("endpointSamplingWindow", 0))
+    endpoint_sampling_multiplier = int(
+        config.get("endpointSamplingMultiplier", 0)
+    )
+    maximum_sparse_anchor_multiplier = int(
+        config.get("maximumSparseAnchorMultiplier", 0)
+    )
+    screen_space_refinement_policy = str(
+        config.get("screenSpaceRefinementPolicy", "")
+    )
+    density_refinement_policy = str(
+        config.get("densityRefinementPolicy", DENSITY_REFINEMENT_POLICY)
+    )
+    grow_scale2d = float(config.get("growScale2d", 0.0))
+    prune_scale2d = float(config.get("pruneScale2d", 0.0))
+    refine_scale2d_stop_iter = int(config.get("refineScale2dStopIter", 0))
     target_gaussians = int(config.get("targetGaussians", 0))
     max_gaussians = int(config.get("maxGaussians", 0))
     quality_gate = config.get("qualityGate", {})
@@ -1628,6 +3173,28 @@ def train(config_path: Path) -> int:
     maximum_final_ssim_regression = float(
         quality_gate.get("maximumFinalSsimRegression", 0.03)
     )
+    maximum_sky_alpha_p95 = float(quality_gate.get("maximumSkyAlphaP95", 0.10))
+    maximum_sky_alpha_fraction = float(
+        quality_gate.get("maximumSkyAlphaAboveTenPercentFraction", 0.10)
+    )
+    maximum_view_sky_alpha_p95 = float(
+        quality_gate.get("maximumViewSkyAlphaP95", 0.25)
+    )
+    minimum_road_surface_support = float(
+        quality_gate.get("minimumRoadSurfaceSupport", 0.95)
+    )
+    maximum_road_relative_depth_p50 = float(
+        quality_gate.get("maximumRoadRelativeDepthP50", 0.10)
+    )
+    maximum_road_relative_depth_p95 = float(
+        quality_gate.get("maximumRoadRelativeDepthP95", 0.35)
+    )
+    maximum_road_ambiguity_p50 = float(
+        quality_gate.get("maximumRoadDepthAmbiguityP50", 0.20)
+    )
+    maximum_road_ambiguity_p95 = float(
+        quality_gate.get("maximumRoadDepthAmbiguityP95", 1.0)
+    )
     appearance_enabled = config.get("appearanceCompensation") is True
     appearance_learning_rate = float(config.get("appearanceLearningRate", 1e-3))
     appearance_regularization_weight = float(
@@ -1639,6 +3206,35 @@ def train(config_path: Path) -> int:
     )
     depth_layer_variance_every = int(config.get("depthLayerVarianceEvery", 8))
     depth_layer_variance_start = int(config.get("depthLayerVarianceStart", 1_000))
+    dense_relative_depth_weight = float(
+        config.get("denseRelativeDepthWeight", 0.0)
+    )
+    road_surface_depth_weight = float(
+        config.get("roadSurfaceDepthWeight", 0.0)
+    )
+    semantic_sky_opacity_weight = float(
+        config.get("semanticSkyOpacityWeight", 0.0)
+    )
+    semantic_sky_opacity_method = str(
+        config.get("semanticSkyOpacityMethod", "")
+    )
+    semantic_sky_tail_threshold = float(
+        config.get("semanticSkyOpacityTailThreshold", 0.0)
+    )
+    semantic_sky_tail_weight = float(
+        config.get("semanticSkyOpacityTailWeight", 0.0)
+    )
+    semantic_sky_tail_bce_epsilon = float(
+        config.get("semanticSkyOpacityTailBceEpsilon", 0.0)
+    )
+    semantic_sky_tail_erosion_method = str(
+        config.get("semanticSkyOpacityTailErosionMethod", "")
+    )
+    semantic_sky_tail_erosion_radius = int(
+        config.get("semanticSkyOpacityTailErosionRadius", -1)
+    )
+    dense_geometry_every = int(config.get("denseGeometryEvery", 2))
+    dense_geometry_start = int(config.get("denseGeometryStart", 500))
     if max_steps <= 0 or checkpoint_every <= 0:
         raise TrainingError("Training and checkpoint step counts must be positive.")
     if rasterization_mode not in {"classic", "antialiased"}:
@@ -1651,6 +3247,31 @@ def train(config_path: Path) -> int:
         raise TrainingError("The coarse-to-fine resolution schedule is invalid.")
     if final_fit_steps <= 0 or final_fit_steps >= max_steps // 2:
         raise TrainingError("finalFitSteps must reserve a bounded finishing phase.")
+    # Production keeps density refinement throughout main fitting. A sealed
+    # diagnostic can freeze it at the proven early geometry point, then spend
+    # the remaining budget on full-resolution appearance convergence.
+    main_fit_stop_iter = max_steps - final_fit_steps
+    if (
+        main_sampling_policy != MAIN_SAMPLING_POLICY
+        or endpoint_sampling_window != ENDPOINT_SAMPLING_WINDOW
+        or endpoint_sampling_multiplier != ENDPOINT_SAMPLING_MULTIPLIER
+        or maximum_sparse_anchor_multiplier != MAXIMUM_SPARSE_ANCHOR_MULTIPLIER
+    ):
+        raise TrainingError("The deterministic capture-coverage sampling policy is unsupported.")
+    if (
+        screen_space_refinement_policy != SCREEN_SPACE_REFINEMENT_POLICY
+        or not math.isclose(grow_scale2d, 0.05, rel_tol=0.0, abs_tol=1e-12)
+        or not math.isclose(prune_scale2d, 0.15, rel_tol=0.0, abs_tol=1e-12)
+        or not supported_density_refinement_contract(
+            config,
+            policy=density_refinement_policy,
+            stop_iter=refine_scale2d_stop_iter,
+            main_fit_stop_iter=main_fit_stop_iter,
+            coarse_steps=coarse_steps,
+            dense_geometry_start=dense_geometry_start,
+        )
+    ):
+        raise TrainingError("The gsplat screen-space refinement policy is unsupported.")
     if target_gaussians < 100_000 or target_gaussians * 2 > max_gaussians:
         raise TrainingError(
             "targetGaussians must be meaningful and no greater than half the allocation ceiling."
@@ -1693,8 +3314,47 @@ def train(config_path: Path) -> int:
         or depth_layer_variance_every <= 0
         or depth_layer_variance_start < 0
         or depth_layer_variance_start >= max_steps
+        or not math.isfinite(dense_relative_depth_weight)
+        or dense_relative_depth_weight < 0.0
+        or not math.isfinite(road_surface_depth_weight)
+        or road_surface_depth_weight < 0.0
+        or not math.isfinite(semantic_sky_opacity_weight)
+        or semantic_sky_opacity_weight < 0.0
+        or not math.isfinite(semantic_sky_tail_threshold)
+        or not 0.0 <= semantic_sky_tail_threshold < 1.0
+        or not math.isfinite(semantic_sky_tail_weight)
+        or semantic_sky_tail_weight < 0.0
+        or not math.isfinite(semantic_sky_tail_bce_epsilon)
+        or not 0.0 < semantic_sky_tail_bce_epsilon < 1.0
+        or semantic_sky_tail_erosion_radius < 0
+        or dense_geometry_every <= 0
+        or dense_geometry_start < 0
+        or dense_geometry_start >= max_steps
     ):
         raise TrainingError("Geometry regularization settings are invalid.")
+    if (
+        dense_relative_depth_weight > 0.0
+        or road_surface_depth_weight > 0.0
+        or semantic_sky_opacity_weight > 0.0
+    ) and not dataset.geometry_priors:
+        raise TrainingError(
+            "Dense geometry regularization requires complete depth and semantic priors."
+        )
+    if (
+        semantic_sky_opacity_weight > 0.0
+        and not supported_semantic_sky_opacity_contract(
+            config,
+            method=semantic_sky_opacity_method,
+            tail_threshold=semantic_sky_tail_threshold,
+            tail_weight=semantic_sky_tail_weight,
+            tail_bce_epsilon=semantic_sky_tail_bce_epsilon,
+            tail_erosion_method=semantic_sky_tail_erosion_method,
+            tail_erosion_radius=semantic_sky_tail_erosion_radius,
+        )
+    ):
+        raise TrainingError(
+            "Semantic sky-opacity regularization has an unsupported evidence contract."
+        )
     if (
         sparse_depth_weight > 0.0
         and int(dataset.initialization_stats.get("sparseDepthObservations", 0))
@@ -1708,9 +3368,12 @@ def train(config_path: Path) -> int:
         prune_opa=0.005,
         grow_grad2d=grow_grad2d,
         grow_scale3d=0.01,
+        grow_scale2d=grow_scale2d,
         prune_scale3d=0.10,
+        prune_scale2d=prune_scale2d,
+        refine_scale2d_stop_iter=refine_scale2d_stop_iter,
         refine_start_iter=500,
-        refine_stop_iter=min(15_000, max_steps - 1),
+        refine_stop_iter=refine_scale2d_stop_iter,
         reset_every=3_000,
         refine_every=100,
         absgrad=absgrad,
@@ -1746,11 +3409,20 @@ def train(config_path: Path) -> int:
         start_step = 0
         densification_limited = False
         densification_limit_reason: str | None = None
+        density_growth_frozen = False
         recent_loss: float | None = None
         sparse_depth_samples = 0
         depth_layer_variance_steps = 0
         recent_sparse_depth_loss = 0.0
         recent_depth_layer_variance_loss = 0.0
+        dense_geometry_steps = 0
+        dense_relative_depth_samples = 0
+        road_surface_depth_samples = 0
+        recent_dense_relative_depth_loss = 0.0
+        recent_road_surface_depth_loss = 0.0
+        semantic_sky_opacity_steps = 0
+        semantic_sky_opacity_samples = 0
+        recent_semantic_sky_opacity_loss = 0.0
         elapsed_before = 0.0
         peak_allocated_before = 0.0
         peak_reserved_before = 0.0
@@ -1800,6 +3472,17 @@ def train(config_path: Path) -> int:
             if densification_limit_reason_value
             else None
         )
+        density_growth_frozen = bool(
+            checkpoint.get("policyState", {}).get("densityGrowthFrozen", False)
+        )
+        # Checkpoints created before the explicit growth-freeze receipt used
+        # the limit reason only.  Preserve the safer target-cap meaning while
+        # still allowing a memory-recovery checkpoint to stop all refinement.
+        if (
+            not density_growth_frozen
+            and densification_limit_reason == "gaussian-target-reached"
+        ):
+            density_growth_frozen = True
         recent_loss_value = checkpoint.get("policyState", {}).get("recentLoss")
         recent_loss = (
             float(recent_loss_value)
@@ -1821,6 +3504,44 @@ def train(config_path: Path) -> int:
                 "recentDepthLayerVarianceLoss", 0.0
             )
         )
+        dense_geometry_steps = int(
+            checkpoint.get("policyState", {}).get("denseGeometrySteps", 0)
+        )
+        dense_relative_depth_samples = int(
+            checkpoint.get("policyState", {}).get(
+                "denseRelativeDepthSamples", 0
+            )
+        )
+        road_surface_depth_samples = int(
+            checkpoint.get("policyState", {}).get(
+                "roadSurfaceDepthSamples", 0
+            )
+        )
+        recent_dense_relative_depth_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentDenseRelativeDepthLoss", 0.0
+            )
+        )
+        recent_road_surface_depth_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentRoadSurfaceDepthLoss", 0.0
+            )
+        )
+        semantic_sky_opacity_steps = int(
+            checkpoint.get("policyState", {}).get(
+                "semanticSkyOpacitySteps", 0
+            )
+        )
+        semantic_sky_opacity_samples = int(
+            checkpoint.get("policyState", {}).get(
+                "semanticSkyOpacitySamples", 0
+            )
+        )
+        recent_semantic_sky_opacity_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentSemanticSkyOpacityLoss", 0.0
+            )
+        )
         elapsed_before = float(
             checkpoint.get("policyState", {}).get("elapsedSeconds", 0.0)
         )
@@ -1830,7 +3551,9 @@ def train(config_path: Path) -> int:
         peak_reserved_before = float(
             checkpoint.get("policyState", {}).get("peakReservedVramGiB", 0.0)
         )
-        if densification_limited:
+        if density_growth_frozen:
+            freeze_density_growth_at_target(strategy)
+        elif densification_limited:
             strategy.refine_stop_iter = min(strategy.refine_stop_iter, start_step)
         restore_rng(checkpoint)
         emit("training_resumed", step=start_step, gaussians=len(parameters["means"]))
@@ -1839,6 +3562,15 @@ def train(config_path: Path) -> int:
     heldout_metrics_path = output / "heldout-metrics.json"
     heldout_evaluation_step = max_steps - final_fit_steps
     all_indices = list(range(len(dataset)))
+    main_sampler = DeterministicWeightedEpochSampler(
+        dataset.training_sampling_plan.epoch_slots,
+        config["trainingInputHash"],
+        "main-fit",
+    )
+    main_fit_visits = [0] * len(dataset)
+    completed_main_fit = min(max(start_step, 0), heldout_evaluation_step)
+    for completed_offset in range(completed_main_fit):
+        main_fit_visits[main_sampler.index(completed_offset)] += 1
     if final_fit_steps < len(all_indices):
         raise TrainingError(
             "finalFitSteps must visit every camera at least once."
@@ -1854,7 +3586,7 @@ def train(config_path: Path) -> int:
             final_fit_epoch = epoch
             final_fit_order = all_indices.copy()
             random.Random(
-                f"{config['configurationHash']}:final-fit:{epoch}"
+                f"{config['trainingInputHash']}:final-fit:{epoch}"
             ).shuffle(final_fit_order)
         return final_fit_order[offset % len(all_indices)]
 
@@ -1868,16 +3600,35 @@ def train(config_path: Path) -> int:
         with recovery_policy_path.open("r", encoding="utf-8") as stream:
             recovery_policy = json.load(stream)
         if (
-            recovery_policy.get("schema") == "servo.gsplat-recovery-policy/v1"
+            recovery_policy.get("schema")
+            in {"servo.gsplat-recovery-policy/v1", "servo.gsplat-recovery-policy/v2"}
             and recovery_policy.get("configurationHash") == config["configurationHash"]
-            and recovery_policy.get("disableDensification") is True
+            and recovery_policy.get("trainingInputHash") == config["trainingInputHash"]
+            and (
+                recovery_policy.get("disableDensification") is True
+                or recovery_policy.get("freezeGrowth") is True
+            )
         ):
             densification_limited = True
             densification_limit_reason = str(
                 recovery_policy.get("reason") or "recovery-policy"
             )
-            strategy.refine_stop_iter = min(strategy.refine_stop_iter, start_step)
-            emit("densification_recovery_enabled", step=start_step)
+            density_growth_frozen = bool(
+                recovery_policy.get("freezeGrowth") is True
+                or densification_limit_reason == "gaussian-target-reached"
+            )
+            if density_growth_frozen:
+                freeze_density_growth_at_target(strategy)
+            else:
+                strategy.refine_stop_iter = min(strategy.refine_stop_iter, start_step)
+            emit(
+                "densification_recovery_enabled",
+                step=start_step,
+                growthFrozen=density_growth_frozen,
+                pruningContinuesUntil=(
+                    strategy.refine_stop_iter if density_growth_frozen else None
+                ),
+            )
     if (
         checkpoint is not None
         and checkpoint.get("opacityResetSemantics") is None
@@ -1904,11 +3655,21 @@ def train(config_path: Path) -> int:
         return {
             "densificationLimited": densification_limited,
             "densificationLimitReason": densification_limit_reason,
+            "densityGrowthFrozen": density_growth_frozen,
+            "densityGrowthCapPolicy": DENSITY_GROWTH_CAP_POLICY,
             "recentLoss": recent_loss,
             "sparseDepthSamples": sparse_depth_samples,
             "depthLayerVarianceSteps": depth_layer_variance_steps,
             "recentSparseDepthLoss": recent_sparse_depth_loss,
             "recentDepthLayerVarianceLoss": recent_depth_layer_variance_loss,
+            "denseGeometrySteps": dense_geometry_steps,
+            "denseRelativeDepthSamples": dense_relative_depth_samples,
+            "roadSurfaceDepthSamples": road_surface_depth_samples,
+            "recentDenseRelativeDepthLoss": recent_dense_relative_depth_loss,
+            "recentRoadSurfaceDepthLoss": recent_road_surface_depth_loss,
+            "semanticSkyOpacitySteps": semantic_sky_opacity_steps,
+            "semanticSkyOpacitySamples": semantic_sky_opacity_samples,
+            "recentSemanticSkyOpacityLoss": recent_semantic_sky_opacity_loss,
             "elapsedSeconds": elapsed_before + time.monotonic() - started,
             "peakVramGiB": max(
                 peak_allocated_before,
@@ -1928,6 +3689,7 @@ def train(config_path: Path) -> int:
             or value.get("profile") != config.get("profile")
             or value.get("pipelineRevision") != config.get("pipelineRevision")
             or value.get("configurationHash") != config["configurationHash"]
+            or value.get("trainingInputHash") != config["trainingInputHash"]
             or value.get("evaluatedAtStep") != heldout_evaluation_step
         ):
             raise TrainingError("The pre-fit held-out evaluation is incompatible.")
@@ -1942,6 +3704,8 @@ def train(config_path: Path) -> int:
             != heldout_evaluation_step - 1
             or checkpoint_reference.get("configurationHash")
             != config["configurationHash"]
+            or checkpoint_reference.get("trainingInputHash")
+            != config["trainingInputHash"]
         ):
             raise TrainingError("The held-out checkpoint receipt is incompatible.")
         checkpoint_path = checkpoint_dir / checkpoint_name
@@ -2014,6 +3778,7 @@ def train(config_path: Path) -> int:
                 "profile": config.get("profile"),
                 "pipelineRevision": config.get("pipelineRevision"),
                 "configurationHash": config["configurationHash"],
+                "trainingInputHash": config["trainingInputHash"],
                 "evaluatedAtStep": step,
                 "checkpoint": {
                     key: heldout_checkpoint_receipt[key]
@@ -2023,6 +3788,7 @@ def train(config_path: Path) -> int:
                         "sha256",
                         "bytes",
                         "configurationHash",
+                        "trainingInputHash",
                     )
                 },
                 **evaluate(
@@ -2036,6 +3802,8 @@ def train(config_path: Path) -> int:
                     output / "validation",
                     cancel_path=cancel_path,
                     phase="heldout-validation",
+                    background_color=background_color,
+                    directional_environment=directional_environment,
                 ),
             }
             if dataset.path_stress_indices:
@@ -2051,6 +3819,8 @@ def train(config_path: Path) -> int:
                     dataset.path_stress_indices,
                     cancel_path=cancel_path,
                     phase="path-stress-validation",
+                    background_color=background_color,
+                    directional_environment=directional_environment,
                 )
             atomic_json(heldout_metrics_path, heldout_snapshot)
             emit(
@@ -2084,8 +3854,10 @@ def train(config_path: Path) -> int:
             index = final_fit_index(final_fit_offset)
             final_fit_seen.add(index)
         else:
-            index = random.choice(dataset.train_indices)
+            index = main_sampler.index(step)
+            main_fit_visits[index] += 1
         pixels_cpu, camera_cpu, calibration_cpu, confidence_cpu = dataset.load(index)
+        geometry_cpu = dataset.load_priors(index) if dataset.geometry_priors else None
         pixels = pixels_cpu.to(device=device, dtype=torch.float32, non_blocking=True).unsqueeze(0) / 255.0
         confidence = (
             confidence_cpu.to(device=device, dtype=torch.float32, non_blocking=True)
@@ -2108,10 +3880,61 @@ def train(config_path: Path) -> int:
                 mode="area",
             ).permute(0, 2, 3, 1)
         height, width = pixels.shape[1:3]
+        relative_prior = None
+        road_depth_prior = None
+        semantic_prior = None
+        certified_sky_prior = None
+        geometry_confidence = None
+        if geometry_cpu is not None:
+            (
+                relative_prior,
+                road_depth_prior,
+                semantic_prior,
+                _semantic_photometric_mask,
+                geometry_confidence,
+            ) = resize_geometry_priors(
+                geometry_cpu[0],
+                geometry_cpu[1],
+                geometry_cpu[2],
+                height,
+                width,
+                device,
+            )
+            if certified_sky_evidence_descriptor is not None:
+                certified_sky_prior = resize_certified_sky_evidence(
+                    dataset.load_certified_sky_evidence(index),
+                    height,
+                    width,
+                    device,
+                )
+            confidence = fuse_semantic_photometric_confidence(
+                confidence,
+                semantic_prior,
+                rigid_static_confidence=semantic_rigid_static_confidence,
+                vegetation_confidence_floor=semantic_vegetation_confidence_floor,
+                water_confidence_floor=semantic_water_confidence_floor,
+                hard_exclusion=video_capture_bottom_exclusion_mask(
+                    dataset.records[index].name,
+                    height,
+                    width,
+                    device,
+                ),
+            )
         active_degree = min(step // 1000, sh_degree)
         try:
+            raster_background, _ = directional_raster_background(
+                directional_environment,
+                camera,
+                calibration,
+                width,
+                height,
+                background_color,
+            )
             geometry_regularization_enabled = (
-                sparse_depth_weight > 0.0 or depth_layer_variance_weight > 0.0
+                sparse_depth_weight > 0.0
+                or depth_layer_variance_weight > 0.0
+                or dense_relative_depth_weight > 0.0
+                or road_surface_depth_weight > 0.0
             )
             rendered_depth, alpha, information = rasterize(
                 parameters,
@@ -2125,6 +3948,7 @@ def train(config_path: Path) -> int:
                 rasterization_mode,
                 eps2d,
                 render_mode="RGB+ED" if geometry_regularization_enabled else "RGB",
+                backgrounds=raster_background,
             )
             rendered = rendered_depth[..., :3]
             expected_depth = (
@@ -2152,6 +3976,9 @@ def train(config_path: Path) -> int:
             loss = 0.8 * l1 + 0.2 * ssim_loss
             recent_sparse_depth_loss = 0.0
             recent_depth_layer_variance_loss = 0.0
+            recent_dense_relative_depth_loss = 0.0
+            recent_road_surface_depth_loss = 0.0
+            recent_semantic_sky_opacity_loss = 0.0
             if sparse_depth_weight > 0.0 and expected_depth is not None:
                 sparse_loss, supported_sparse_depths = sparse_depth_consistency_loss(
                     expected_depth,
@@ -2194,6 +4021,65 @@ def train(config_path: Path) -> int:
                 recent_depth_layer_variance_loss = float(
                     variance_loss.detach().item()
                 )
+            if (
+                expected_depth is not None
+                and relative_prior is not None
+                and road_depth_prior is not None
+                and semantic_prior is not None
+                and step >= dense_geometry_start
+                and step % dense_geometry_every == 0
+                and (
+                    dense_relative_depth_weight > 0.0
+                    or road_surface_depth_weight > 0.0
+                )
+            ):
+                (
+                    dense_loss,
+                    road_loss,
+                    dense_samples,
+                    road_samples,
+                ) = dense_geometry_prior_loss(
+                    expected_depth,
+                    alpha,
+                    relative_prior,
+                    road_depth_prior,
+                    semantic_prior,
+                    confidence * geometry_confidence,
+                )
+                loss = (
+                    loss
+                    + dense_relative_depth_weight * dense_loss
+                    + road_surface_depth_weight * road_loss
+                )
+                dense_geometry_steps += 1
+                dense_relative_depth_samples += dense_samples
+                road_surface_depth_samples += road_samples
+                recent_dense_relative_depth_loss = float(
+                    dense_loss.detach().item()
+                )
+                recent_road_surface_depth_loss = float(
+                    road_loss.detach().item()
+                )
+            if (
+                semantic_sky_opacity_weight > 0.0
+                and semantic_prior is not None
+            ):
+                sky_opacity_loss, sky_opacity_samples = semantic_sky_opacity_loss(
+                    alpha,
+                    semantic_prior,
+                    evidence=certified_sky_prior,
+                    tail_threshold=semantic_sky_tail_threshold,
+                    tail_weight=semantic_sky_tail_weight,
+                    tail_bce_epsilon=semantic_sky_tail_bce_epsilon,
+                    tail_erosion_radius=semantic_sky_tail_erosion_radius,
+                )
+                loss = loss + semantic_sky_opacity_weight * sky_opacity_loss
+                if sky_opacity_samples > 0:
+                    semantic_sky_opacity_steps += 1
+                    semantic_sky_opacity_samples += sky_opacity_samples
+                    recent_semantic_sky_opacity_loss = float(
+                        sky_opacity_loss.detach().item()
+                    )
             if appearance is not None and appearance_regularization_weight > 0.0:
                 loss = loss + appearance_regularization_weight * appearance_regularization(
                     appearance,
@@ -2222,16 +4108,23 @@ def train(config_path: Path) -> int:
                 # One DefaultStrategy split/duplicate pass can at most double
                 # the active set.  Stopping at half of the hard allocation
                 # ceiling makes the allocation cap deterministic before a large
-                # temporary densification allocation is attempted.
-                strategy.refine_stop_iter = min(strategy.refine_stop_iter, step)
+                # temporary densification allocation is attempted.  Do not use
+                # refine_stop_iter here: gsplat short-circuits pruning there as
+                # well, which previously allowed giant screen-space splats to
+                # survive the rest of the geometry phase.
+                freeze_density_growth_at_target(strategy)
                 densification_limited = True
+                density_growth_frozen = True
                 densification_limit_reason = "gaussian-target-reached"
                 atomic_json(
                     recovery_policy_path,
                     {
-                        "schema": "servo.gsplat-recovery-policy/v1",
+                        "schema": "servo.gsplat-recovery-policy/v2",
                         "configurationHash": config["configurationHash"],
-                        "disableDensification": True,
+                        "trainingInputHash": config["trainingInputHash"],
+                        "disableDensification": False,
+                        "freezeGrowth": True,
+                        "growthCapPolicy": DENSITY_GROWTH_CAP_POLICY,
                         "reason": densification_limit_reason,
                         "step": step,
                         "gaussians": len(parameters["means"]),
@@ -2246,6 +4139,8 @@ def train(config_path: Path) -> int:
                     gaussians=len(parameters["means"]),
                     targetGaussians=target_gaussians,
                     hardMaximumGaussians=max_gaussians,
+                    growthFrozen=True,
+                    pruningContinuesUntil=strategy.refine_stop_iter,
                 )
             strategy.step_post_backward(
                 params=parameters,
@@ -2278,9 +4173,11 @@ def train(config_path: Path) -> int:
                 atomic_json(
                     recovery_policy_path,
                     {
-                        "schema": "servo.gsplat-recovery-policy/v1",
+                        "schema": "servo.gsplat-recovery-policy/v2",
                         "configurationHash": config["configurationHash"],
+                        "trainingInputHash": config["trainingInputHash"],
                         "disableDensification": True,
+                        "freezeGrowth": False,
                         "reason": densification_limit_reason,
                         "step": step,
                     },
@@ -2299,9 +4196,11 @@ def train(config_path: Path) -> int:
             atomic_json(
                 recovery_policy_path,
                 {
-                    "schema": "servo.gsplat-recovery-policy/v1",
+                    "schema": "servo.gsplat-recovery-policy/v2",
                     "configurationHash": config["configurationHash"],
+                    "trainingInputHash": config["trainingInputHash"],
                     "disableDensification": True,
+                    "freezeGrowth": False,
                     "reason": densification_limit_reason,
                     "step": step,
                 },
@@ -2330,6 +4229,14 @@ def train(config_path: Path) -> int:
                 sparseDepthSamples=sparse_depth_samples,
                 depthLayerVarianceLoss=recent_depth_layer_variance_loss,
                 depthLayerVarianceSteps=depth_layer_variance_steps,
+                denseRelativeDepthLoss=recent_dense_relative_depth_loss,
+                roadSurfaceDepthLoss=recent_road_surface_depth_loss,
+                denseGeometrySteps=dense_geometry_steps,
+                denseRelativeDepthSamples=dense_relative_depth_samples,
+                roadSurfaceDepthSamples=road_surface_depth_samples,
+                semanticSkyOpacityLoss=recent_semantic_sky_opacity_loss,
+                semanticSkyOpacitySteps=semantic_sky_opacity_steps,
+                semanticSkyOpacitySamples=semantic_sky_opacity_samples,
             )
         if completed_step % checkpoint_every == 0 or completed_step == max_steps:
             validate_parameters(parameters)
@@ -2400,7 +4307,23 @@ def train(config_path: Path) -> int:
         all_indices,
         cancel_path=cancel_path,
         phase="final-artifact-validation",
+        background_color=background_color,
+        directional_environment=directional_environment,
     )
+    semantic_geometry = final_artifact_validation.get("semanticGeometry")
+    if not isinstance(semantic_geometry, dict):
+        raise TrainingError("The final artifact has no semantic geometry audit.")
+
+    def required_semantic_metric(name: str) -> float:
+        value = semantic_geometry.get(name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise TrainingError(f"The final artifact semantic metric {name} is missing.")
+        return float(value)
+
     if (
         float(final_artifact_validation["psnrMean"]) < minimum_final_artifact_psnr
         or float(final_artifact_validation["ssimMean"])
@@ -2417,6 +4340,21 @@ def train(config_path: Path) -> int:
         < float(heldout_snapshot["psnrMean"]) - maximum_final_psnr_regression
         or float(final_artifact_validation["ssimMean"])
         < float(heldout_snapshot["ssimMean"]) - maximum_final_ssim_regression
+        or required_semantic_metric("skyAlphaP95") > maximum_sky_alpha_p95
+        or required_semantic_metric("skyAlphaAboveTenPercentFraction")
+        > maximum_sky_alpha_fraction
+        or required_semantic_metric("maximumViewSkyAlphaP95")
+        > maximum_view_sky_alpha_p95
+        or required_semantic_metric("roadSupportFraction")
+        < minimum_road_surface_support
+        or required_semantic_metric("roadRelativeDepthP50")
+        > maximum_road_relative_depth_p50
+        or required_semantic_metric("roadRelativeDepthP95")
+        > maximum_road_relative_depth_p95
+        or required_semantic_metric("roadDepthAmbiguityP50")
+        > maximum_road_ambiguity_p50
+        or required_semantic_metric("roadDepthAmbiguityP95")
+        > maximum_road_ambiguity_p95
     ):
         raise TrainingError(
             "The cleaned final artifact failed its all-camera appearance or geometry gate."
@@ -2433,6 +4371,48 @@ def train(config_path: Path) -> int:
     world_sha256 = sha256_file(output / "world.ply")
     import importlib.metadata
 
+    if sum(main_fit_visits) != heldout_evaluation_step:
+        raise TrainingError("The main sampling receipt does not cover every pre-fit step.")
+    train_visit_counts = [main_fit_visits[index] for index in dataset.train_indices]
+    if not train_visit_counts or min(train_visit_counts) <= 0:
+        raise TrainingError("The main sampling receipt omitted a trained camera.")
+    endpoint_visit_counts = [
+        main_fit_visits[index]
+        for index in sorted(dataset.training_sampling_plan.endpoint_indices)
+    ]
+    main_sampling_receipt = {
+        "policy": main_sampling_policy,
+        "endpointWindow": endpoint_sampling_window,
+        "endpointMultiplier": endpoint_sampling_multiplier,
+        "maximumSparseAnchorMultiplier": maximum_sparse_anchor_multiplier,
+        "medianSparseAnchors": dataset.training_sampling_plan.median_sparse_anchors,
+        "epochSlots": len(dataset.training_sampling_plan.epoch_slots),
+        "epochs": heldout_evaluation_step
+        / len(dataset.training_sampling_plan.epoch_slots),
+        "totalVisits": sum(main_fit_visits),
+        "minimumVisits": min(train_visit_counts),
+        "maximumVisits": max(train_visit_counts),
+        "endpointImageCount": len(endpoint_visit_counts),
+        "minimumEndpointVisits": min(endpoint_visit_counts)
+        if endpoint_visit_counts
+        else None,
+        "maximumEndpointVisits": max(endpoint_visit_counts)
+        if endpoint_visit_counts
+        else None,
+        "perImage": [
+            {
+                "image": dataset.records[index].name,
+                "visits": main_fit_visits[index],
+                "weight": dataset.training_sampling_plan.weights[index],
+                "sparseAnchors": dataset.training_sampling_plan.sparse_anchor_counts[
+                    index
+                ],
+                "endpoint": index in dataset.training_sampling_plan.endpoint_indices,
+            }
+            for index in dataset.train_indices
+        ],
+    }
+
     metrics = {
         "schema": METRICS_SCHEMA,
         "trainerVersion": TRAINER_VERSION,
@@ -2440,12 +4420,27 @@ def train(config_path: Path) -> int:
         "jobId": config.get("jobId"),
         "profile": config.get("profile"),
         "configurationHash": config["configurationHash"],
+        "pipelineCodeHash": config["pipelineCodeHash"],
+        "trainingInputHash": config["trainingInputHash"],
         "representationType": REPRESENTATION_TYPE,
         "rasterizationMode": rasterization_mode,
         "eps2d": eps2d,
         "densificationStrategy": "default-absgrad" if absgrad else "default",
         "absgrad": absgrad,
         "growGrad2d": grow_grad2d,
+        "screenSpaceRefinement": {
+            "policy": screen_space_refinement_policy,
+            "densityRefinementPolicy": density_refinement_policy,
+            "growScale2d": grow_scale2d,
+            "pruneScale2d": prune_scale2d,
+            "stopIter": refine_scale2d_stop_iter,
+            "actualStopIter": int(strategy.refine_stop_iter),
+            "mainFitStopIter": main_fit_stop_iter,
+            "growthFrozenAtTarget": density_growth_frozen,
+            "growthCapPolicy": DENSITY_GROWTH_CAP_POLICY,
+            "radiusNormalization": "max-image-dimension",
+        },
+        "mainSampling": main_sampling_receipt,
         "targetGaussians": target_gaussians,
         "maxGaussians": max_gaussians,
         "resolutionSchedule": {
@@ -2457,6 +4452,23 @@ def train(config_path: Path) -> int:
         "geometryRegularization": {
             "staticConfidenceMasks": dataset.static_confidence_masks,
             "staticConfidenceMethod": config.get("staticConfidenceMethod"),
+            "semanticPhotometricMask": config.get("semanticPhotometricMask") is True,
+            "semanticPhotometricMaskMethod": semantic_photometric_method,
+            "semanticPhotometricSource": (
+                "pinned-oneformer-ade20k-observed-pixels-mapped-to-servo-taxonomy"
+            ),
+            "semanticRigidStaticLabels": [*range(1, 16), 24, 25],
+            "semanticExcludedLabels": [0, 17, 18, 19, 20, 21, 22],
+            "semanticRigidStaticConfidence": semantic_rigid_static_confidence,
+            "semanticVegetationConfidenceFloor": (
+                semantic_vegetation_confidence_floor
+            ),
+            "semanticWaterConfidenceFloor": semantic_water_confidence_floor,
+            "geometryPriors": dataset.geometry_priors,
+            "geometryPriorsSchema": config.get("geometryPriorsSchema"),
+            "geometryPriorsMetricsSha256": config.get(
+                "geometryPriorsMetricsSha256"
+            ),
             "sparseDepthSource": "filtered-colmap-track-observations",
             "sparseDepthWeight": sparse_depth_weight,
             "sparseDepthSamples": sparse_depth_samples,
@@ -2466,6 +4478,52 @@ def train(config_path: Path) -> int:
             "depthLayerVarianceStart": depth_layer_variance_start,
             "depthLayerVarianceSteps": depth_layer_variance_steps,
             "recentDepthLayerVarianceLoss": recent_depth_layer_variance_loss,
+            "denseRelativeDepthSource": "video-depth-anything-small-relative-inverse-depth",
+            "denseRelativeDepthWeight": dense_relative_depth_weight,
+            "roadSurfaceDepthSource": (
+                "evidence-bounded-observed-cell-graph-with-piecewise-grade-bank-fallback-v1"
+            ),
+            "roadSurfaceDepthWeight": road_surface_depth_weight,
+            "denseGeometryEvery": dense_geometry_every,
+            "denseGeometryStart": dense_geometry_start,
+            "denseGeometrySteps": dense_geometry_steps,
+            "denseRelativeDepthSamples": dense_relative_depth_samples,
+            "roadSurfaceDepthSamples": road_surface_depth_samples,
+            "recentDenseRelativeDepthLoss": recent_dense_relative_depth_loss,
+            "recentRoadSurfaceDepthLoss": recent_road_surface_depth_loss,
+            "semanticSkyOpacitySource": (
+                "oneformer-rotation-only-temporally-confirmed-sky-alpha-zero"
+            ),
+            "certifiedSkyEvidence": certified_sky_evidence_descriptor,
+            "semanticSkyOpacityMethod": semantic_sky_opacity_method,
+            "semanticSkyOpacityWeight": semantic_sky_opacity_weight,
+            "semanticSkyOpacityTailThreshold": semantic_sky_tail_threshold,
+            "semanticSkyOpacityTailWeight": semantic_sky_tail_weight,
+            "semanticSkyOpacityTailBceEpsilon": semantic_sky_tail_bce_epsilon,
+            "semanticSkyOpacityTailErosionMethod": semantic_sky_tail_erosion_method,
+            "semanticSkyOpacityTailErosionRadius": semantic_sky_tail_erosion_radius,
+            "semanticSkyOpacitySteps": semantic_sky_opacity_steps,
+            "semanticSkyOpacitySamples": semantic_sky_opacity_samples,
+            "recentSemanticSkyOpacityLoss": recent_semantic_sky_opacity_loss,
+        },
+        "environment": {
+            "backgroundColorSrgb": [float(value) for value in background_values],
+            "backgroundSource": config.get("backgroundSource"),
+            "observedDirectionalEnvironment": (
+                directional_environment.descriptor
+                if directional_environment is not None
+                else None
+            ),
+            "finiteSkyGeometryAllowed": False,
+            "finiteSkyOpacityAudit": {
+                key: final_artifact_validation["semanticGeometry"][key]
+                for key in (
+                    "skySamples",
+                    "skyAlphaP95",
+                    "skyAlphaAboveTenPercentFraction",
+                    "maximumViewSkyAlphaP95",
+                )
+            },
         },
         "steps": max_steps,
         "heldoutEvaluationStep": heldout_evaluation_step,
@@ -2488,6 +4546,8 @@ def train(config_path: Path) -> int:
         "maxVramGiB": max_vram_gib,
         "densificationLimited": densification_limited,
         "densificationLimitReason": densification_limit_reason,
+        "densityGrowthFrozen": density_growth_frozen,
+        "densityGrowthCapPolicy": DENSITY_GROWTH_CAP_POLICY,
         "elapsedSeconds": elapsed_before + time.monotonic() - started,
         "normalization": dataset.normalization,
         "initialization": dataset.initialization_stats,
@@ -2571,6 +4631,31 @@ def kernel_check() -> int:
         render_mode="RGB",
         sh_degree=None,
     )
+    background = torch.tensor([[0.15, 0.25, 0.35]], device=device)
+    servo_rgb_depth, servo_depth_alpha, _ = rasterize(
+        {
+            "means": means,
+            "quats": quaternions,
+            "scales": torch.log(scales),
+            "opacities": torch.logit(opacities),
+        },
+        torch.eye(4, device=device).unsqueeze(0),
+        calibrations,
+        64,
+        64,
+        None,
+        True,
+        False,
+        "antialiased",
+        0.3,
+        render_mode="RGB+ED",
+        colors_override=colors,
+        backgrounds=background,
+    )
+    expected_servo_rgb = (
+        rendered_depth[..., :3]
+        + (1.0 - depth_alpha) * background[:, None, None, :]
+    )
     depth_record = ImageRecord(
         name="kernel-check.png",
         path=Path("kernel-check.png"),
@@ -2608,6 +4693,15 @@ def kernel_check() -> int:
         or not bool(torch.isfinite(depth_alpha).all())
         or not bool(torch.isfinite(moment).all())
         or not bool(torch.isfinite(moment_alpha).all())
+        or servo_rgb_depth.shape[-1] != 4
+        or not bool(torch.isfinite(servo_rgb_depth).all())
+        or not torch.allclose(servo_depth_alpha, depth_alpha, atol=1e-6, rtol=1e-6)
+        or not torch.allclose(
+            servo_rgb_depth[..., :3], expected_servo_rgb, atol=1e-6, rtol=1e-6
+        )
+        or not torch.allclose(
+            servo_rgb_depth[..., 3:], rendered_depth[..., 3:], atol=1e-6, rtol=1e-6
+        )
         or not bool(torch.isfinite(sparse_depth_loss))
         or not bool(torch.isfinite(layer_variance_loss))
         or sparse_depth_samples != 8
@@ -2626,6 +4720,7 @@ def kernel_check() -> int:
         renderedShape=list(rendered.shape),
         rgbDepthShape=list(rendered_depth.shape),
         momentShape=list(moment.shape),
+        servoBackgroundRgbDepthShape=list(servo_rgb_depth.shape),
         sparseDepthSamples=sparse_depth_samples,
         sparseDepthLoss=float(sparse_depth_loss.detach().item()),
         depthLayerVarianceLoss=float(layer_variance_loss.detach().item()),

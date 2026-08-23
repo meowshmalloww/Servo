@@ -15,6 +15,7 @@ class WorldLibraryModelTests final : public QObject
 
 private slots:
     void discoversVerifiedPublishedJobs();
+    void surfacesTerminalFailedJobsForDiagnosis();
     void readsR6PreferredQualityShape();
     void rejectsArtifactOutsideWorldBundle();
     void filtersSortsAndPersistsAliases();
@@ -26,6 +27,10 @@ private:
                                const QString &name,
                                const QString &createdAt,
                                const QString &plyRelativePath = QStringLiteral("world.ply"));
+    static QString createFailedJob(const QString &jobsRoot,
+                                   const QString &jobId,
+                                   const QString &name,
+                                   const QString &createdAt);
     static bool writeFile(const QString &path, const QByteArray &contents);
 };
 
@@ -61,6 +66,35 @@ void WorldLibraryModelTests::discoversVerifiedPublishedJobs()
              QFileInfo(worldPath).canonicalFilePath());
     QVERIFY(model.totalBytes() > 0);
     QVERIFY(!model.selectedWorld().value(QStringLiteral("previewUrl")).toUrl().isEmpty());
+}
+
+void WorldLibraryModelTests::surfacesTerminalFailedJobsForDiagnosis()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString jobsRoot = QDir(temporary.path()).filePath(QStringLiteral("jobs"));
+    const QString catalogPath = QDir(temporary.path()).filePath(QStringLiteral("library.json"));
+    const QString jobId = QStringLiteral("77777777-7777-7777-7777-777777777777");
+    QVERIFY(!createFailedJob(jobsRoot,
+                             jobId,
+                             QStringLiteral("Yosemite road"),
+                             QStringLiteral("2026-08-14T10:30:00.000Z"))
+                 .isEmpty());
+
+    WorldLibraryModel model(jobsRoot, catalogPath);
+    QTRY_VERIFY_WITH_TIMEOUT(!model.busy(), 10000);
+    QCOMPARE(model.totalCount(), 1);
+    QCOMPARE(model.selectedWorldId(), jobId);
+
+    const QModelIndex item = model.index(0, 0);
+    QCOMPARE(model.data(item, WorldLibraryModel::QualityTierRole).toString(),
+             QStringLiteral("failed"));
+    QVERIFY(!model.data(item, WorldLibraryModel::PublishedRole).toBool());
+    QVERIFY(model.data(item, WorldLibraryModel::PlyPathRole).toString().isEmpty());
+    QVERIFY(!model.data(item, WorldLibraryModel::PreviewUrlRole).toUrl().isEmpty());
+    QVERIFY(model.data(item, WorldLibraryModel::FailureTextRole)
+                .toString()
+                .contains(QStringLiteral("no publishable Gaussian world")));
 }
 
 void WorldLibraryModelTests::readsR6PreferredQualityShape()
@@ -291,6 +325,48 @@ QString WorldLibraryModelTests::createWorld(const QString &jobsRoot,
         return {};
     }
     return worldPath;
+}
+
+QString WorldLibraryModelTests::createFailedJob(const QString &jobsRoot,
+                                                const QString &jobId,
+                                                const QString &name,
+                                                const QString &createdAt)
+{
+    const QString jobPath = QDir(jobsRoot).filePath(jobId);
+    const QString validationPath = QDir(jobPath).filePath(
+        QStringLiteral("stages/train/validation"));
+    if (!QDir().mkpath(validationPath))
+        return {};
+
+    const QJsonObject job {
+        { QStringLiteral("schema"), QStringLiteral("servo.reconstruction-job/v1") },
+        { QStringLiteral("jobId"), jobId },
+        { QStringLiteral("worldName"), name },
+        { QStringLiteral("createdAt"), createdAt },
+        { QStringLiteral("profile"), QStringLiteral("fidelity-12gb") },
+        { QStringLiteral("sources"),
+          QJsonArray { QJsonObject {
+              { QStringLiteral("path"), QStringLiteral("C:/captures/yosemite.mov") },
+              { QStringLiteral("kind"), QStringLiteral("video") },
+          } } },
+    };
+    const QJsonObject heldout {
+        { QStringLiteral("schema"), QStringLiteral("servo.gsplat-heldout-evaluation/v1") },
+        { QStringLiteral("pipelineRevision"), QStringLiteral("native-colmap-servo-fidelity-gs-r7") },
+        { QStringLiteral("psnrMean"), 19.59 },
+        { QStringLiteral("ssimMean"), 0.746 },
+    };
+    if (!writeFile(QDir(jobPath).filePath(QStringLiteral("job.json")),
+                   QJsonDocument(job).toJson(QJsonDocument::Compact))
+        || !writeFile(QDir(jobPath).filePath(QStringLiteral("stages/train/heldout-metrics.json")),
+                      QJsonDocument(heldout).toJson(QJsonDocument::Compact))
+        || !writeFile(QDir(validationPath).filePath(QStringLiteral("compare-000.png")),
+                      QByteArrayLiteral("png fixture"))
+        || !writeFile(QDir(jobPath).filePath(QStringLiteral("events.jsonl")),
+                      QByteArrayLiteral("{\"event\":\"job_failed\",\"state\":\"failed\"}\n"))) {
+        return {};
+    }
+    return jobPath;
 }
 
 bool WorldLibraryModelTests::writeFile(const QString &path,

@@ -90,7 +90,755 @@ def valid_row(properties: list[str] | None = None) -> list[float]:
     return [values[name] for name in names]
 
 
+def write_sign_contract_fixture(
+    root: Path,
+    *,
+    job_id: str = "sign-contract-job",
+    profile: str = "balanced-12gb",
+    pipeline_revision: str = "fixture-r7",
+    configuration_hash: str = "sha256:" + "f" * 64,
+    with_verified_track: bool = False,
+) -> tuple[list[Path], dict[str, object]]:
+    import cv2
+    import numpy as np
+
+    frame_count = 3 if with_verified_track else 1
+    semantic_files: list[Path] = []
+    for index in range(frame_count):
+        path = root / "semantics" / "camera" / f"{index:03d}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        assert cv2.imwrite(str(path), np.zeros((8, 8), dtype=np.uint8))
+        semantic_files.append(path)
+
+    provenance = {
+        "sequence_id": job_id,
+        "coordinate_frame_id": f"colmap-undistorted:{job_id}",
+        "scale_provenance": "sfm-arbitrary-scale",
+        "camera_source": "COLMAP registered undistorted pinhole cameras",
+        "depth_source": "aligned relative depth",
+        "semantic_source": "OneFormer broad signboard proposals",
+        "candidate_source": "ADE20K class-43 connected components",
+        "distortion_state": "undistorted",
+        "depth_alignment": "camera-z-in-coordinate-frame",
+        "contains_generated_pixels": False,
+        "source_hashes": {
+            "oneformer-checkpoint": "sha256:" + servo_worker.ONEFORMER_CHECKPOINT_SHA256,
+            "video-depth-checkpoint": "sha256:" + servo_worker.VIDEO_DEPTH_CHECKPOINT_SHA256,
+        },
+    }
+    config = {
+        "minimum_views": 3,
+        "minimum_nonadjacent_gap": 2,
+        "atlas_max_dimension": 512,
+    }
+    manifest_observations: list[dict[str, object]] = []
+    public_observations: list[dict[str, object]] = []
+    tracks: list[dict[str, object]] = []
+    proposal_count = 3 if with_verified_track else 0
+    plane = {
+        "normal": [0.0, 0.0, 1.0],
+        "offset": -8.0,
+        "center": [0.0, 0.0, 8.0],
+        "scale": 1.0,
+        "sampleCount": 64,
+        "inlierCount": 64,
+        "inlierRatio": 1.0,
+        "p95InlierResidualRatio": 0.0,
+    }
+    candidate_ids: list[str] = []
+    if with_verified_track:
+        mask = np.ones((2, 2), dtype=np.uint8)
+        mask_sha256 = servo_worker._sign_proposal_mask_sha256(mask)
+        for index in range(3):
+            candidate_id = f"sign-proposal-{index:06d}-0001"
+            candidate_ids.append(candidate_id)
+            evidence_sha256 = "sha256:" + f"{index + 1:x}" * 64
+            image = f"camera/{index:03d}.png"
+            manifest_observations.append(
+                {
+                    "candidateId": candidate_id,
+                    "frameId": image,
+                    "frameIndex": index,
+                    "state": "geometry-verified",
+                    "reasons": [],
+                    "evidenceSha256": evidence_sha256,
+                    "signFraction": 1.0,
+                    "forbiddenFraction": 0.0,
+                    "depthCoverage": 1.0,
+                    "sharpness": 10.0,
+                    "plane": plane,
+                }
+            )
+            mask_path = root / "sign-proposals" / f"{candidate_id}.png"
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+            assert cv2.imwrite(str(mask_path), mask * 255)
+            public_observations.append(
+                {
+                    "candidateId": candidate_id,
+                    "image": image,
+                    "frameIndex": index,
+                    "boxPriorPixels": [1, 1, 2, 2],
+                    "priorSize": [8, 8],
+                    "areaPixels": 4,
+                    "focus": 10.0,
+                    "classification": "broad-signboard-candidate",
+                    "sourceSemanticClass": {
+                        "taxonomy": "ADE20K",
+                        "id": 43,
+                        "meaning": "signboard-broad-proposal-not-regulatory-identity",
+                    },
+                    "proposalMaskSha256": mask_sha256,
+                    "regulatoryTextVerified": False,
+                    "proposalMask": f"sign-proposals/{candidate_id}.png",
+                    "geometryState": "geometry-verified",
+                    "geometryReasons": [],
+                    "geometryEvidenceSha256": evidence_sha256,
+                }
+            )
+        atlas = np.full((2, 2, 3), [10, 20, 30], dtype=np.uint8)
+        valid_mask = np.ones((2, 2), dtype=bool)
+        support_count = np.full((2, 2), 3, dtype=np.uint16)
+        source_slot = np.zeros((2, 2), dtype=np.int16)
+        atlas_root = root / "sign-atlases"
+        atlas_root.mkdir(parents=True, exist_ok=True)
+        assert cv2.imwrite(str(atlas_root / "sign-track-000000.png"), atlas)
+        np.savez_compressed(
+            atlas_root / "sign-track-000000-evidence.npz",
+            valid_mask=valid_mask,
+            support_count=support_count,
+            source_observation_slot=source_slot,
+        )
+        tracks.append(
+            {
+                "trackId": "sign-track-000000",
+                "state": "geometry-verified",
+                "reasons": [],
+                "observationIds": candidate_ids,
+                "selectedObservationIds": candidate_ids,
+                "cameraBaselineRatio": 1.0,
+                "centroidDispersionRatio": 0.0,
+                "normalP95Degrees": 0.0,
+                "plane": plane,
+                "regulatoryClass": {
+                    "state": "unverified",
+                    "value": None,
+                    "supportingObservations": [],
+                    "reasons": ["fewer-than-three-external-views"],
+                },
+                "text": {
+                    "state": "unverified",
+                    "value": None,
+                    "supportingObservations": [],
+                    "reasons": ["fewer-than-three-external-views"],
+                },
+                "fusion": {
+                    "shape": [2, 2, 3],
+                    "validFraction": 1.0,
+                    "maximumSupport": 3,
+                    "observationOrder": candidate_ids,
+                    "planeBounds": [-1.0, -1.0, 1.0, 1.0],
+                    "sampling": "nearest-observed-pixel",
+                    "generatedPixels": False,
+                    "bgrSha256": servo_worker._sign_array_sha256(atlas),
+                    "validMaskSha256": servo_worker._sign_array_sha256(valid_mask),
+                    "sourceMapSha256": servo_worker._sign_array_sha256(source_slot),
+                },
+            }
+        )
+    manifest = {
+        "schema": "servo.sign-evidence/v1",
+        "algorithm": "servo-sign-plane-cleanroom/1.0.0",
+        "runtime": {"numpy": np.__version__, "opencv": cv2.__version__},
+        "cameraConvention": "camera-to-world; camera +x right, +y down, +z forward",
+        "provenance": provenance,
+        "config": config,
+        "researchReferences": [],
+        "safety": {
+            "collisionReady": False,
+            "metricGeometry": False,
+            "containsGeneratedPixels": False,
+            "geometryVerificationDoesNotVerifyRegulatoryMeaning": True,
+        },
+        "observations": manifest_observations,
+        "tracks": tracks,
+    }
+    summary = {
+        "proposalObservations": proposal_count,
+        "planarObservations": proposal_count,
+        "geometryVerifiedObservations": proposal_count,
+        "tracks": 1 if with_verified_track else 0,
+        "geometryVerifiedTracks": 1 if with_verified_track else 0,
+        "regulatoryClassVerifiedTracks": 0,
+        "textVerifiedTracks": 0,
+    }
+    observations = {
+        "schema": "servo.sign-observations/v1",
+        "jobId": job_id,
+        "profile": profile,
+        "pipelineRevision": pipeline_revision,
+        "configurationHash": configuration_hash,
+        "classification": "broad-semantic-proposals-with-separate-calibrated-geometry-evidence",
+        "structuredEvidence": "sign-evidence.json",
+        "proposalSource": {
+            "producer": "shi-labs/oneformer_ade20k_swin_tiny",
+            "taxonomy": "ADE20K",
+            "classId": 43,
+            "meaning": "broad-signboard-candidate-not-regulatory-identity",
+            "exactMasksPersisted": True,
+            "independentSemanticConfirmation": False,
+        },
+        "observations": public_observations,
+        "summary": summary,
+        "safety": {
+            "collisionReady": False,
+            "metricGeometry": False,
+            "containsGeneratedPixels": False,
+            "geometryDoesNotVerifyRegulatoryMeaning": True,
+            "proposalAndSemanticSupportShareOneModel": True,
+            "zeroVerifiedSignsIsValid": True,
+        },
+        "requirements": (
+            "Regulatory text and class remain unverified until a separate "
+            "external recognizer agrees across at least three calibrated views."
+        ),
+    }
+    (root / "sign-evidence.json").write_text(
+        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+    )
+    (root / "sign-observations.json").write_text(
+        json.dumps(observations, sort_keys=True), encoding="utf-8"
+    )
+    metrics: dict[str, object] = {
+        "schema": "servo.sign-evidence/v1",
+        "algorithm": "servo-sign-plane-cleanroom/1.0.0",
+        **summary,
+        "containsGeneratedPixels": False,
+        "independentSemanticConfirmation": False,
+        "metric": False,
+        "collisionValidated": False,
+        "zeroVerifiedSignsIsValid": True,
+    }
+    return semantic_files, metrics
+
+
 class ReconstructionWorkerTests(unittest.TestCase):
+    def test_pipeline_snapshot_hashes_evidence_implementations(self) -> None:
+        manifest = servo_worker.pipeline_source_manifest()
+        self.assertIn("servo_road_semantics.py", manifest)
+        self.assertIn("servo_sign_evidence.py", manifest)
+        for name in ("servo_road_semantics.py", "servo_sign_evidence.py"):
+            self.assertRegex(manifest[name], r"^sha256:[0-9a-f]{64}$")
+
+    def test_observed_road_surface_gate_requires_converged_supported_graph(self) -> None:
+        valid = {
+            "observedSurface": {
+                "model": "sparse-connected-road-cell-graph-v1",
+                "converged": True,
+                "candidateCellCount": 587,
+                "retainedCellCount": 576,
+                "componentCount": 7,
+                "retainedComponentCount": 1,
+                "anchorCellCount": 498,
+                "blockedCellCount": 50,
+                "ambiguousCellCount": 0,
+                "inlierRatio": 0.94,
+                "p50AbsoluteResidual": 0.0003,
+                "p95AbsoluteResidual": 0.004,
+                "maxAbsoluteResidual": 0.046,
+                "maximumCellP95Residual": 0.00356,
+                "iterations": 105,
+                "solverPolicy": "adaptive-huber-with-cycle-midpoint-freeze-v1",
+                "huberScale": 0.0000164,
+                "huberScaleFrozen": True,
+                "huberObjective": 0.000145,
+                "relativeSolutionChange": 9.4e-10,
+                "normalizedWeightChange": 9.9e-6,
+                "twoCycleSolutionChange": 1.2e-7,
+                "twoCycleWeightChange": 9.1e-6,
+                "firstOrderOptimality": 2.1e-5,
+                "backtrackingSteps": 0,
+                "terminationReason": "cycle-midpoint-fixed-scale-huber",
+            }
+        }
+        self.assertIs(
+            servo_worker.validate_observed_road_surface_metrics(valid),
+            valid["observedSurface"],
+        )
+        for field, value in (
+            ("converged", False),
+            ("retainedCellCount", 0),
+            ("retainedComponentCount", 0),
+            ("anchorCellCount", 0),
+            ("anchorCellCount", 577),
+            ("inlierRatio", 0.64),
+            ("p95AbsoluteResidual", 0.151),
+            ("maximumCellP95Residual", -0.001),
+            ("maximumCellP95Residual", 0.10),
+            ("maximumCellP95Residual", 0.151),
+            ("model", "nearest-neighbour-fill"),
+            ("candidateCellCount", 1200),
+            ("ambiguousCellCount", 51),
+            ("iterations", 257),
+            ("solverPolicy", "adaptive-mad-with-unbounded-cycle"),
+            ("huberScale", -0.001),
+            ("huberObjective", -0.001),
+            ("relativeSolutionChange", 1.1e-8),
+            ("normalizedWeightChange", 1.1e-5),
+            ("firstOrderOptimality", 1.1e-4),
+            ("backtrackingSteps", 1001),
+            ("terminationReason", "iteration-limit"),
+            ("huberScaleFrozen", False),
+            ("huberScale", 0.0),
+            ("huberObjective", 0.0),
+            ("twoCycleSolutionChange", 1.1e-5),
+            ("twoCycleWeightChange", 1.1e-3),
+        ):
+            rejected = json.loads(json.dumps(valid))
+            rejected["observedSurface"][field] = value
+            with self.subTest(field=field), self.assertRaises(
+                servo_worker.WorkerError
+            ):
+                servo_worker.validate_observed_road_surface_metrics(rejected)
+
+    def test_road_surface_document_is_bound_to_gated_metrics(self) -> None:
+        observed = {
+            "model": "sparse-connected-road-cell-graph-v1",
+            "solverPolicy": "adaptive-huber-with-cycle-midpoint-freeze-v1",
+            "converged": True,
+            "candidateCellCount": 2,
+            "retainedCellCount": 2,
+            "componentCount": 1,
+            "retainedComponentCount": 1,
+            "anchorCellCount": 1,
+            "blockedCellCount": 1,
+            "ambiguousCellCount": 0,
+            "inlierRatio": 0.94,
+            "p50AbsoluteResidual": 0.0003,
+            "p95AbsoluteResidual": 0.004,
+            "maxAbsoluteResidual": 0.046,
+            "maximumCellP95Residual": 0.00356,
+            "iterations": 144,
+            "huberScale": 0.0000164,
+            "huberScaleFrozen": True,
+            "huberObjective": 0.000145,
+            "relativeSolutionChange": 9.4e-10,
+            "normalizedWeightChange": 9.9e-6,
+            "twoCycleSolutionChange": 1.2e-7,
+            "twoCycleWeightChange": 9.1e-6,
+            "firstOrderOptimality": 2.1e-5,
+            "backtrackingSteps": 0,
+            "terminationReason": "cycle-midpoint-fixed-scale-huber",
+        }
+        road_metrics = {
+            "model": "piecewise-linear-elevation-and-bank-plus-observed-cell-graph-v1",
+            "observedSurface": observed,
+        }
+        road_observed = {
+            **observed,
+            "cellIndices": [[0, 0], [1, 0]],
+            "heights": [0.0, 0.01],
+            "slopes": [[0.0, 0.0], [0.0, 0.0]],
+            "supportCounts": [4, 5],
+            "frameCounts": [3, 3],
+            "blockedCellKeys": [7],
+            "gridOrigin": [0.0, 0.0],
+            "gridShape": [2, 2],
+        }
+        document = {
+            "schema": "servo.road-surface/v1",
+            "jobId": "job",
+            "profile": "fidelity-12gb",
+            "pipelineRevision": servo_worker.PIPELINE_REVISION,
+            "configurationHash": "sha256:" + "a" * 64,
+            "sourceFrames": 3,
+            "metric": False,
+            "collisionValidated": False,
+            "scaleProvenance": "sfm-arbitrary",
+            "surface": {"model": road_metrics["model"]},
+            "observedSurface": road_observed,
+        }
+        self.assertIs(
+            servo_worker.validate_road_surface_document(
+                document,
+                road_metrics,
+                expected_images=3,
+                job_id="job",
+                profile="fidelity-12gb",
+                pipeline_revision=servo_worker.PIPELINE_REVISION,
+                configuration_hash="sha256:" + "a" * 64,
+            ),
+            document,
+        )
+        for mutation in (
+            lambda value: value["observedSurface"].__setitem__("heights", [0.0]),
+            lambda value: value["observedSurface"].__setitem__("inlierRatio", 0.95),
+            lambda value: value.__setitem__("sourceFrames", 2),
+        ):
+            rejected = json.loads(json.dumps(document))
+            mutation(rejected)
+            with self.assertRaises(servo_worker.WorkerError):
+                servo_worker.validate_road_surface_document(
+                    rejected,
+                    road_metrics,
+                    expected_images=3,
+                    job_id="job",
+                    profile="fidelity-12gb",
+                    pipeline_revision=servo_worker.PIPELINE_REVISION,
+                    configuration_hash="sha256:" + "a" * 64,
+                )
+
+    def test_zero_evidence_road_paint_artifacts_cover_every_frame(self) -> None:
+        import numpy as np
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            image_names = ["camera/000.jpg", "camera/001.jpg"]
+            semantic_files: list[Path] = []
+            for image_name in image_names:
+                relative = Path(image_name).with_suffix(".png")
+                semantic = output / "semantics" / relative
+                classes = output / "road-paint" / "classes" / relative
+                confidence = output / "road-paint" / "confidence" / relative
+                for path in (semantic, classes, confidence):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(np.ones((3, 4), dtype=np.uint8)).save(semantic)
+                Image.fromarray(np.zeros((3, 4), dtype=np.uint8)).save(classes)
+                Image.fromarray(np.zeros((3, 4), dtype=np.uint8)).save(confidence)
+                semantic_files.append(semantic)
+
+            frame_metrics = [
+                {
+                    "image": image_name,
+                    "neighbourViews": 1,
+                    "availableObservations": 2,
+                    "proposedPixels": 0,
+                    "acceptedPixels": 0,
+                    "rejectedPixels": 0,
+                    "unsupportedPixels": 0,
+                    "extractionSuppressed": False,
+                }
+                for image_name in image_names
+            ]
+            metrics = {
+                "schema": "servo.road-paint-consensus/v1",
+                "method": (
+                    "road-gated-absolute-color-local-ridge-plus-calibrated-"
+                    "same-color-adjacent-depth-consensus-v2"
+                ),
+                "frames": 2,
+                "proposalPixels": 0,
+                "preSuppressionProposalPixels": 0,
+                "suppressedFrames": 0,
+                "longestConsecutiveSuppressedFrames": 0,
+                "acceptedPixels": 0,
+                "rejectedPixels": 0,
+                "unsupportedPixels": 0,
+                "acceptedFractionOfProposals": 0.0,
+                "whitePixels": 0,
+                "yellowPixels": 0,
+                "supportedWarpSamples": 0,
+                "correspondenceOcclusionPolicy": {
+                    "nearerObservationRelativeTolerance": 0.08,
+                    "maximumSymmetricRelativeDepthDisagreement": 0.25,
+                    "borderSampling": "finite-pixel-centres-only",
+                },
+                "pretrainedWeights": None,
+                "metric": False,
+                "collisionValidated": False,
+                "extractionProvenance": {
+                    "schema": "servo.road-paint-evidence/v1",
+                    "method": "road-gated-absolute-color-local-ridge-thickness-components-v2",
+                    "deterministic": True,
+                    "pretrainedWeights": None,
+                },
+                "consensusProvenance": {
+                    "schema": "servo.road-paint-consensus/v1",
+                    "method": "calibrated-dense-warp-repeat-observation-v1",
+                    "deterministic": True,
+                    "configuration": {"require_same_color": True},
+                },
+                "framesMetrics": frame_metrics,
+                "maximumResidentEvidenceFrames": 3,
+                "limitations": ["No visible paint is a valid observed result."],
+            }
+            classes, confidence = servo_worker.validate_road_paint_artifacts(
+                output, semantic_files, metrics, len(image_names)
+            )
+            self.assertEqual(len(classes), 2)
+            self.assertEqual(len(confidence), 2)
+
+            metrics["correspondenceOcclusionPolicy"][
+                "nearerObservationRelativeTolerance"
+            ] = 0.09
+            with self.assertRaisesRegex(
+                servo_worker.WorkerError, "occlusion policy"
+            ):
+                servo_worker.validate_road_paint_artifacts(
+                    output, semantic_files, metrics, len(image_names)
+                )
+            metrics["correspondenceOcclusionPolicy"][
+                "nearerObservationRelativeTolerance"
+            ] = 0.08
+
+            metrics["longestConsecutiveSuppressedFrames"] = 1
+            with self.assertRaises(servo_worker.WorkerError):
+                servo_worker.validate_road_paint_artifacts(
+                    output, semantic_files, metrics, len(image_names)
+                )
+            metrics["longestConsecutiveSuppressedFrames"] = 0
+
+            confidence[-1].unlink()
+            with self.assertRaisesRegex(
+                servo_worker.WorkerError, "do not cover every registered image"
+            ):
+                servo_worker.validate_road_paint_artifacts(
+                    output, semantic_files, metrics, len(image_names)
+                )
+
+    def test_zero_proposal_sign_evidence_is_valid_and_path_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            semantic_files, metrics = write_sign_contract_fixture(root)
+            artifacts = servo_worker.validate_sign_evidence_artifacts(
+                root,
+                semantic_files,
+                metrics,
+                1,
+                job_id="sign-contract-job",
+                profile="balanced-12gb",
+                pipeline_revision="fixture-r7",
+                configuration_hash="sha256:" + "f" * 64,
+            )
+            self.assertEqual(artifacts, [root / "sign-evidence.json"])
+
+            manifest = json.loads(
+                (root / "sign-evidence.json").read_text(encoding="utf-8")
+            )
+            manifest["provenance"]["coordinate_frame_id"] = (
+                r"C:\private\capture"
+            )
+            (root / "sign-evidence.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            with self.assertRaises(servo_worker.WorkerError):
+                servo_worker.validate_sign_evidence_artifacts(
+                    root,
+                    semantic_files,
+                    metrics,
+                    1,
+                    job_id="sign-contract-job",
+                    profile="balanced-12gb",
+                    pipeline_revision="fixture-r7",
+                    configuration_hash="sha256:" + "f" * 64,
+                )
+
+    def test_observed_directional_environment_is_hashed_and_never_fills_unknown_texels(self) -> None:
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            asset = root / "environment" / "observed-sky-equirectangular.png"
+            asset.parent.mkdir(parents=True, exist_ok=True)
+            rgba = np.zeros((32, 64, 4), dtype=np.uint8)
+            rgba[16, 32] = np.asarray([30, 20, 10, 255], dtype=np.uint8)
+            self.assertTrue(cv2.imwrite(str(asset), rgba))
+            descriptor = {
+                "schema": "servo.observed-directional-environment/v1",
+                "method": "oneformer-observed-sky-equirectangular-rgba-v1",
+                "projection": "equirectangular-atan2-x-z-y-up-v1",
+                "asset": "environment/observed-sky-equirectangular.png",
+                "assetSha256": servo_worker.sha256_file(asset),
+                "width": 64,
+                "height": 32,
+                "colorSpace": "srgb",
+                "alphaMeaning": "one-or-more-observed-oneformer-sky-samples-per-texel",
+                "aggregation": "deterministic-mean-observed-sky-rgb-per-texel-no-inpainting-v1",
+                "sourceSkyLabel": 17,
+                "sourceImages": 2,
+                "imagesWithSky": 1,
+                "sourceSkyPixels": 1,
+                "sampledSkyPixels": 1,
+                "observedTexels": 1,
+                "coverageFraction": 1.0 / (64 * 32),
+                "containsGeneratedPixels": False,
+                "finiteGeometry": False,
+                "metric": False,
+            }
+            self.assertEqual(
+                servo_worker.validate_observed_directional_environment_artifact(
+                    root, descriptor, 2
+                ),
+                asset,
+            )
+            rgba[0, 0] = np.asarray([1, 1, 1, 0], dtype=np.uint8)
+            self.assertTrue(cv2.imwrite(str(asset), rgba))
+            descriptor["assetSha256"] = servo_worker.sha256_file(asset)
+            with self.assertRaisesRegex(servo_worker.WorkerError, "generated colour"):
+                servo_worker.validate_observed_directional_environment_artifact(
+                    root, descriptor, 2
+                )
+
+    def test_certified_sky_evidence_is_hash_bound_and_cannot_target_non_sky(self) -> None:
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frames: list[dict[str, object]] = []
+            semantic_files: list[Path] = []
+            for index in range(3):
+                image = f"camera/{index:03d}.png"
+                semantic_path = root / "semantics" / image
+                evidence_path = root / "sky-evidence" / image
+                semantic_path.parent.mkdir(parents=True, exist_ok=True)
+                evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                semantic = np.full((9, 9), 17, dtype=np.uint8)
+                evidence = np.full((9, 9), 1, dtype=np.uint8)
+                self.assertTrue(cv2.imwrite(str(semantic_path), semantic))
+                self.assertTrue(cv2.imwrite(str(evidence_path), evidence))
+                semantic_files.append(semantic_path)
+                frames.append(
+                    {
+                        "image": image,
+                        "asset": f"sky-evidence/{image}",
+                        "assetSha256": servo_worker.sha256_file(evidence_path),
+                        "rawSkyPixels": 81,
+                        "interiorSkyPixels": 81,
+                        "certifiedSkyPixels": 81,
+                        "unconfirmedSkyPixels": 0,
+                        "observedNonSkyPixels": 0,
+                        "neighbourViews": 2,
+                    }
+                )
+            manifest = {
+                "schema": "servo.certified-sky-evidence/v1",
+                "method": "oneformer-rotation-only-temporal-consensus-v1",
+                "storage": "uint8-tristate/0-unknown/1-certified-sky/2-observed-non-sky",
+                "rotationOnlyInfiniteSky": True,
+                "minimumSupportingViews": 2,
+                "neighbourWindow": 4,
+                "erosionRadius": 2,
+                "sourceSemanticLabel": 17,
+                "source": "pinned-oneformer-ade20k-temporal-consensus",
+                "frames": frames,
+                "registeredImages": 3,
+                "certifiedSkyPixels": 243,
+                "unconfirmedSkyPixels": 0,
+                "containsGeneratedPixels": False,
+                "finiteGeometry": False,
+                "metric": False,
+            }
+            manifest_path = root / "sky-evidence.json"
+            servo_worker.atomic_write_json(manifest_path, manifest)
+            descriptor = {
+                **manifest,
+                "manifest": "sky-evidence.json",
+                "manifestSha256": servo_worker.sha256_file(manifest_path),
+            }
+            files = servo_worker.validate_certified_sky_evidence_artifact(
+                root, descriptor, semantic_files, 3
+            )
+            self.assertEqual(files[0], manifest_path)
+            self.assertEqual(len(files), 4)
+
+            semantic = cv2.imread(str(semantic_files[0]), cv2.IMREAD_UNCHANGED)
+            assert semantic is not None
+            semantic[0, 0] = 1
+            self.assertTrue(cv2.imwrite(str(semantic_files[0]), semantic))
+            with self.assertRaisesRegex(servo_worker.WorkerError, "destructive"):
+                servo_worker.validate_certified_sky_evidence_artifact(
+                    root, descriptor, semantic_files, 3
+                )
+
+    def test_sign_masks_atlases_and_maps_are_hash_verified_without_ocr(self) -> None:
+        import cv2
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            semantic_files, metrics = write_sign_contract_fixture(
+                root, with_verified_track=True
+            )
+            artifacts = servo_worker.validate_sign_evidence_artifacts(
+                root,
+                semantic_files,
+                metrics,
+                3,
+                job_id="sign-contract-job",
+                profile="balanced-12gb",
+                pipeline_revision="fixture-r7",
+                configuration_hash="sha256:" + "f" * 64,
+            )
+            self.assertEqual(len(artifacts), 6)
+            self.assertEqual(
+                len([path for path in artifacts if path.parent.name == "sign-proposals"]),
+                3,
+            )
+
+            observations_path = root / "sign-observations.json"
+            observations = json.loads(observations_path.read_text(encoding="utf-8"))
+            observations["observations"][0]["image"] = r"C:\private\frame.png"
+            observations_path.write_text(json.dumps(observations), encoding="utf-8")
+            with self.assertRaisesRegex(servo_worker.WorkerError, "private"):
+                servo_worker.validate_sign_evidence_artifacts(
+                    root,
+                    semantic_files,
+                    metrics,
+                    3,
+                    job_id="sign-contract-job",
+                    profile="balanced-12gb",
+                    pipeline_revision="fixture-r7",
+                    configuration_hash="sha256:" + "f" * 64,
+                )
+            observations["observations"][0]["image"] = "camera/000.png"
+            observations_path.write_text(json.dumps(observations), encoding="utf-8")
+
+            manifest_path = root / "sign-evidence.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["tracks"][0]["regulatoryClass"] = {
+                "state": "cross-view-verified",
+                "value": "STOP",
+                "supportingObservations": manifest["tracks"][0]["observationIds"],
+                "reasons": [],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(servo_worker.WorkerError, "unverified"):
+                servo_worker.validate_sign_evidence_artifacts(
+                    root,
+                    semantic_files,
+                    metrics,
+                    3,
+                    job_id="sign-contract-job",
+                    profile="balanced-12gb",
+                    pipeline_revision="fixture-r7",
+                    configuration_hash="sha256:" + "f" * 64,
+                )
+            manifest["tracks"][0]["regulatoryClass"] = {
+                "state": "unverified",
+                "value": None,
+                "supportingObservations": [],
+                "reasons": ["fewer-than-three-external-views"],
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            atlas_path = root / "sign-atlases" / "sign-track-000000.png"
+            atlas = cv2.imread(str(atlas_path), cv2.IMREAD_COLOR)
+            self.assertIsNotNone(atlas)
+            atlas[0, 0, 0] ^= 1
+            self.assertTrue(cv2.imwrite(str(atlas_path), atlas))
+            with self.assertRaisesRegex(servo_worker.WorkerError, "hashes"):
+                servo_worker.validate_sign_evidence_artifacts(
+                    root,
+                    semantic_files,
+                    metrics,
+                    3,
+                    job_id="sign-contract-job",
+                    profile="balanced-12gb",
+                    pipeline_revision="fixture-r7",
+                    configuration_hash="sha256:" + "f" * 64,
+                )
+
     def test_validates_binary_degree_zero_ply(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "world.ply"
@@ -469,7 +1217,10 @@ class ReconstructionWorkerTests(unittest.TestCase):
                 scheduler,
                 {},
                 {"densificationLimited": True},
-                {"configurationHash": "checkpoint-test"},
+                {
+                    "configurationHash": "checkpoint-test",
+                    "trainingInputHash": "sha256:" + "1" * 64,
+                },
                 SimpleNamespace(normalization={"scale": 1.0}),
             )
             self.assertTrue(path.is_file())
@@ -494,6 +1245,7 @@ class ReconstructionWorkerTests(unittest.TestCase):
             scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
             config = {
                 "configurationHash": "rollback-test",
+                "trainingInputHash": "sha256:" + "2" * 64,
                 "pipelineRevision": "test-pipeline",
             }
             dataset = SimpleNamespace(normalization={"scale": 1.0})
@@ -757,6 +1509,7 @@ class ReconstructionWorkerTests(unittest.TestCase):
             )
             config = {
                 "configurationHash": "appearance-test",
+                "trainingInputHash": "sha256:" + "3" * 64,
                 "pipelineRevision": "test-pipeline",
                 "appearanceCompensation": True,
             }
@@ -964,6 +1717,116 @@ class ReconstructionWorkerTests(unittest.TestCase):
             Image.new("RGB", (4, 4), "blue").save(outside)
             with self.assertRaises(servo_audit_world.AuditError):
                 servo_audit_world.load_reference_image(root, "../outside.png", 4, 4)
+
+    def test_sky_leakage_diagnostic_uses_only_safe_observed_labels(self) -> None:
+        import numpy as np
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            geometry = Path(directory) / "geometry"
+            semantic = geometry / "semantics" / "video-000"
+            semantic.mkdir(parents=True)
+            labels = np.zeros((4, 6), dtype=np.uint8)
+            labels[:2, 2:5] = servo_audit_world.SEMANTIC_SKY_LABEL
+            Image.fromarray(labels, mode="L").save(semantic / "frame.png")
+
+            sky = servo_audit_world.load_semantic_sky_mask(
+                geometry,
+                "video-000/frame.png",
+                12,
+                8,
+            )
+            self.assertIsNotNone(sky)
+            assert sky is not None
+            self.assertEqual(sky.shape, (8, 12))
+            self.assertTrue(sky[:4, 4:10].all())
+            self.assertFalse(sky[4:, :].any())
+            self.assertIsNone(
+                servo_audit_world.load_semantic_sky_mask(
+                    geometry,
+                    "video-000/missing.png",
+                    12,
+                    8,
+                )
+            )
+            with self.assertRaises(servo_audit_world.AuditError):
+                servo_audit_world.load_semantic_sky_mask(
+                    geometry,
+                    "../outside.png",
+                    12,
+                    8,
+                )
+
+            alpha = np.zeros((8, 12), dtype=np.float32)
+            alpha[sky] = 0.8
+            artifact = servo_audit_world.write_sky_leakage_diagnostic(
+                Path(directory) / "out",
+                ordinal=0,
+                image_name="video-000/frame.png",
+                rendered_rgb=np.zeros((8, 12, 3), dtype=np.float32),
+                reference_rgb=np.ones((8, 12, 3), dtype=np.float32),
+                sky_mask=sky,
+                alpha=alpha,
+                p95=0.8,
+                threshold=0.25,
+            )
+            output = Path(directory) / "out" / artifact
+            self.assertTrue(output.is_file())
+            with Image.open(output) as image:
+                self.assertEqual(image.size, (24, 24))
+
+    def test_nonpublishable_diagnostic_audit_source_is_explicit_and_sealed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "diagnostic"
+            geometry = Path(directory) / "geometry"
+            root.mkdir()
+            geometry.mkdir()
+            world = root / "world.ply"
+            world.write_bytes(b"diagnostic-ply")
+            cameras = root / "cameras.json"
+            cameras.write_text("{}\n", encoding="utf-8")
+            configuration_hash = "sha256:" + "a" * 64
+            config = {
+                "output": str(root),
+                "configurationHash": configuration_hash,
+                "geometryRoot": str(geometry),
+                "diagnosticProvenance": {
+                    "schema": "servo.diagnostic-training-provenance/v1",
+                    "nonPublishable": True,
+                },
+                "jobId": "quality-probe",
+            }
+            (root / "training-config.json").write_text(
+                json.dumps(config), encoding="utf-8"
+            )
+            (root / "train-metrics.json").write_text(
+                json.dumps(
+                    {
+                        "configurationHash": configuration_hash,
+                        "worldSha256": servo_audit_world.sha256_file(world),
+                        "representationType": "servo-fidelity-3dgs-v1",
+                        "environment": {
+                            "backgroundColorSrgb": [0.0, 0.0, 0.0],
+                            "backgroundSource": "diagnostic-test",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            source = servo_audit_world.resolve_audit_source(None, root)
+
+            self.assertTrue(source.non_publishable)
+            self.assertEqual(source.manifest["artifactKind"], "non-publishable-diagnostic-training-output")
+            self.assertEqual(source.environment_root, geometry.resolve())
+            self.assertFalse((root / "world.json").exists())
+
+            config["diagnosticProvenance"]["nonPublishable"] = False
+            (root / "training-config.json").write_text(
+                json.dumps(config), encoding="utf-8"
+            )
+            with self.assertRaises(servo_audit_world.AuditError):
+                servo_audit_world.resolve_audit_source(None, root)
 
     def test_camera_groups_share_verified_photo_signatures(self) -> None:
         from PIL import Image

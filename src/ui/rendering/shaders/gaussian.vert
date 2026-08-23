@@ -10,6 +10,7 @@ layout(std140, binding = 0) uniform CameraUniforms {
     vec4 cameraPosition;
     vec4 viewportFocal;
     vec4 parameters;
+    vec4 environmentFallback;
 };
 
 layout(std430, binding = 1) readonly buffer ProjectedGaussians {

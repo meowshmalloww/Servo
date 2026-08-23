@@ -19,6 +19,7 @@ Item {
         { "id": "hash", "label": "Sources" },
         { "id": "extract", "label": "Frames" },
         { "id": "pose", "label": "Camera solve" },
+        { "id": "geometry", "label": "Road geometry" },
         { "id": "train", "label": "Gaussian fit" },
         { "id": "validate", "label": "Quality gate" },
         { "id": "publish", "label": "Publish" }

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import hashlib
 import json
 import math
@@ -29,10 +30,121 @@ import numpy as np
 
 
 AUDIT_SCHEMA = "servo.gaussian-path-audit/v2"
+DIAGNOSTIC_PROVENANCE_SCHEMA = "servo.diagnostic-training-provenance/v1"
+SKY_DIAGNOSTIC_SCHEMA = "servo.sky-leakage-diagnostic/v1"
+SEMANTIC_SKY_LABEL = 17
 
 
 class AuditError(RuntimeError):
     pass
+
+
+@dataclasses.dataclass(frozen=True)
+class AuditSource:
+    """Verified artifacts used by a path audit.
+
+    A normal source is a published world.  The diagnostic variant deliberately
+    accepts only an explicitly non-publishable trainer output, so a short A/B
+    run can be inspected without manufacturing a world manifest or making it
+    appear safe to load as a release.
+    """
+
+    root: Path
+    ply_path: Path
+    cameras_path: Path
+    manifest: dict[str, Any]
+    environment_root: Path
+    non_publishable: bool
+
+
+def resolve_audit_source(
+    world: Path | None,
+    diagnostic_training_output: Path | None,
+) -> AuditSource:
+    """Load a published world or a sealed, explicitly non-publishable probe."""
+
+    if (world is None) == (diagnostic_training_output is None):
+        raise AuditError(
+            "Provide exactly one published world or non-publishable diagnostic output."
+        )
+    if diagnostic_training_output is not None:
+        root = diagnostic_training_output.resolve()
+        config_path = root / "training-config.json"
+        metrics_path = root / "train-metrics.json"
+        ply_path = root / "world.ply"
+        cameras_path = root / "cameras.json"
+        for required in (config_path, metrics_path, ply_path, cameras_path):
+            if not required.is_file():
+                raise AuditError(f"Missing diagnostic training artifact: {required}")
+        config = read_json(config_path)
+        provenance = config.get("diagnosticProvenance")
+        if (
+            not isinstance(provenance, dict)
+            or provenance.get("schema") != DIAGNOSTIC_PROVENANCE_SCHEMA
+            or provenance.get("nonPublishable") is not True
+        ):
+            raise AuditError(
+                "The training output is not explicitly marked non-publishable."
+            )
+        output_value = config.get("output")
+        if not isinstance(output_value, str) or Path(output_value).resolve() != root:
+            raise AuditError("The diagnostic configuration does not bind to its output.")
+        configuration_hash = config.get("configurationHash")
+        if not isinstance(configuration_hash, str) or not configuration_hash.startswith(
+            "sha256:"
+        ):
+            raise AuditError("The diagnostic configuration has no valid content hash.")
+        metrics = read_json(metrics_path)
+        if metrics.get("configurationHash") != configuration_hash:
+            raise AuditError(
+                "The diagnostic metrics do not match the training configuration."
+            )
+        actual_ply_hash = sha256_file(ply_path)
+        if metrics.get("worldSha256") != actual_ply_hash:
+            raise AuditError("The diagnostic world.ply does not match train metrics.")
+        environment = metrics.get("environment")
+        if not isinstance(environment, dict):
+            raise AuditError("The diagnostic output has no environment provenance.")
+        geometry_root_value = config.get("geometryRoot")
+        if not isinstance(geometry_root_value, str):
+            raise AuditError("The diagnostic output has no geometry-prior root.")
+        environment_root = Path(geometry_root_value).resolve()
+        if not environment_root.is_dir():
+            raise AuditError("The diagnostic geometry-prior root no longer exists.")
+        return AuditSource(
+            root=root,
+            ply_path=ply_path,
+            cameras_path=cameras_path,
+            manifest={
+                "worldId": config.get("jobId"),
+                "representationType": metrics.get("representationType"),
+                "environment": environment,
+                "artifactKind": "non-publishable-diagnostic-training-output",
+            },
+            environment_root=environment_root,
+            non_publishable=True,
+        )
+
+    assert world is not None
+    root = world.resolve()
+    manifest_path = root / "world.json"
+    ply_path = root / "world.ply"
+    cameras_path = root / "cameras.json"
+    for required in (manifest_path, ply_path, cameras_path):
+        if not required.is_file():
+            raise AuditError(f"Missing published world artifact: {required}")
+    manifest = read_json(manifest_path)
+    expected_ply_hash = manifest.get("hashes", {}).get("world.ply")
+    if expected_ply_hash != sha256_file(ply_path):
+        raise AuditError("Published world.ply does not match world.json.")
+    return AuditSource(
+        root=root,
+        ply_path=ply_path,
+        cameras_path=cameras_path,
+        manifest=manifest,
+        environment_root=root,
+        non_publishable=False,
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -217,6 +329,152 @@ def load_reference_image(
         return np.asarray(image, dtype=np.float32) / 255.0
 
 
+def load_semantic_sky_mask(
+    geometry_root: Path,
+    image_name: str,
+    width: int,
+    height: int,
+) -> np.ndarray | None:
+    """Load observed OneFormer sky evidence for one registered camera.
+
+    Semantic labels are an optional audit input: published worlds do not need
+    to ship the private training labels.  When a geometry root does contain
+    them, use only the exact camera-relative label image, block path escapes,
+    and resize labels with nearest-neighbor sampling.  A missing semantic
+    directory is therefore reported as unavailable rather than turned into a
+    synthetic sky mask.
+    """
+
+    from PIL import Image
+
+    root = geometry_root.resolve()
+    semantic_root = root / "semantics"
+    if not semantic_root.is_dir():
+        return None
+    label_path = (semantic_root / Path(image_name)).resolve()
+    try:
+        label_path.relative_to(semantic_root.resolve())
+    except ValueError as error:
+        raise AuditError(
+            f"Semantic label image escapes its geometry root: {image_name}"
+        ) from error
+    if not label_path.is_file():
+        return None
+    with Image.open(label_path) as image:
+        labels = np.asarray(image)
+    if labels.ndim != 2:
+        raise AuditError(
+            f"Semantic label image must be single-channel: {image_name}"
+        )
+    if labels.shape != (height, width):
+        labels = cv2.resize(
+            labels,
+            (width, height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    return labels == SEMANTIC_SKY_LABEL
+
+
+def write_sky_leakage_diagnostic(
+    output: Path,
+    *,
+    ordinal: int,
+    image_name: str,
+    rendered_rgb: np.ndarray,
+    reference_rgb: np.ndarray | None,
+    sky_mask: np.ndarray,
+    alpha: np.ndarray,
+    p95: float,
+    threshold: float,
+) -> str:
+    """Persist a compact, human-reviewable observed-sky failure overlay.
+
+    Red marks finite-Gaussian alpha above the recorded threshold inside an
+    observed semantic-sky label.  The overlay is diagnostic evidence only; it
+    never changes the trained world, invents missing sky, or asserts geometry.
+    """
+
+    if (
+        rendered_rgb.ndim != 3
+        or rendered_rgb.shape[-1] != 3
+        or alpha.shape != rendered_rgb.shape[:2]
+        or sky_mask.shape != rendered_rgb.shape[:2]
+    ):
+        raise AuditError("Sky-leakage diagnostic inputs have incompatible shapes.")
+    if reference_rgb is not None and reference_rgb.shape != rendered_rgb.shape:
+        raise AuditError("Sky-leakage reference image has an incompatible shape.")
+
+    output.mkdir(parents=True, exist_ok=True)
+    rendered_bgr = cv2.cvtColor(
+        (np.clip(rendered_rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8),
+        cv2.COLOR_RGB2BGR,
+    )
+    alpha_bgr = cv2.applyColorMap(
+        (np.clip(alpha, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8),
+        cv2.COLORMAP_TURBO,
+    )
+    alpha_bgr[~sky_mask] = (34, 34, 34)
+    overlay = rendered_bgr.copy()
+    leak = sky_mask & (alpha > threshold)
+    overlay[sky_mask] = (
+        0.72 * overlay[sky_mask].astype(np.float32)
+        + 0.28 * np.array([224, 176, 32], dtype=np.float32)
+    ).astype(np.uint8)
+    overlay[leak] = (
+        0.22 * overlay[leak].astype(np.float32)
+        + 0.78 * np.array([32, 32, 232], dtype=np.float32)
+    ).astype(np.uint8)
+    mask_bgr = np.zeros_like(rendered_bgr)
+    mask_bgr[sky_mask] = (230, 190, 34)
+    if reference_rgb is None:
+        reference_bgr = rendered_bgr.copy()
+        reference_label = "Reference unavailable"
+    else:
+        reference_bgr = cv2.cvtColor(
+            (np.clip(reference_rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8),
+            cv2.COLOR_RGB2BGR,
+        )
+        reference_label = "Observed RGB"
+    label_panel(reference_bgr, reference_label)
+    label_panel(rendered_bgr, "Gaussian RGB render")
+    label_panel(mask_bgr, "Observed semantic sky (yellow)")
+    label_panel(
+        alpha_bgr,
+        "Finite Gaussian alpha in observed sky",
+    )
+    label_panel(
+        overlay,
+        f"Sky leakage overlay | p95 {p95:.3f} > threshold {threshold:.3f}",
+    )
+    cv2.putText(
+        overlay,
+        "red = finite splat support where observed label says sky",
+        (12, overlay.shape[0] - 14),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        (240, 244, 248),
+        1,
+        cv2.LINE_AA,
+    )
+    top = np.concatenate([reference_bgr, rendered_bgr], axis=1)
+    bottom = np.concatenate([mask_bgr, alpha_bgr], axis=1)
+    panel = np.concatenate([top, bottom], axis=0)
+    # A fifth view is useful enough to retain, but preserve a regular frame
+    # shape by appending it below rather than implying alpha is a reference.
+    panel = np.concatenate([panel, np.concatenate([overlay, overlay], axis=1)], axis=0)
+    name_digest = hashlib.sha256(image_name.encode("utf-8")).hexdigest()[:12]
+    path = output / f"sky-leakage-{ordinal:03d}-{name_digest}.png"
+    temporary = path.with_name(f".{path.stem}.{uuid.uuid4().hex}.tmp.png")
+    try:
+        if not cv2.imwrite(str(temporary), panel):
+            raise AuditError(f"Unable to write sky-leakage diagnostic: {path}")
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+    return path.name
+
+
 def interpolated_cameras(
     cameras: list[dict[str, Any]],
     frames_per_segment: int,
@@ -356,40 +614,98 @@ def finish_encoder(process: subprocess.Popen[bytes]) -> None:
 
 
 def audit(
-    world: Path,
+    world: Path | None,
     output: Path,
     width: int,
     frames_per_segment: int,
     fps: int,
     reference_images: Path | None = None,
+    diagnostic_training_output: Path | None = None,
+    save_sky_diagnostics: bool = False,
+    sky_diagnostic_p95_threshold: float = 0.25,
 ) -> dict[str, Any]:
     import torch
     from gsplat.rendering import rasterization
-    from servo_train import ssim
+    from servo_train import (
+        composite_raster_background,
+        directional_raster_background,
+        ssim,
+    )
 
-    world = world.resolve()
+    source = resolve_audit_source(world, diagnostic_training_output)
     output = output.resolve()
-    manifest_path = world / "world.json"
-    ply_path = world / "world.ply"
-    cameras_path = world / "cameras.json"
-    for required in (manifest_path, ply_path, cameras_path):
-        if not required.is_file():
-            raise AuditError(f"Missing published world artifact: {required}")
-    manifest = read_json(manifest_path)
-    expected_ply_hash = manifest.get("hashes", {}).get("world.ply")
-    actual_ply_hash = sha256_file(ply_path)
-    if expected_ply_hash != actual_ply_hash:
-        raise AuditError("Published world.ply does not match world.json.")
+    manifest = source.manifest
+    actual_ply_hash = sha256_file(source.ply_path)
+    if "environment" not in manifest:
+        if manifest.get("pipelineRevision") == "native-colmap-servo-fidelity-gs-r6":
+            environment = {
+                "backgroundColorSrgb": [0.0, 0.0, 0.0],
+                "backgroundSource": "legacy-r6-black-default",
+                "finiteSkyGeometry": False,
+            }
+        else:
+            raise AuditError("Published r7 world has no environment provenance.")
+    else:
+        environment = manifest["environment"]
+        if not isinstance(environment, dict):
+            raise AuditError("Published environment must be a JSON object.")
+    background_values = environment.get("backgroundColorSrgb")
+    if (
+        not isinstance(background_values, list)
+        or len(background_values) != 3
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not 0.0 <= float(value) <= 1.0
+            for value in background_values
+        )
+    ):
+        raise AuditError("Published environment background is invalid.")
     if not torch.cuda.is_available():
         raise AuditError("The path audit requires the native CUDA renderer.")
     if width < 320 or width % 2:
         raise AuditError("Audit width must be an even integer of at least 320 pixels.")
+    if (
+        not math.isfinite(sky_diagnostic_p95_threshold)
+        or not 0.0 <= sky_diagnostic_p95_threshold <= 1.0
+    ):
+        raise AuditError("Sky-diagnostic p95 threshold must be finite and in [0,1].")
     if reference_images is not None:
         reference_images = reference_images.resolve()
         if not reference_images.is_dir():
             raise AuditError("The private reference-image root does not exist.")
 
-    cameras = camera_records(cameras_path)
+    cameras = camera_records(source.cameras_path)
+    background = torch.tensor(
+        [float(value) for value in background_values],
+        dtype=torch.float32,
+        device="cuda:0",
+    ).view(1, 3)
+    directional_environment = None
+    directional_descriptor = environment.get("observedDirectionalEnvironment")
+    if directional_descriptor is not None:
+        try:
+            from servo_environment import (
+                EnvironmentError,
+                load_observed_directional_environment,
+            )
+
+            directional_environment = load_observed_directional_environment(
+                source.environment_root,
+                directional_descriptor,
+                device="cuda:0",
+            )
+        except (EnvironmentError, OSError, ValueError) as error:
+            raise AuditError(
+                f"Published directional sky evidence is invalid: {error}"
+            ) from error
+    elif environment.get("backgroundSource") == (
+        "observed-oneformer-sky-equirectangular-plus-mean-fallback-srgb-v1"
+    ):
+        raise AuditError(
+            "Published directional sky background has no observed evidence descriptor."
+        )
     base_width = cameras[0]["width"]
     base_height = cameras[0]["height"]
     height = max(2, round(base_height * width / base_width))
@@ -406,12 +722,15 @@ def audit(
         raise AuditError("FFmpeg is required to encode the path audit.")
 
     device = "cuda"
-    gaussians, sh_degree = load_gaussians(ply_path, device)
+    gaussians, sh_degree = load_gaussians(source.ply_path, device)
     encoder = create_encoder(ffmpeg, video_path, width * 3, height, fps)
     support_values: list[float] = []
     lower_support_values: list[float] = []
     center_support_values: list[float] = []
+    environment_coverage_values: list[float] = []
     ambiguity_samples: list[np.ndarray] = []
+    sky_diagnostics: list[dict[str, Any]] = []
+    sky_diagnostic_directory = output / "sky-leakage-diagnostics"
     registered_psnr: list[float] = []
     registered_ssim: list[float] = []
     heldout_psnr: list[float] = []
@@ -438,6 +757,14 @@ def audit(
                 c2w = torch.from_numpy(c2w_np.astype(np.float32))[None].to(device)
                 viewmat = torch.linalg.inv(c2w)
                 calibration = torch.from_numpy(calibration_np.astype(np.float32))[None].to(device)
+                raster_background, environment_coverage = directional_raster_background(
+                    directional_environment,
+                    c2w,
+                    calibration,
+                    width,
+                    height,
+                    background,
+                )
                 rgb_depth, alpha, _ = rasterization(
                     means=gaussians["means"],
                     quats=gaussians["quats"],
@@ -456,7 +783,22 @@ def audit(
                     sh_degree=sh_degree,
                     near_plane=0.01,
                     far_plane=1e4,
+                    # gsplat 1.5.3 cannot accept camera-batched backgrounds in
+                    # packed mode. Composite observed RGB after rasterization
+                    # so expected depth remains an unmodified geometry signal.
+                    backgrounds=None,
                 )
+                rgb_depth = composite_raster_background(
+                    rgb_depth,
+                    alpha,
+                    raster_background,
+                    "RGB+ED",
+                    3,
+                )
+                if environment_coverage is not None:
+                    environment_coverage_values.append(
+                        float(environment_coverage.mean().item())
+                    )
                 rotation = viewmat[0, :3, :3]
                 translation = viewmat[0, :3, 3]
                 camera_z = (gaussians["means"] @ rotation.T + translation)[:, 2]
@@ -480,6 +822,7 @@ def audit(
                     far_plane=1e4,
                 )
                 rendered_rgb = rgb_depth[0, :, :, :3].clamp(0.0, 1.0)
+                reference_np: np.ndarray | None = None
                 if reference_images is not None and reference_name is not None:
                     reference_np = load_reference_image(
                         reference_images, reference_name, width, height
@@ -509,6 +852,48 @@ def audit(
                 rgb = rendered_rgb.cpu().numpy()
                 depth = rgb_depth[0, :, :, 3].cpu().numpy()
                 alpha_np = alpha[0, :, :, 0].clamp(0.0, 1.0).cpu().numpy()
+                if save_sky_diagnostics and reference_name is not None:
+                    sky_mask = load_semantic_sky_mask(
+                        source.environment_root,
+                        reference_name,
+                        width,
+                        height,
+                    )
+                    if sky_mask is not None and bool(sky_mask.any()):
+                        observed_sky_alpha = alpha_np[sky_mask]
+                        observed_sky_p95 = float(
+                            np.percentile(observed_sky_alpha, 95)
+                        )
+                        if observed_sky_p95 > sky_diagnostic_p95_threshold:
+                            artifact = write_sky_leakage_diagnostic(
+                                sky_diagnostic_directory,
+                                ordinal=len(sky_diagnostics),
+                                image_name=reference_name,
+                                rendered_rgb=rgb,
+                                reference_rgb=reference_np,
+                                sky_mask=sky_mask,
+                                alpha=alpha_np,
+                                p95=observed_sky_p95,
+                                threshold=sky_diagnostic_p95_threshold,
+                            )
+                            sky_diagnostics.append(
+                                {
+                                    "schema": SKY_DIAGNOSTIC_SCHEMA,
+                                    "image": reference_name,
+                                    "heldout": is_validation,
+                                    "skyPixels": int(sky_mask.sum()),
+                                    "skyAlphaP95": observed_sky_p95,
+                                    "threshold": sky_diagnostic_p95_threshold,
+                                    "artifact": str(
+                                        Path("sky-leakage-diagnostics") / artifact
+                                    ),
+                                    "meaning": (
+                                        "Observed semantic-sky pixels with finite "
+                                        "Gaussian alpha; diagnostic evidence only, "
+                                        "not generated sky or collision geometry."
+                                    ),
+                                }
+                            )
                 moment2 = second_moment[0, :, :, 0].cpu().numpy() / np.maximum(alpha_np, 1e-6)
                 variance = np.maximum(moment2 - depth * depth, 0.0)
                 relative_std = np.sqrt(variance) / np.maximum(depth, 1e-4)
@@ -588,8 +973,43 @@ def audit(
     result = {
         "schema": AUDIT_SCHEMA,
         "worldId": manifest.get("worldId"),
+        "artifactKind": manifest.get("artifactKind", "published-world"),
+        "nonPublishable": source.non_publishable,
         "worldPlySha256": actual_ply_hash,
         "representationType": manifest.get("representationType"),
+        "environment": environment,
+        "environmentCoverage": {
+            "observedDirectionalTexelMean": (
+                float(np.mean(environment_coverage_values))
+                if environment_coverage_values
+                else 0.0
+            ),
+            "observedDirectionalTexelMinimum": (
+                float(np.min(environment_coverage_values))
+                if environment_coverage_values
+                else 0.0
+            ),
+            "observedDirectionalTexelMaximum": (
+                float(np.max(environment_coverage_values))
+                if environment_coverage_values
+                else 0.0
+            ),
+            "mode": (
+                "observed-directional-plus-explicit-mean-fallback"
+                if directional_environment is not None
+                else "constant-fallback-only"
+            ),
+        },
+        "skyLeakageDiagnostics": {
+            "enabled": save_sky_diagnostics,
+            "semanticSource": "observed-oneformer-label-17",
+            "threshold": sky_diagnostic_p95_threshold,
+            "flaggedViews": sky_diagnostics,
+            "meaning": (
+                "Optional resized path-audit overlays. The production gate is "
+                "evaluated separately at trainer resolution."
+            ),
+        },
         "cameraPath": {
             "policy": "piecewise-linear-position/slerp-orientation-between-published-cameras",
             "sourceCameras": len(cameras),
@@ -655,6 +1075,13 @@ def audit(
             "fractionAboveTenPercent": float(np.mean(ambiguity > 0.10)) if ambiguity.size else None,
         },
         "limitations": [
+            *(
+                [
+                    "This is a non-publishable diagnostic training output, not a world release or safety acceptance.",
+                ]
+                if source.non_publishable
+                else []
+            ),
             "No metric or ground-truth depth was available.",
             "The path stays between registered cameras and does not test extrapolation outside the capture envelope.",
             "Splat opacity support is not a collision surface or free-space certificate.",
@@ -668,11 +1095,34 @@ def audit(
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--world", required=True, type=Path, help="Published Servo world directory.")
+    source = result.add_mutually_exclusive_group(required=True)
+    source.add_argument("--world", type=Path, help="Published Servo world directory.")
+    source.add_argument(
+        "--diagnostic-training-output",
+        type=Path,
+        help=(
+            "Explicitly non-publishable direct trainer output for an A/B path audit; "
+            "it can never substitute for a published world."
+        ),
+    )
     result.add_argument("--output", required=True, type=Path, help="Directory for the audit MP4 and JSON.")
     result.add_argument("--width", type=int, default=640, help="Per-panel render width (default: 640).")
     result.add_argument("--frames-per-segment", type=int, default=2, help="Samples per source-camera segment.")
     result.add_argument("--fps", type=int, default=30, help="Encoded audit playback rate.")
+    result.add_argument(
+        "--save-sky-diagnostics",
+        action="store_true",
+        help=(
+            "Save observed-sky alpha overlays for registered audit views whose "
+            "resized sky-alpha p95 exceeds the diagnostic threshold."
+        ),
+    )
+    result.add_argument(
+        "--sky-diagnostic-p95-threshold",
+        type=float,
+        default=0.25,
+        help="Flag a resized observed-sky audit view above this p95 alpha (default: 0.25).",
+    )
     result.add_argument(
         "--reference-images",
         type=Path,
@@ -694,6 +1144,9 @@ def main() -> int:
             arguments.frames_per_segment,
             arguments.fps,
             arguments.reference_images,
+            arguments.diagnostic_training_output,
+            arguments.save_sky_diagnostics,
+            arguments.sky_diagnostic_p95_threshold,
         )
     except AuditError as error:
         print(json.dumps({"event": "world_audit_failed", "error": str(error)}, separators=(",", ":")))

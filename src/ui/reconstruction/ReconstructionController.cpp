@@ -1,4 +1,5 @@
 #include "ReconstructionController.h"
+#include "ReconstructionPaths.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -40,7 +41,7 @@ namespace {
 constexpr auto jobSchema = "servo.reconstruction-job/v1";
 constexpr auto eventSchema = "servo.reconstruction-event/v1";
 constexpr auto worldSchema = "servo.gaussian-world/v1";
-constexpr auto supportedWorkerVersion = "0.6.0";
+constexpr auto supportedWorkerVersion = "0.7.0";
 constexpr qulonglong gibibyte = 1024ULL * 1024ULL * 1024ULL;
 
 struct ProfilePresentation {
@@ -87,9 +88,7 @@ QString formatBytes(qulonglong bytes)
 
 ReconstructionController::ReconstructionController(QObject *parent)
     : QObject(parent)
-    , m_runtimePath(QDir(QStandardPaths::writableLocation(
-                            QStandardPaths::AppLocalDataLocation))
-                        .filePath(QStringLiteral("reconstruction")))
+    , m_runtimePath(Servo::ReconstructionPaths::localRuntimeRoot())
     , m_workerPath(locateWorker())
     , m_pythonPath(locatePython())
 {
@@ -763,9 +762,8 @@ bool ReconstructionController::writeJob(const QVariantList &sources,
                                         const QString &worldName)
 {
     const QString jobId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    const QString jobsRoot = QDir(QStandardPaths::writableLocation(
-                                      QStandardPaths::AppLocalDataLocation))
-                                 .filePath(QStringLiteral("reconstruction/jobs"));
+    const QString jobsRoot = QDir(Servo::ReconstructionPaths::localRuntimeRoot())
+                                 .filePath(QStringLiteral("jobs"));
     const QString jobRoot = QDir(jobsRoot).filePath(jobId);
     if (!QDir().mkpath(jobRoot)) {
         setState(QStringLiteral("failed"));
@@ -1235,6 +1233,8 @@ QString ReconstructionController::stageLabel(const QString &stage)
         return QStringLiteral("Selecting sharp overlapping frames");
     if (stage == QStringLiteral("pose"))
         return QStringLiteral("Recovering cameras and sparse geometry");
+    if (stage == QStringLiteral("geometry"))
+        return QStringLiteral("Building depth, semantics, and road geometry");
     if (stage == QStringLiteral("train"))
         return QStringLiteral("Optimizing the Gaussian world");
     if (stage == QStringLiteral("validate"))

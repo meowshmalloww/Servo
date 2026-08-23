@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QColor>
+#include <QImage>
 #include <QQuickRhiItem>
+#include <QString>
 #include <QUrl>
 #include <QVector3D>
 #include <QtQmlIntegration>
@@ -8,6 +11,41 @@
 #include <memory>
 
 struct GaussianSceneData;
+
+namespace Servo::Rendering {
+
+// The finite splat layer is intentionally not used for the distant sky.  This
+// descriptor carries only pixels that were actually observed by the semantic
+// stage; transparent texels are explicitly unknown rather than inpainted.
+struct GaussianWorldEnvironment
+{
+    QVector3D backgroundColorSrgb { 0.0f, 0.0f, 0.0f };
+    QImage observedDirectionalRgba;
+    bool hasObservedDirectionalEnvironment = false;
+};
+
+// Reads and verifies the display-referred fallback plus optional observed-only
+// directional sky evidence from the world manifest beside a published PLY.
+// Standalone PLYs and verified r6 bundles retain the historical black fallback;
+// a bundle that claims the new directional source fails closed if its PNG or
+// provenance is malformed.
+bool readGaussianWorldEnvironment(const QString &plyPath,
+                                  GaussianWorldEnvironment *environment,
+                                  QString *error = nullptr);
+
+// Reads the display-referred background used by gsplat from the world manifest
+// next to a published PLY. Standalone PLYs and verified r6 bundles retain the
+// historical black fallback; manifests that claim the r7 pipeline are strict.
+bool readGaussianWorldBackground(const QString &plyPath,
+                                 QVector3D *backgroundColorSrgb,
+                                 QString *error = nullptr);
+
+// Appearance is composited over the world background. Diagnostic render modes
+// intentionally use black so their values cannot be confused with appearance.
+QColor gaussianAccumulationClearColor(const QVector3D &backgroundColorSrgb,
+                                      int visualizationMode);
+
+} // namespace Servo::Rendering
 
 class GaussianSplatView : public QQuickRhiItem
 {
