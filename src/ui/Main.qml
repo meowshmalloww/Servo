@@ -425,10 +425,14 @@ ApplicationWindow {
                     anchors.rightMargin: 7
                     spacing: 7
 
-                    SvgIcon {
-                        source: Theme.icon("app")
-                        iconSize: 24
-                        tinted: false
+                    Image {
+                        Layout.preferredWidth: 24
+                        Layout.preferredHeight: 24
+                        source: Theme.appLogo
+                        sourceSize: Qt.size(48, 48)
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
+                        mipmap: true
                     }
 
                     Text {
@@ -462,8 +466,16 @@ ApplicationWindow {
                         Layout.fillWidth: true
                     }
 
+                    TextButton {
+                        text: "Assistant"
+                        iconSource: Theme.icon("assistant")
+                        selected: Session.workspaceIndex === 7
+                        compact: true
+                        onClicked: Session.workspaceIndex = 7
+                    }
+
                     RowLayout {
-                        visible: Session.showPerformanceMetrics
+                        visible: Session.showPerformanceMetrics && window.width >= 1180
                         spacing: 9
 
                         MetricReadout {
@@ -699,9 +711,14 @@ ApplicationWindow {
                 Layout.margins: 18
                 spacing: 14
 
-                SvgIcon {
+                Image {
                     source: Theme.appLogo
-                    iconSize: 56
+                    sourceSize: Qt.size(112, 112)
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    mipmap: true
+                    Layout.preferredWidth: 56
+                    Layout.preferredHeight: 56
                     Layout.alignment: Qt.AlignTop
                 }
 

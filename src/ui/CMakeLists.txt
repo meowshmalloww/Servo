@@ -85,7 +85,6 @@ qt_add_qml_module(appServo
     RESOURCES
         assets/servo-logo.png
         icons/assistant.svg
-        icons/app.svg
         icons/back.svg
         icons/build.svg
         icons/camera.svg
