@@ -20,6 +20,61 @@ TRAINER_SPEC.loader.exec_module(servo_train)
 
 
 class SemanticSkyOpacityLossTests(unittest.TestCase):
+    def test_front_to_back_intersection_weights_reset_for_each_pixel(self) -> None:
+        alphas = torch.tensor([0.5, 0.5, 0.25, 0.8], dtype=torch.float32)
+        rays = torch.tensor([3, 3, 3, 7], dtype=torch.int64)
+
+        weights = servo_train.front_to_back_intersection_weights(alphas, rays)
+
+        torch.testing.assert_close(
+            weights,
+            torch.tensor([0.5, 0.25, 0.0625, 0.8], dtype=torch.float32),
+        )
+
+    def test_contributor_cleanup_changes_only_prequalified_opacity(self) -> None:
+        logits = torch.tensor([-1.0, 0.0, 1.0], requires_grad=True)
+        qualified = torch.tensor([False, True, False])
+
+        loss = servo_train.contributor_sky_cleanup_loss(logits, qualified)
+        loss.backward()
+
+        self.assertEqual(float(logits.grad[0]), 0.0)
+        self.assertGreater(float(logits.grad[1]), 0.0)
+        self.assertEqual(float(logits.grad[2]), 0.0)
+
+    def test_contributor_cleanup_is_sealed_to_diagnostics(self) -> None:
+        diagnostic = {
+            "diagnosticProvenance": {
+                "schema": servo_train.DIAGNOSTIC_PROVENANCE_SCHEMA,
+                "nonPublishable": True,
+            }
+        }
+        settings = {
+            "enabled": True,
+            "method": servo_train.CONTRIBUTOR_SKY_CLEANUP_METHOD,
+            "start_step": 4_500,
+            "refine_stop_iter": 4_500,
+            "minimum_weight": servo_train.CONTRIBUTOR_SKY_CLEANUP_MINIMUM_WEIGHT,
+            "minimum_views": servo_train.CONTRIBUTOR_SKY_CLEANUP_MINIMUM_VIEWS,
+            "minimum_view_gap": servo_train.CONTRIBUTOR_SKY_CLEANUP_MINIMUM_VIEW_GAP,
+            "audit_factor": servo_train.CONTRIBUTOR_SKY_CLEANUP_AUDIT_FACTOR,
+            "loss_weight": 0.01,
+        }
+        self.assertTrue(
+            servo_train.supported_contributor_sky_cleanup_contract(
+                diagnostic, **settings
+            )
+        )
+        self.assertFalse(
+            servo_train.supported_contributor_sky_cleanup_contract({}, **settings)
+        )
+        settings["start_step"] = 4_499
+        self.assertFalse(
+            servo_train.supported_contributor_sky_cleanup_contract(
+                diagnostic, **settings
+            )
+        )
+
     def test_gradient_descends_only_observed_sky_alpha(self) -> None:
         alpha = torch.tensor(
             [[[[0.20], [0.90], [0.50]], [[0.10], [0.80], [0.30]]]],
@@ -399,6 +454,41 @@ class SemanticPhotometricConfidenceTests(unittest.TestCase):
                     servo_train.fuse_semantic_photometric_confidence(
                         temporal, semantic
                     )
+
+
+class ObservedDetailGradientLossTests(unittest.TestCase):
+    def test_exact_observed_edges_are_zero_and_blur_is_penalized(self) -> None:
+        reference = torch.zeros((1, 9, 9, 3), dtype=torch.float32)
+        reference[:, :, 4:, :] = 1.0
+        confidence = torch.ones((1, 9, 9, 1), dtype=torch.float32)
+        semantic = torch.full((1, 9, 9, 1), 2, dtype=torch.int64)
+
+        exact = servo_train.observed_detail_gradient_loss(
+            reference.clone(), reference, confidence, semantic
+        )
+        blurred = reference.clone()
+        blurred[:, :, 3:6, :] = torch.tensor([0.25, 0.50, 0.75]).view(1, 1, 3, 1)
+        degraded = servo_train.observed_detail_gradient_loss(
+            blurred, reference, confidence, semantic
+        )
+
+        self.assertAlmostEqual(float(exact), 0.0, places=7)
+        self.assertGreater(float(degraded), 0.0)
+
+    def test_unobserved_pixels_do_not_create_detail_targets(self) -> None:
+        reference = torch.zeros((1, 7, 7, 3), dtype=torch.float32)
+        reference[:, :, 3:, :] = 1.0
+        rendered = torch.zeros_like(reference, requires_grad=True)
+        confidence = torch.zeros((1, 7, 7, 1), dtype=torch.float32)
+        semantic = torch.full((1, 7, 7, 1), 12, dtype=torch.int64)
+
+        loss = servo_train.observed_detail_gradient_loss(
+            rendered, reference, confidence, semantic
+        )
+        loss.backward()
+
+        self.assertEqual(float(loss), 0.0)
+        torch.testing.assert_close(rendered.grad, torch.zeros_like(rendered))
 
 
 if __name__ == "__main__":

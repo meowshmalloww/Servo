@@ -29,10 +29,14 @@ import cv2
 import numpy as np
 
 
-AUDIT_SCHEMA = "servo.gaussian-path-audit/v2"
+AUDIT_SCHEMA = "servo.gaussian-path-audit/v4"
 DIAGNOSTIC_PROVENANCE_SCHEMA = "servo.diagnostic-training-provenance/v1"
 SKY_DIAGNOSTIC_SCHEMA = "servo.sky-leakage-diagnostic/v1"
 SEMANTIC_SKY_LABEL = 17
+SEMANTIC_ROAD_LABELS = frozenset({1, 2, 5})
+SEMANTIC_ROAD_MARKING_LABELS = frozenset({2})
+SEMANTIC_ROAD_BOUNDARY_LABELS = frozenset({3, 4, 10})
+SEMANTIC_ROADSIDE_SIGN_LABELS = frozenset({12, 13, 14, 15})
 
 
 class AuditError(RuntimeError):
@@ -329,13 +333,13 @@ def load_reference_image(
         return np.asarray(image, dtype=np.float32) / 255.0
 
 
-def load_semantic_sky_mask(
+def load_semantic_labels(
     geometry_root: Path,
     image_name: str,
     width: int,
     height: int,
 ) -> np.ndarray | None:
-    """Load observed OneFormer sky evidence for one registered camera.
+    """Load observed Servo semantic evidence for one registered camera.
 
     Semantic labels are an optional audit input: published worlds do not need
     to ship the private training labels.  When a geometry root does contain
@@ -372,7 +376,357 @@ def load_semantic_sky_mask(
             (width, height),
             interpolation=cv2.INTER_NEAREST,
         )
-    return labels == SEMANTIC_SKY_LABEL
+    return labels.astype(np.uint8, copy=False)
+
+
+def load_semantic_sky_mask(
+    geometry_root: Path,
+    image_name: str,
+    width: int,
+    height: int,
+) -> np.ndarray | None:
+    labels = load_semantic_labels(
+        geometry_root,
+        image_name,
+        width,
+        height,
+    )
+    return None if labels is None else labels == SEMANTIC_SKY_LABEL
+
+
+def masked_detail_metrics(
+    rendered_rgb: np.ndarray,
+    reference_rgb: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> dict[str, float | int] | None:
+    """Measure reference-relative detail without treating noise as correctness.
+
+    Laplacian variance and gradient energy expose blur that PSNR/SSIM can hide,
+    but either can also be inflated by ringing, floaters, or sensor noise.  The
+    ratios are therefore reported beside a gradient-similarity score and never
+    used alone as a safety or geometry gate.
+    """
+
+    rendered = np.asarray(rendered_rgb, dtype=np.float32)
+    reference = np.asarray(reference_rgb, dtype=np.float32)
+    if rendered.shape != reference.shape or rendered.ndim != 3 or rendered.shape[2] != 3:
+        raise AuditError("Detail metrics require matching RGB images.")
+    if mask is None:
+        selected = np.ones(rendered.shape[:2], dtype=bool)
+    else:
+        selected = np.asarray(mask, dtype=bool)
+        if selected.shape != rendered.shape[:2]:
+            raise AuditError("Detail-metric mask does not match the RGB image.")
+        # Prevent the semantic-mask outline from dominating edge energy.
+        if int(np.count_nonzero(selected)) >= 64:
+            eroded = cv2.erode(selected.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            if int(np.count_nonzero(eroded)) >= 16:
+                selected = eroded
+    pixel_count = int(np.count_nonzero(selected))
+    if pixel_count < 16:
+        return None
+
+    weights = np.asarray([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    rendered_y = np.sum(rendered * weights, axis=2)
+    reference_y = np.sum(reference * weights, axis=2)
+    rendered_laplacian = cv2.Laplacian(rendered_y, cv2.CV_32F, ksize=3)
+    reference_laplacian = cv2.Laplacian(reference_y, cv2.CV_32F, ksize=3)
+    rendered_dx = cv2.Sobel(rendered_y, cv2.CV_32F, 1, 0, ksize=3)
+    rendered_dy = cv2.Sobel(rendered_y, cv2.CV_32F, 0, 1, ksize=3)
+    reference_dx = cv2.Sobel(reference_y, cv2.CV_32F, 1, 0, ksize=3)
+    reference_dy = cv2.Sobel(reference_y, cv2.CV_32F, 0, 1, ksize=3)
+    rendered_gradient = np.hypot(rendered_dx, rendered_dy)
+    reference_gradient = np.hypot(reference_dx, reference_dy)
+    epsilon = 1.0e-8
+    rendered_laplacian_variance = float(np.var(rendered_laplacian[selected]))
+    reference_laplacian_variance = float(np.var(reference_laplacian[selected]))
+    rendered_gradient_mean = float(np.mean(rendered_gradient[selected]))
+    reference_gradient_mean = float(np.mean(reference_gradient[selected]))
+    gradient_similarity = (
+        2.0 * rendered_gradient[selected] * reference_gradient[selected] + 1.0e-4
+    ) / (
+        np.square(rendered_gradient[selected])
+        + np.square(reference_gradient[selected])
+        + 1.0e-4
+    )
+    squared_error = np.square(rendered[selected] - reference[selected])
+    mse = float(np.mean(squared_error))
+    return {
+        "pixels": pixel_count,
+        "maskedPsnr": float(-10.0 * math.log10(max(mse, 1.0e-12))),
+        "laplacianVarianceRatio": rendered_laplacian_variance
+        / max(reference_laplacian_variance, epsilon),
+        "gradientEnergyRatio": rendered_gradient_mean
+        / max(reference_gradient_mean, epsilon),
+        "gradientSimilarityMean": float(np.mean(gradient_similarity)),
+    }
+
+
+def aggregate_detail_metrics(
+    views: list[dict[str, float | int]],
+) -> dict[str, Any]:
+    if not views:
+        return {"available": False, "views": 0, "pixels": 0}
+    fields = (
+        "maskedPsnr",
+        "laplacianVarianceRatio",
+        "gradientEnergyRatio",
+        "gradientSimilarityMean",
+    )
+    result: dict[str, Any] = {
+        "available": True,
+        "views": len(views),
+        "pixels": int(sum(int(view["pixels"]) for view in views)),
+    }
+    for field in fields:
+        values = np.asarray([float(view[field]) for view in views], dtype=np.float64)
+        result[field + "Mean"] = float(np.mean(values))
+        result[field + "P10"] = float(np.percentile(values, 10))
+        result[field + "P90"] = float(np.percentile(values, 90))
+    return result
+
+
+def _numeric_distribution(values: list[float]) -> dict[str, float | int | None]:
+    finite = np.asarray([value for value in values if math.isfinite(value)], dtype=np.float64)
+    if not finite.size:
+        return {"count": 0, "minimum": None, "p10": None, "p50": None, "p90": None, "maximum": None}
+    return {
+        "count": int(finite.size),
+        "minimum": float(np.min(finite)),
+        "p10": float(np.percentile(finite, 10)),
+        "p50": float(np.percentile(finite, 50)),
+        "p90": float(np.percentile(finite, 90)),
+        "maximum": float(np.max(finite)),
+    }
+
+
+def load_driving_evidence_summary(geometry_root: Path) -> dict[str, Any]:
+    """Summarize sealed road/sign evidence without upgrading it to truth."""
+
+    geometry_path = geometry_root / "geometry-metrics.json"
+    road_path = geometry_root / "road-surface.json"
+    sign_path = geometry_root / "sign-evidence.json"
+    required = (geometry_path, road_path, sign_path)
+    if not all(path.is_file() for path in required):
+        return {
+            "available": False,
+            "status": "incomplete",
+            "reason": "sealed-road-or-sign-evidence-unavailable",
+        }
+    geometry = read_json(geometry_path)
+    road = read_json(road_path)
+    sign = read_json(sign_path)
+    if geometry.get("schema") != "servo.geometry-priors/v1":
+        raise AuditError("Driving audit found an unsupported geometry-prior schema.")
+    if road.get("schema") != "servo.road-surface/v1":
+        raise AuditError("Driving audit found an unsupported road-surface schema.")
+    if sign.get("schema") != "servo.sign-evidence/v1":
+        raise AuditError("Driving audit found an unsupported sign-evidence schema.")
+
+    semantics = geometry.get("semantics", {})
+    road_paint = semantics.get("roadPaint", {}) if isinstance(semantics, dict) else {}
+    temporal = semantics.get("temporalConsistency", {}) if isinstance(semantics, dict) else {}
+    fit = road.get("fit", {})
+    observed = road.get("observedSurface", {})
+    surface = road.get("surface", {})
+    elevations = [float(value) for value in surface.get("elevations", [])]
+    banks = [float(value) for value in surface.get("banks", [])]
+    tracks = sign.get("tracks", [])
+    observations = sign.get("observations", [])
+    verified_tracks = [
+        track for track in tracks
+        if isinstance(track, dict) and track.get("state") == "geometry-verified"
+    ]
+    atlas_heights: list[float] = []
+    atlas_widths: list[float] = []
+    atlas_valid: list[float] = []
+    for track in verified_tracks:
+        fusion = track.get("fusion")
+        if not isinstance(fusion, dict):
+            continue
+        shape = fusion.get("shape")
+        if isinstance(shape, list) and len(shape) >= 2:
+            atlas_heights.append(float(shape[0]))
+            atlas_widths.append(float(shape[1]))
+        valid_fraction = fusion.get("validFraction")
+        if isinstance(valid_fraction, (int, float)) and not isinstance(valid_fraction, bool):
+            atlas_valid.append(float(valid_fraction))
+    sharpness = [
+        float(item["sharpness"])
+        for item in observations
+        if isinstance(item, dict)
+        and item.get("state") == "geometry-verified"
+        and isinstance(item.get("sharpness"), (int, float))
+        and not isinstance(item.get("sharpness"), bool)
+    ]
+    text_verified = sum(
+        isinstance(track, dict)
+        and isinstance(track.get("text"), dict)
+        and track["text"].get("state") == "cross-view-verified"
+        for track in tracks
+    )
+    class_verified = sum(
+        isinstance(track, dict)
+        and isinstance(track.get("regulatoryClass"), dict)
+        and track["regulatoryClass"].get("state") == "cross-view-verified"
+        for track in tracks
+    )
+    group_iou = temporal.get("groupIoU", {}) if isinstance(temporal, dict) else {}
+    road_fit_metric = road.get("metric") is True
+    collision_validated = road.get("collisionValidated") is True
+    return {
+        "available": True,
+        "status": "not-driving-ready",
+        "artifacts": {
+            "geometryMetricsSha256": sha256_file(geometry_path),
+            "roadSurfaceSha256": sha256_file(road_path),
+            "signEvidenceSha256": sha256_file(sign_path),
+        },
+        "roadSurfacePrior": {
+            "sourceOnly": True,
+            "metric": road_fit_metric,
+            "collisionValidated": collision_validated,
+            "scaleProvenance": road.get("scaleProvenance"),
+            "inlierRatio": fit.get("inlierRatio"),
+            "p95ResidualInSourceScale": fit.get("p95AbsoluteResidual"),
+            "observedCellInlierRatio": observed.get("inlierRatio"),
+            "observedCellP95ResidualInSourceScale": observed.get("p95AbsoluteResidual"),
+            "blockedCells": observed.get("blockedCellCount"),
+            "ambiguousCells": observed.get("ambiguousCellCount"),
+            "elevationInSourceScale": _numeric_distribution(elevations),
+            "crossSlope": _numeric_distribution(banks),
+            "crossSlopeDegrees": _numeric_distribution(
+                [math.degrees(math.atan(value)) for value in banks]
+            ),
+            "meaning": (
+                "Piecewise source-depth prior preserving grade and bank. It is not a "
+                "measurement of the serialized Gaussian surface and its units are not "
+                "metres without a metric scale anchor."
+            ),
+        },
+        "roadPaintEvidence": {
+            "sourceOnly": True,
+            "acceptedPixels": road_paint.get("acceptedPixels"),
+            "proposalPixels": road_paint.get("proposalPixels"),
+            "acceptedFractionOfProposals": road_paint.get("acceptedFractionOfProposals"),
+            "whitePixels": road_paint.get("whitePixels"),
+            "yellowPixels": road_paint.get("yellowPixels"),
+            "suppressedFrames": road_paint.get("suppressedFrames"),
+            "roadTemporalIoU": group_iou.get("road") if isinstance(group_iou, dict) else None,
+            "boundaryTemporalIoU": group_iou.get("boundary") if isinstance(group_iou, dict) else None,
+            "meaning": (
+                "Repeated observed source-image paint evidence; it does not prove that "
+                "the Gaussian render preserves the marking or its metric lane position."
+            ),
+        },
+        "signEvidence": {
+            "broadObservations": len(observations),
+            "tracks": len(tracks),
+            "geometryVerifiedTracks": len(verified_tracks),
+            "textVerifiedTracks": int(text_verified),
+            "regulatoryClassVerifiedTracks": int(class_verified),
+            "atlasHeightPixels": _numeric_distribution(atlas_heights),
+            "atlasWidthPixels": _numeric_distribution(atlas_widths),
+            "atlasValidFraction": _numeric_distribution(atlas_valid),
+            "verifiedObservationSharpness": _numeric_distribution(sharpness),
+            "passesLegibilityGate": bool(verified_tracks) and text_verified == len(verified_tracks),
+            "meaning": (
+                "Geometry-verified means a repeated planar candidate, not a recognized "
+                "traffic sign. Source-illegible text remains unknown and is never invented."
+            ),
+        },
+    }
+
+
+def navigation_stress_poses(
+    cameras: list[dict[str, Any]], anchor_count: int = 9
+) -> tuple[list[int], float, list[dict[str, Any]]]:
+    """Build scale-honest off-path poses without making metric lane claims."""
+
+    if len(cameras) < 2:
+        raise AuditError("Navigation stress requires at least two cameras.")
+    steps = np.asarray(
+        [
+            np.linalg.norm(right["c2w"][:3, 3] - left["c2w"][:3, 3])
+            for left, right in zip(cameras[:-1], cameras[1:])
+        ],
+        dtype=np.float64,
+    )
+    positive = steps[np.isfinite(steps) & (steps > 1e-8)]
+    if not positive.size:
+        raise AuditError("Navigation stress cannot derive a positive camera baseline.")
+    baseline = float(np.median(positive))
+    count = min(max(2, anchor_count), len(cameras))
+    anchors = sorted(set(np.linspace(0, len(cameras) - 1, count).round().astype(int)))
+
+    def rotation(yaw_degrees: float = 0.0, pitch_degrees: float = 0.0) -> np.ndarray:
+        yaw = math.radians(yaw_degrees)
+        pitch = math.radians(pitch_degrees)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        yaw_matrix = np.asarray([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+        pitch_matrix = np.asarray([[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]])
+        return yaw_matrix @ pitch_matrix
+
+    definitions = (
+        ("lateral-left-1x", -1.0, 0.0, 0.0),
+        ("lateral-right-1x", 1.0, 0.0, 0.0),
+        ("lateral-left-2x", -2.0, 0.0, 0.0),
+        ("lateral-right-2x", 2.0, 0.0, 0.0),
+        ("yaw-left-5deg", 0.0, -5.0, 0.0),
+        ("yaw-right-5deg", 0.0, 5.0, 0.0),
+        ("pitch-up-3deg", 0.0, 0.0, -3.0),
+        ("pitch-down-3deg", 0.0, 0.0, 3.0),
+        ("left-1x-yaw-left-5deg", -1.0, -5.0, 0.0),
+        ("right-1x-yaw-right-5deg", 1.0, 5.0, 0.0),
+    )
+    cases: list[dict[str, Any]] = []
+    for anchor in anchors:
+        base = cameras[anchor]["c2w"]
+        for name, lateral, yaw, pitch in definitions:
+            pose = base.copy()
+            pose[:3, 3] += base[:3, 0] * (lateral * baseline)
+            pose[:3, :3] = base[:3, :3] @ rotation(yaw, pitch)
+            cases.append(
+                {
+                    "anchor": anchor,
+                    "case": name,
+                    "group": (
+                        "combined"
+                        if lateral and (yaw or pitch)
+                        else "lateral"
+                        if lateral
+                        else "rotation"
+                    ),
+                    "lateralBaselineMultiples": lateral,
+                    "yawDegrees": yaw,
+                    "pitchDegrees": pitch,
+                    "c2w": pose,
+                }
+            )
+    return anchors, baseline, cases
+
+
+def aggregate_navigation_stress(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if not samples:
+        return {"samples": 0}
+    return {
+        "samples": len(samples),
+        "supportMean": float(np.mean([sample["support"] for sample in samples])),
+        "supportMinimum": float(np.min([sample["support"] for sample in samples])),
+        "lowerHalfSupportMean": float(
+            np.mean([sample["lowerHalfSupport"] for sample in samples])
+        ),
+        "lowerHalfSupportMinimum": float(
+            np.min([sample["lowerHalfSupport"] for sample in samples])
+        ),
+        "depthAmbiguityP50Mean": float(
+            np.mean([sample["depthAmbiguityP50"] for sample in samples])
+        ),
+        "depthAmbiguityP95Maximum": float(
+            np.max([sample["depthAmbiguityP95"] for sample in samples])
+        ),
+    }
 
 
 def write_sky_leakage_diagnostic(
@@ -625,12 +979,16 @@ def audit(
     sky_diagnostic_p95_threshold: float = 0.25,
 ) -> dict[str, Any]:
     import torch
-    from gsplat.rendering import rasterization
     from servo_train import (
         composite_raster_background,
         directional_raster_background,
         ssim,
     )
+
+    from servo_gsplat_runtime import prepare_gsplat_runtime
+
+    prepare_gsplat_runtime()
+    from gsplat.rendering import rasterization
 
     source = resolve_audit_source(world, diagnostic_training_output)
     output = output.resolve()
@@ -736,9 +1094,93 @@ def audit(
     heldout_psnr: list[float] = []
     heldout_ssim: list[float] = []
     appearance_views: list[dict[str, Any]] = []
+    detail_views: list[dict[str, float | int]] = []
+    road_detail_views: list[dict[str, float | int]] = []
+    road_marking_detail_views: list[dict[str, float | int]] = []
+    road_boundary_detail_views: list[dict[str, float | int]] = []
+    roadside_sign_detail_views: list[dict[str, float | int]] = []
     camera_steps: list[float] = []
     for left, right in zip(cameras[:-1], cameras[1:]):
         camera_steps.append(float(np.linalg.norm(right["c2w"][:3, 3] - left["c2w"][:3, 3])))
+
+    def render_stress_pose(
+        c2w_np: np.ndarray, calibration_np: np.ndarray
+    ) -> dict[str, Any]:
+        """Render geometry signals for a navigation stress pose."""
+
+        scaled_calibration = calibration_np.copy()
+        scaled_calibration[0, :] *= scale_x
+        scaled_calibration[1, :] *= scale_y
+        c2w = torch.from_numpy(c2w_np.astype(np.float32))[None].to(device)
+        viewmat = torch.linalg.inv(c2w)
+        calibration = torch.from_numpy(scaled_calibration.astype(np.float32))[None].to(device)
+        rgb_depth, alpha, _ = rasterization(
+            means=gaussians["means"],
+            quats=gaussians["quats"],
+            scales=gaussians["scales"],
+            opacities=gaussians["opacities"],
+            colors=gaussians["colors"],
+            viewmats=viewmat,
+            Ks=calibration,
+            width=width,
+            height=height,
+            packed=True,
+            rasterize_mode="antialiased",
+            eps2d=0.3,
+            camera_model="pinhole",
+            render_mode="RGB+ED",
+            sh_degree=sh_degree,
+            near_plane=0.01,
+            far_plane=1e4,
+            backgrounds=None,
+        )
+        rotation = viewmat[0, :3, :3]
+        translation = viewmat[0, :3, 3]
+        camera_z = (gaussians["means"] @ rotation.T + translation)[:, 2]
+        second_moment, _, _ = rasterization(
+            means=gaussians["means"],
+            quats=gaussians["quats"],
+            scales=gaussians["scales"],
+            opacities=gaussians["opacities"],
+            colors=camera_z.square()[:, None],
+            viewmats=viewmat,
+            Ks=calibration,
+            width=width,
+            height=height,
+            packed=True,
+            rasterize_mode="antialiased",
+            eps2d=0.3,
+            camera_model="pinhole",
+            render_mode="RGB",
+            sh_degree=None,
+            near_plane=0.01,
+            far_plane=1e4,
+        )
+        alpha_np = alpha[0, :, :, 0].clamp(0.0, 1.0).cpu().numpy()
+        depth = rgb_depth[0, :, :, 3].cpu().numpy()
+        moment2 = second_moment[0, :, :, 0].cpu().numpy() / np.maximum(alpha_np, 1e-6)
+        relative_std = np.sqrt(np.maximum(moment2 - depth * depth, 0.0)) / np.maximum(
+            depth, 1e-4
+        )
+        valid = (
+            np.isfinite(relative_std)
+            & np.isfinite(depth)
+            & (depth > 0.0)
+            & (alpha_np >= 0.5)
+        )
+        ambiguity = relative_std[valid]
+        return {
+            "rgb": rgb_depth[0, :, :, :3].clamp(0.0, 1.0).cpu().numpy(),
+            "alpha": alpha_np,
+            "support": float(np.mean(alpha_np >= 0.5)),
+            "lowerHalfSupport": float(np.mean(alpha_np[height // 2 :, :] >= 0.5)),
+            "depthAmbiguityP50": float(np.percentile(ambiguity, 50))
+            if ambiguity.size
+            else 1.0,
+            "depthAmbiguityP95": float(np.percentile(ambiguity, 95))
+            if ambiguity.size
+            else 1.0,
+        }
 
     started = time.perf_counter()
     try:
@@ -822,6 +1264,7 @@ def audit(
                     far_plane=1e4,
                 )
                 rendered_rgb = rgb_depth[0, :, :, :3].clamp(0.0, 1.0)
+                rgb = rendered_rgb.cpu().numpy()
                 reference_np: np.ndarray | None = None
                 if reference_images is not None and reference_name is not None:
                     reference_np = load_reference_image(
@@ -841,15 +1284,53 @@ def audit(
                     if is_validation:
                         heldout_psnr.append(psnr_value)
                         heldout_ssim.append(ssim_value)
+                    detail = masked_detail_metrics(rgb, reference_np)
+                    if detail is not None:
+                        detail_views.append(detail)
+                    labels = load_semantic_labels(
+                        source.environment_root,
+                        reference_name,
+                        width,
+                        height,
+                    )
+                    region_detail: dict[str, dict[str, float | int]] = {}
+                    if labels is not None:
+                        for name, identifiers, destination in (
+                            ("road", SEMANTIC_ROAD_LABELS, road_detail_views),
+                            (
+                                "roadMarking",
+                                SEMANTIC_ROAD_MARKING_LABELS,
+                                road_marking_detail_views,
+                            ),
+                            (
+                                "roadBoundary",
+                                SEMANTIC_ROAD_BOUNDARY_LABELS,
+                                road_boundary_detail_views,
+                            ),
+                            (
+                                "roadsideSign",
+                                SEMANTIC_ROADSIDE_SIGN_LABELS,
+                                roadside_sign_detail_views,
+                            ),
+                        ):
+                            region = masked_detail_metrics(
+                                rgb,
+                                reference_np,
+                                np.isin(labels, tuple(identifiers)),
+                            )
+                            if region is not None:
+                                destination.append(region)
+                                region_detail[name] = region
                     appearance_views.append(
                         {
                             "image": reference_name,
                             "heldout": is_validation,
                             "psnr": psnr_value,
                             "ssim": ssim_value,
+                            "detail": detail,
+                            "drivingRegions": region_detail,
                         }
                     )
-                rgb = rendered_rgb.cpu().numpy()
                 depth = rgb_depth[0, :, :, 3].cpu().numpy()
                 alpha_np = alpha[0, :, :, 0].clamp(0.0, 1.0).cpu().numpy()
                 if save_sky_diagnostics and reference_name is not None:
@@ -950,7 +1431,94 @@ def audit(
             temporary.unlink()
         raise
 
-    elapsed = time.perf_counter() - started
+    path_elapsed = time.perf_counter() - started
+    stress_started = time.perf_counter()
+    anchors, stress_baseline, stress_cases = navigation_stress_poses(cameras)
+    baseline_renders: dict[int, dict[str, Any]] = {}
+    reverse_max_rgb_difference = 0.0
+    reverse_max_alpha_difference = 0.0
+    stress_samples: list[dict[str, Any]] = []
+    micro_motion_alpha_deltas: list[float] = []
+    with torch.inference_mode():
+        for anchor in anchors:
+            camera = cameras[anchor]
+            baseline_renders[anchor] = render_stress_pose(
+                camera["c2w"], camera["calibration"]
+            )
+        for anchor in reversed(anchors):
+            camera = cameras[anchor]
+            reverse = render_stress_pose(camera["c2w"], camera["calibration"])
+            forward = baseline_renders[anchor]
+            reverse_max_rgb_difference = max(
+                reverse_max_rgb_difference,
+                float(np.max(np.abs(reverse["rgb"] - forward["rgb"]))),
+            )
+            reverse_max_alpha_difference = max(
+                reverse_max_alpha_difference,
+                float(np.max(np.abs(reverse["alpha"] - forward["alpha"]))),
+            )
+        for case in stress_cases:
+            camera = cameras[int(case["anchor"])]
+            rendered = render_stress_pose(case["c2w"], camera["calibration"])
+            stress_samples.append(
+                {
+                    key: value
+                    for key, value in {**case, **rendered}.items()
+                    if key not in {"c2w", "rgb", "alpha"}
+                }
+            )
+        for anchor in anchors:
+            camera = cameras[anchor]
+            left = camera["c2w"].copy()
+            right = camera["c2w"].copy()
+            delta = camera["c2w"][:3, 0] * (0.25 * stress_baseline)
+            left[:3, 3] -= delta
+            right[:3, 3] += delta
+            left_render = render_stress_pose(left, camera["calibration"])
+            right_render = render_stress_pose(right, camera["calibration"])
+            micro_motion_alpha_deltas.append(
+                float(np.mean(np.abs(left_render["alpha"] - right_render["alpha"])))
+            )
+    torch.cuda.synchronize()
+    stress_elapsed = time.perf_counter() - stress_started
+    grouped_stress = {
+        group: aggregate_navigation_stress(
+            [sample for sample in stress_samples if sample["group"] == group]
+        )
+        for group in ("lateral", "rotation", "combined")
+    }
+    navigation_stress = {
+        "status": "measured-diagnostic-not-ground-truth",
+        "observedForward": {"measured": True, "groundTruth": "registered-views-only"},
+        "observedReverse": {
+            "measured": True,
+            "maximumAbsoluteRgbDifference": reverse_max_rgb_difference,
+            "maximumAbsoluteAlphaDifference": reverse_max_alpha_difference,
+            "meaning": "Stateless reverse-order determinism only; it does not validate geometry.",
+        },
+        "midpointInterpolation": {
+            "measured": frames_per_segment > 1,
+            "groundTruth": False,
+        },
+        "lateralOffsets": {"measured": True, "metricLaneChange": False, **grouped_stress["lateral"]},
+        "yawPitchPerturbations": {"measured": True, "groundTruth": False, **grouped_stress["rotation"]},
+        "combinedTranslationRotation": {"measured": True, "groundTruth": False, **grouped_stress["combined"]},
+        "temporalPopping": {
+            "measured": True,
+            "method": "symmetric-quarter-baseline-alpha-discontinuity-proxy/v1",
+            "meanAbsoluteAlphaDeltaMean": float(np.mean(micro_motion_alpha_deltas)),
+            "meanAbsoluteAlphaDeltaMaximum": float(np.max(micro_motion_alpha_deltas)),
+            "meaning": "Coverage discontinuity under tiny camera motion; not flow-warped RGB correctness.",
+        },
+        "anchors": len(anchors),
+        "baseline": {
+            "normalizedCameraStepMedian": stress_baseline,
+            "metric": False,
+        },
+        "samples": stress_samples,
+        "elapsedSeconds": stress_elapsed,
+        "unobservedSpace": {"validated": False, "policy": "unknown-not-free-space"},
+    }
     ambiguity = np.concatenate(ambiguity_samples) if ambiguity_samples else np.empty(0, dtype=np.float32)
     if reference_images is not None and (
         len(registered_psnr) != len(cameras)
@@ -1023,8 +1591,8 @@ def audit(
             "width": width,
             "height": height,
             "fps": fps,
-            "elapsedSeconds": elapsed,
-            "offlineFramesPerSecond": len(path_cameras) / max(elapsed, 1e-9),
+            "elapsedSeconds": path_elapsed,
+            "offlineFramesPerSecond": len(path_cameras) / max(path_elapsed, 1e-9),
             "video": video_path.name,
             "videoBytes": video_path.stat().st_size,
             "videoSha256": sha256_file(video_path),
@@ -1057,6 +1625,18 @@ def audit(
             "heldoutSsimMean": float(np.mean(heldout_ssim)) if heldout_ssim else None,
             "views": appearance_views,
         },
+        "detailPreservation": {
+            "meaning": (
+                "Reference-relative luminance detail at exact registered cameras. "
+                "Laplacian and gradient ratios below one can expose blur; values above "
+                "one can be false detail from noise, ringing, or floaters."
+            ),
+            "overall": aggregate_detail_metrics(detail_views),
+            "road": aggregate_detail_metrics(road_detail_views),
+            "roadMarking": aggregate_detail_metrics(road_marking_detail_views),
+            "roadBoundary": aggregate_detail_metrics(road_boundary_detail_views),
+            "roadsideSign": aggregate_detail_metrics(roadside_sign_detail_views),
+        },
         "support": {
             "meaning": "Fraction of pixels whose composited splat alpha is at least 0.5; this is not geometry accuracy.",
             "overallMean": float(np.mean(support_values)),
@@ -1074,6 +1654,21 @@ def audit(
             "fractionAboveFivePercent": float(np.mean(ambiguity > 0.05)) if ambiguity.size else None,
             "fractionAboveTenPercent": float(np.mean(ambiguity > 0.10)) if ambiguity.size else None,
         },
+        "drivingEvidence": load_driving_evidence_summary(source.environment_root),
+        "navigationStress": navigation_stress,
+        "drivingReadiness": {
+            "status": "not-ready",
+            "collisionValidated": False,
+            "metricScale": False,
+            "completeNavigationStressSuite": False,
+            "signLegibilityValidated": False,
+            "roadSurfaceValidatedAgainstMetricGroundTruth": False,
+            "reason": (
+                "Observed-path appearance is only one acceptance dimension; sign "
+                "legibility, metric road geometry, lateral/rotational extrapolation, "
+                "and temporal popping are not all validated."
+            ),
+        },
         "limitations": [
             *(
                 [
@@ -1083,9 +1678,10 @@ def audit(
                 else []
             ),
             "No metric or ground-truth depth was available.",
-            "The path stays between registered cameras and does not test extrapolation outside the capture envelope.",
+            "Off-path stress has no reference imagery and therefore measures stability/support, not correctness.",
             "Splat opacity support is not a collision surface or free-space certificate.",
             "Dynamic vegetation and other transient content can remain blurred or geometrically inconsistent.",
+            "Road/sign priors describe source evidence and do not by themselves verify the serialized Gaussian render.",
             "Offline CUDA throughput is not Vulkan application frame rate.",
         ],
     }

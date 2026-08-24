@@ -64,6 +64,9 @@ SEMANTIC_SKY_OPACITY_METHOD = (
 SEMANTIC_SKY_DIAGNOSTIC_ABLATION_METHOD = (
     "observed-oneformer-sky-alpha-mean-l1-v1-diagnostic-ablation"
 )
+SEMANTIC_SKY_HYBRID_DIAGNOSTIC_METHOD = (
+    "observed-oneformer-semantic-l1-plus-certified-interior-tail-bce-v1-diagnostic"
+)
 DIAGNOSTIC_PROVENANCE_SCHEMA = "servo.diagnostic-training-provenance/v1"
 SEMANTIC_SKY_TAIL_THRESHOLD = 0.10
 SEMANTIC_SKY_TAIL_WEIGHT = 0.05
@@ -78,6 +81,19 @@ CERTIFIED_SKY_EVIDENCE_DIRECTORY = "sky-evidence"
 CERTIFIED_SKY_EVIDENCE_SKY = 1
 CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY = 2
 DENSITY_GROWTH_CAP_POLICY = "freeze-growth-preserve-pruning/v1"
+CONTRIBUTOR_SKY_CLEANUP_METHOD = (
+    "gsplat-1.5.3-certified-sky-exclusive-contributor-opacity-v1"
+)
+CONTRIBUTOR_SKY_CLEANUP_MINIMUM_WEIGHT = 0.01
+CONTRIBUTOR_SKY_CLEANUP_MINIMUM_VIEWS = 4
+CONTRIBUTOR_SKY_CLEANUP_MINIMUM_VIEW_GAP = 4
+CONTRIBUTOR_SKY_CLEANUP_AUDIT_FACTOR = 4
+SURFEL_ABLATION_SCHEMA = "servo.diagnostic-surfel-ablation/v1"
+SURFEL_ABLATION_METHOD = "gsplat-1.5.3-rasterization-2dgs-surfel-v1"
+SURFEL_ABLATION_REPRESENTATION = "servo-fidelity-3dgs-surfel-ablation-v1"
+SURFEL_MINIMUM_SCALE = 1e-6
+FRAME_OVERSAMPLING_SCHEMA = "servo.diagnostic-frame-oversampling/v1"
+FRAME_OVERSAMPLING_METHOD = "observed-sky-offender-weighted-sampling-v1"
 
 
 class TrainingError(RuntimeError):
@@ -179,8 +195,128 @@ def supported_semantic_sky_opacity_contract(
                 and method == SEMANTIC_SKY_DIAGNOSTIC_ABLATION_METHOD
                 and math.isclose(tail_weight, 0.0, rel_tol=0.0, abs_tol=1e-12)
             )
+            or (
+                is_nonpublishable_diagnostic_config(config)
+                and method == SEMANTIC_SKY_HYBRID_DIAGNOSTIC_METHOD
+                and math.isclose(
+                    tail_weight,
+                    SEMANTIC_SKY_TAIL_WEIGHT,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            )
         )
     )
+
+
+def supported_contributor_sky_cleanup_contract(
+    config: Mapping[str, Any],
+    *,
+    enabled: bool,
+    method: str,
+    start_step: int,
+    refine_stop_iter: int,
+    minimum_weight: float,
+    minimum_views: int,
+    minimum_view_gap: int,
+    audit_factor: int,
+    loss_weight: float,
+) -> bool:
+    """Seal contributor cleanup to a conservative diagnostic A/B.
+
+    This treatment is intentionally unavailable to publishable jobs until a
+    complete observed-path audit proves that it removes finite sky support
+    without erasing foliage, signs, mountains, or road-edge evidence.
+    """
+
+    if not enabled:
+        return True
+    return bool(
+        is_nonpublishable_diagnostic_config(config)
+        and method == CONTRIBUTOR_SKY_CLEANUP_METHOD
+        and start_step == refine_stop_iter
+        and math.isclose(
+            minimum_weight,
+            CONTRIBUTOR_SKY_CLEANUP_MINIMUM_WEIGHT,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and minimum_views == CONTRIBUTOR_SKY_CLEANUP_MINIMUM_VIEWS
+        and minimum_view_gap == CONTRIBUTOR_SKY_CLEANUP_MINIMUM_VIEW_GAP
+        and audit_factor == CONTRIBUTOR_SKY_CLEANUP_AUDIT_FACTOR
+        and math.isfinite(loss_weight)
+        and 0.0 < loss_weight <= 0.05
+    )
+
+
+def supported_surfel_ablation_contract(
+    config: Mapping[str, Any],
+    *,
+    schema: str,
+    method: str,
+    depth_distortion_weight: float,
+    normal_consistency_weight: float,
+    normal_consistency_start: int,
+    coarse_steps: int,
+) -> bool:
+    """Seal the native gsplat 2DGS surfel A/B to non-publishable diagnostics.
+
+    The 2DGS representation is a research A/B against the released 3DGS path.
+    Its render/export parity with the production Vulkan 3DGS renderer is not
+    verified, so the treatment must stay impossible in publishable jobs until
+    that parity work lands separately.
+    """
+
+    if schema != SURFEL_ABLATION_SCHEMA or method != SURFEL_ABLATION_METHOD:
+        return False
+    if not is_nonpublishable_diagnostic_config(config):
+        return False
+    if (
+        not math.isfinite(depth_distortion_weight)
+        or not 0.0 <= depth_distortion_weight <= 1.0
+    ):
+        return False
+    if (
+        not math.isfinite(normal_consistency_weight)
+        or not 0.0 <= normal_consistency_weight <= 0.5
+    ):
+        return False
+    return normal_consistency_start > max(coarse_steps, 0)
+
+
+def supported_frame_oversampling_contract(
+    config: Mapping[str, Any],
+    *,
+    schema: str,
+    method: str,
+    multiplier: int,
+    frames: Sequence[str],
+    record_names: Mapping[str, int],
+) -> bool:
+    """Seal per-frame oversampling to non-publishable diagnostics.
+
+    Oversampling and per-frame sky-weight strengthening are an offender-frame
+    repair, not a general training recipe. The frame list must name registered
+    images explicitly so the treatment stays auditable against the sky-leakage
+    receipts that justified it.
+    """
+
+    if schema != FRAME_OVERSAMPLING_SCHEMA:
+        return False
+    if method != FRAME_OVERSAMPLING_METHOD:
+        return False
+    if not is_nonpublishable_diagnostic_config(config):
+        return False
+    if isinstance(multiplier, bool) or not isinstance(multiplier, int):
+        return False
+    if not 2 <= multiplier <= 8:
+        return False
+    if not isinstance(frames, Sequence) or isinstance(frames, str):
+        return False
+    names = [str(frame) for frame in frames]
+    if not names or len(set(names)) != len(names) or len(names) > 64:
+        return False
+    return all(name in record_names for name in names)
 
 
 def canonical_json(value: Any) -> bytes:
@@ -304,6 +440,7 @@ def build_training_sampling_plan(
     endpoint_window: int = ENDPOINT_SAMPLING_WINDOW,
     endpoint_multiplier: int = ENDPOINT_SAMPLING_MULTIPLIER,
     maximum_sparse_multiplier: int = MAXIMUM_SPARSE_ANCHOR_MULTIPLIER,
+    frame_multipliers: Mapping[int, int] | None = None,
 ) -> TrainingSamplingPlan:
     """Build a deterministic integer-weighted camera epoch.
 
@@ -311,7 +448,8 @@ def build_training_sampling_plan(
     least two slots, while cameras with unusually few SfM depth anchors receive
     up to four slots using a bounded inverse-median rule.  Taking the maximum,
     rather than multiplying both weights, prevents endpoint scenes from
-    monopolizing an epoch.
+    monopolizing an epoch.  ``frame_multipliers`` then multiplies the resolved
+    weight of explicitly listed diagnostic offender frames only.
     """
 
     ordered_train = [int(index) for index in train_indices]
@@ -366,6 +504,10 @@ def build_training_sampling_plan(
         )
         endpoint_weight = endpoint_multiplier if index in endpoint_indices else 1
         weight = max(endpoint_weight, sparse_weight)
+        if frame_multipliers is not None:
+            multiplier = int(frame_multipliers.get(index, 1))
+            if multiplier > 1:
+                weight *= multiplier
         weights[index] = weight
         epoch_slots.extend([index] * weight)
     return TrainingSamplingPlan(
@@ -414,6 +556,96 @@ class DeterministicWeightedEpochSampler:
             self._order = list(self._slots)
             random.Random(f"{self._seed}:{self._phase}:{epoch}").shuffle(self._order)
         return self._order[offset % len(self._slots)]
+
+
+def build_cross_view_pair_plan(
+    records: Sequence[ImageRecord],
+    train_indices: Sequence[int],
+    sequence_groups: Sequence[Sequence[int]],
+    observation_ids: Mapping[int, frozenset[int]],
+    *,
+    minimum_shared_tracks: int = 30,
+    minimum_frame_gap: int = 8,
+    maximum_frame_gap: int = 48,
+    maximum_rotation_degrees: float = 60.0,
+) -> tuple[dict[int, int], dict[str, Any]]:
+    """Select deterministic calibrated pairs with measured SfM co-visibility.
+
+    Long-baseline pairs provide a useful depth-consistency signal, but only
+    when enough of the same reconstructed tracks remain visible.  The score
+    balances baseline and shared-track evidence and never uses a held-out
+    camera, preserving the pre-final-fit validation contract.
+    """
+
+    import numpy as np
+
+    train_set = {int(index) for index in train_indices}
+    pair_by_source: dict[int, int] = {}
+    selected_shared: list[int] = []
+    selected_baselines: list[float] = []
+    selected_rotations: list[float] = []
+    for group in sequence_groups:
+        positions = {int(index): ordinal for ordinal, index in enumerate(group)}
+        eligible = [int(index) for index in group if int(index) in train_set]
+        for source in eligible:
+            source_ids = observation_ids.get(source, frozenset())
+            source_pose = np.asarray(records[source].camera_to_world, dtype=np.float64)
+            candidates: list[tuple[float, int, int, float, float]] = []
+            for target in eligible:
+                gap = abs(positions[target] - positions[source])
+                if not minimum_frame_gap <= gap <= maximum_frame_gap:
+                    continue
+                shared = len(source_ids.intersection(observation_ids.get(target, frozenset())))
+                if shared < minimum_shared_tracks:
+                    continue
+                target_pose = np.asarray(records[target].camera_to_world, dtype=np.float64)
+                relative_rotation = source_pose[:3, :3].T @ target_pose[:3, :3]
+                cosine = float(np.clip((np.trace(relative_rotation) - 1.0) * 0.5, -1.0, 1.0))
+                rotation_degrees = math.degrees(math.acos(cosine))
+                if rotation_degrees > maximum_rotation_degrees:
+                    continue
+                baseline = float(
+                    np.linalg.norm(source_pose[:3, 3] - target_pose[:3, 3])
+                )
+                if not math.isfinite(baseline) or baseline <= 1e-6:
+                    continue
+                score = baseline * math.log1p(shared)
+                candidates.append((score, target, shared, baseline, rotation_degrees))
+            if not candidates:
+                continue
+            _, target, shared, baseline, rotation = max(
+                candidates, key=lambda item: (item[0], -item[1])
+            )
+            pair_by_source[source] = target
+            selected_shared.append(shared)
+            selected_baselines.append(baseline)
+            selected_rotations.append(rotation)
+
+    def median(values: Sequence[float | int]) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(float(value) for value in values)
+        middle = len(ordered) // 2
+        return (
+            ordered[middle]
+            if len(ordered) % 2
+            else (ordered[middle - 1] + ordered[middle]) * 0.5
+        )
+
+    receipt = {
+        "method": "colmap-shared-track-baseline-score-v1",
+        "pairCount": len(pair_by_source),
+        "eligibleTrainingViews": len(train_set),
+        "minimumSharedTracks": minimum_shared_tracks,
+        "minimumFrameGap": minimum_frame_gap,
+        "maximumFrameGap": maximum_frame_gap,
+        "maximumRotationDegrees": maximum_rotation_degrees,
+        "medianSharedTracks": median(selected_shared),
+        "minimumSelectedSharedTracks": min(selected_shared, default=0),
+        "medianNormalizedBaseline": median(selected_baselines),
+        "medianRotationDegrees": median(selected_rotations),
+    }
+    return pair_by_source, receipt
 
 
 def semantic_sparse_point_filter(
@@ -517,7 +749,13 @@ class ColmapDataset:
         require_certified_sky_evidence: bool = False,
     ) -> None:
         import numpy as np
-        import pycolmap
+        try:
+            import pycolmap
+        except ModuleNotFoundError:
+            import servo_colmap as pycolmap
+            self.colmap_runtime = "servo-native-binary-reader-v1"
+        else:
+            self.colmap_runtime = "pycolmap"
 
         self.root = root.resolve()
         self.factor = max(1, int(factor))
@@ -826,11 +1064,34 @@ class ColmapDataset:
         ]
         if not self.train_indices:
             raise TrainingError("The validation policy left no images for training.")
+        observation_ids: dict[int, frozenset[int]] = {}
+        for index, record in enumerate(self.records):
+            source_image = images_by_name.get(record.name)
+            observation_ids[index] = frozenset(
+                int(observation.point3D_id)
+                for observation in (
+                    source_image.points2D if source_image is not None else ()
+                )
+                if observation.has_point3D()
+                and int(observation.point3D_id) in reliable_point_ids
+            )
+        (
+            self.cross_view_pairs,
+            self.cross_view_pair_receipt,
+        ) = build_cross_view_pair_plan(
+            self.records,
+            self.train_indices,
+            sequence_groups,
+            observation_ids,
+        )
         self.training_sampling_plan = build_training_sampling_plan(
             self.records,
             self.train_indices,
             sequence_groups,
         )
+        self.sequence_groups = [
+            list(group) for group in sequence_groups
+        ]
         missing_masks = [
             record.name
             for record in self.records
@@ -1046,7 +1307,12 @@ def nearest_scales(points: Any) -> Any:
     return np.log(mean_distance).astype(np.float32)
 
 
-def create_parameters(dataset: ColmapDataset, sh_degree: int, device: str) -> Any:
+def create_parameters(
+    dataset: ColmapDataset,
+    sh_degree: int,
+    device: str,
+    dual_opacity: bool = False,
+) -> Any:
     import torch
 
     points = torch.from_numpy(dataset.points)
@@ -1055,25 +1321,43 @@ def create_parameters(dataset: ColmapDataset, sh_degree: int, device: str) -> An
     count = len(points)
     quaternions = torch.zeros((count, 4), dtype=torch.float32)
     quaternions[:, 0] = 1.0
-    opacities = torch.logit(torch.full((count,), 0.1, dtype=torch.float32))
+    initial_geometry_opacity = 0.99 if dual_opacity else 0.1
+    opacities = torch.logit(
+        torch.full((count,), initial_geometry_opacity, dtype=torch.float32)
+    )
     coefficients = torch.zeros((count, (sh_degree + 1) ** 2, 3), dtype=torch.float32)
     coefficients[:, 0, :] = (colors - 0.5) / C0
-    return torch.nn.ParameterDict(
-        {
-            "means": torch.nn.Parameter(points),
-            "scales": torch.nn.Parameter(scales),
-            "quats": torch.nn.Parameter(quaternions),
-            "opacities": torch.nn.Parameter(opacities),
-            "sh0": torch.nn.Parameter(coefficients[:, :1, :]),
-            "shN": torch.nn.Parameter(coefficients[:, 1:, :]),
-        }
-    ).to(device)
+    values = {
+        "means": torch.nn.Parameter(points),
+        "scales": torch.nn.Parameter(scales),
+        "quats": torch.nn.Parameter(quaternions),
+        "opacities": torch.nn.Parameter(opacities),
+        "sh0": torch.nn.Parameter(coefficients[:, :1, :]),
+        "shN": torch.nn.Parameter(coefficients[:, 1:, :]),
+    }
+    if dual_opacity:
+        # Geometry opacity remains the parameter inspected by gsplat's
+        # densifier/pruner.  Its high initial support is paired with a low RGB
+        # gate whose product exactly matches legacy 0.1 initialization.  This
+        # gives geometry and appearance separate capacity from the first step.
+        values["appearanceOpacityGates"] = torch.nn.Parameter(
+            torch.logit(
+                torch.full(
+                    (count,), 0.1 / initial_geometry_opacity, dtype=torch.float32
+                )
+            )
+        )
+    return torch.nn.ParameterDict(values).to(device)
 
 
-def parameters_from_state(state: dict[str, Any], device: str) -> Any:
+def parameters_from_state(
+    state: dict[str, Any], device: str, dual_opacity: bool = False
+) -> Any:
     import torch
 
     required = {"means", "scales", "quats", "opacities", "sh0", "shN"}
+    if dual_opacity:
+        required.add("appearanceOpacityGates")
     missing = required.difference(state)
     if missing:
         raise TrainingError("Checkpoint is missing Gaussian tensors: " + ", ".join(sorted(missing)))
@@ -1097,6 +1381,8 @@ def create_optimizers(
         "sh0": 2.5e-3,
         "shN": 2.5e-3 / 20.0,
     }
+    if "appearanceOpacityGates" in parameters:
+        rates["appearanceOpacityGates"] = 5e-3
     return {
         name: torch.optim.Adam(
             [
@@ -1659,8 +1945,91 @@ def rasterize(
     render_mode: str = "RGB",
     colors_override: Any | None = None,
     backgrounds: Any | None = None,
+    surfel_ablation: Mapping[str, Any] | None = None,
+    geometry_opacity: bool = False,
 ) -> tuple[Any, Any, dict[str, Any]]:
     import torch
+
+    # ``rasterize`` is also a public test/diagnostic entry point, so it cannot
+    # assume that ``train`` or ``kernel-check`` already prepared gsplat.  Keep
+    # every path on the same verified no-install native runtime; otherwise
+    # gsplat falls back to JIT compilation on Windows.
+    try:
+        from servo_gsplat_runtime import prepare_gsplat_runtime
+    except ModuleNotFoundError:
+        # Tests may load this file directly from its path instead of executing
+        # it as a script, in which case only the repository root is importable.
+        from tools.reconstruction.servo_gsplat_runtime import prepare_gsplat_runtime
+
+    prepare_gsplat_runtime()
+
+    if surfel_ablation is not None:
+        from gsplat.rendering import rasterization_2dgs
+
+        scales = torch.exp(parameters["scales"])
+        # A surfel has no extent along its normal axis. Pinning the third
+        # scale keeps every splat planar for both rendering and export while
+        # leaving the stored parameter untouched for the densifier.
+        scales = torch.cat(
+            [
+                scales[..., :2],
+                torch.full_like(scales[..., :1], SURFEL_MINIMUM_SCALE),
+            ],
+            dim=-1,
+        )
+        colors = (
+            colors_override
+            if colors_override is not None
+            else torch.cat([parameters["sh0"], parameters["shN"]], dim=1)
+        )
+        if sh_degree is None and colors.dim() == 2:
+            # Per-Gaussian feature overrides arrive as [N, D]; the unpacked
+            # 2DGS kernel expects an explicit camera axis [..., C, N, D].
+            colors = colors.unsqueeze(0)
+        rendered, alpha, normals, depth_normals, distort, _median, meta = (
+            rasterization_2dgs(
+                means=parameters["means"],
+                quats=parameters["quats"],
+                scales=scales,
+                opacities=gaussian_opacities(parameters, geometry_opacity),
+                colors=colors,
+                viewmats=torch.linalg.inv(camera_to_world),
+                Ks=calibration,
+                width=width,
+                height=height,
+                # gsplat 1.5.3 rasterization_2dgs never packs per-Gaussian
+                # colors (the packing block is commented out upstream), so
+                # packed=True raises inside rasterize_to_pixels_2dgs. The
+                # diagnostic therefore always renders unpacked.
+                packed=False,
+                absgrad=absgrad,
+                eps2d=eps2d,
+                render_mode=render_mode,
+                sh_degree=sh_degree,
+                distloss=render_mode in ("D", "ED", "RGB+D", "RGB+ED"),
+                near_plane=0.01,
+                far_plane=1e4,
+                backgrounds=None,
+            )
+        )
+        # render_normals leave the kernel in camera space and are rotated to
+        # world space by gsplat; depth_to_normal derives world-space normals
+        # from the rendered expected depth, so both maps share one frame and
+        # their cosine is the 2DGS normal-consistency residual.
+        if depth_normals is not None and depth_normals.dim() == normals.dim() - 1:
+            depth_normals = depth_normals.unsqueeze(0)
+        meta["surfelNormal"] = normals
+        meta["surfelDepthNormal"] = depth_normals
+        meta["surfelDistortion"] = distort
+        rendered = composite_raster_background(
+            rendered,
+            alpha,
+            backgrounds,
+            render_mode,
+            3 if sh_degree is not None else int(colors.shape[-1]),
+        )
+        return rendered, alpha, meta
+
     from gsplat.rendering import rasterization
 
     colors = (
@@ -1673,7 +2042,7 @@ def rasterize(
         means=parameters["means"],
         quats=parameters["quats"],
         scales=torch.exp(parameters["scales"]),
-        opacities=torch.sigmoid(parameters["opacities"]),
+        opacities=gaussian_opacities(parameters, geometry_opacity),
         colors=colors,
         viewmats=torch.linalg.inv(camera_to_world),
         Ks=calibration,
@@ -1702,6 +2071,237 @@ def rasterize(
         color_channels,
     )
     return rendered, alpha, information
+
+
+def front_to_back_intersection_weights(alphas: Any, ray_ids: Any) -> Any:
+    """Return exact front-to-back compositing weights for sorted ray hits.
+
+    ``gsplat.cuda.rasterize_to_indices_in_range`` returns intersections in
+    near-to-far order within each pixel.  This segmented prefix product mirrors
+    gsplat 1.5.3's reference alpha compositing without adding a nerfacc runtime
+    dependency.
+    """
+
+    import torch
+
+    if alphas.ndim != 1 or ray_ids.ndim != 1 or alphas.shape != ray_ids.shape:
+        raise TrainingError("Contributor intersections must be matching vectors.")
+    if len(alphas) == 0:
+        return alphas
+    if not bool(torch.isfinite(alphas).all()) or bool(
+        ((alphas < 0.0) | (alphas >= 1.0)).any()
+    ):
+        raise TrainingError("Contributor intersection alpha is invalid.")
+    if bool((ray_ids[1:] < ray_ids[:-1]).any()):
+        raise TrainingError("Contributor intersections are not grouped by ray.")
+    log_survival = torch.log1p(-alphas)
+    exclusive_prefix = torch.cumsum(log_survival, dim=0) - log_survival
+    starts = torch.ones_like(ray_ids, dtype=torch.bool)
+    starts[1:] = ray_ids[1:] != ray_ids[:-1]
+    segment_ids = torch.cumsum(starts.to(dtype=torch.int64), dim=0) - 1
+    segment_prefix = exclusive_prefix[starts]
+    transmittance = torch.exp(exclusive_prefix - segment_prefix[segment_ids])
+    return alphas * transmittance
+
+
+def contributor_sky_cleanup_loss(opacity_logits: Any, qualified: Any) -> Any:
+    """Transparent-target BCE on pre-qualified Gaussian opacity logits only."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    if opacity_logits.ndim != 1 or qualified.ndim != 1:
+        raise TrainingError("Contributor cleanup expects one-dimensional tensors.")
+    if opacity_logits.shape != qualified.shape or qualified.dtype != torch.bool:
+        raise TrainingError("Contributor cleanup mask does not match opacity logits.")
+    if not bool(qualified.any()):
+        return opacity_logits.sum() * 0.0
+    return functional.softplus(opacity_logits[qualified]).mean()
+
+
+def build_certified_sky_contributor_ledger(
+    parameters: Any,
+    dataset: Any,
+    device: str,
+    *,
+    sh_degree: int,
+    packed: bool,
+    rasterization_mode: str,
+    eps2d: float,
+    audit_factor: int,
+    minimum_weight: float,
+    minimum_views: int,
+    minimum_view_gap: int,
+    cancel_path: Path,
+    descriptor: Mapping[str, Any],
+    config: Mapping[str, Any],
+    output: Path,
+) -> tuple[Any, dict[str, Any]]:
+    """Attribute certified-sky and observed-non-sky support to Gaussian IDs.
+
+    A Gaussian qualifies only when exact compositing contributions exceed the
+    configured visibility floor in several temporally separated certified-sky
+    views and no registered view contains equivalent observed-non-sky support.
+    Density must already be frozen, so the returned IDs remain stable.
+    """
+
+    import torch
+    from gsplat.cuda._wrapper import rasterize_to_indices_in_range
+
+    count = int(len(parameters["means"]))
+    sky_mass = torch.zeros(count, device=device, dtype=torch.float32)
+    non_sky_mass = torch.zeros_like(sky_mass)
+    sky_views = torch.zeros(count, device=device, dtype=torch.int32)
+    non_sky_views = torch.zeros(count, device=device, dtype=torch.int32)
+    last_sky_view = torch.full(
+        (count,), -minimum_view_gap, device=device, dtype=torch.int32
+    )
+    observed_intersections = 0
+    with torch.no_grad():
+        for index in range(len(dataset)):
+            if cancel_path.exists():
+                raise TrainingCancelled(
+                    "Contributor attribution stopped at a verified training state."
+                )
+            pixels_cpu, camera_cpu, calibration_cpu, _ = dataset.load(index)
+            camera = camera_cpu.to(device, non_blocking=True).unsqueeze(0)
+            calibration = calibration_cpu.to(device, non_blocking=True).unsqueeze(0)
+            height = max(1, round(int(pixels_cpu.shape[0]) / audit_factor))
+            width = max(1, round(int(pixels_cpu.shape[1]) / audit_factor))
+            calibration = calibration.clone()
+            calibration[:, 0, :] *= width / int(pixels_cpu.shape[1])
+            calibration[:, 1, :] *= height / int(pixels_cpu.shape[0])
+            evidence = resize_certified_sky_evidence(
+                dataset.load_certified_sky_evidence(index),
+                height,
+                width,
+                device,
+            )[0, ..., 0]
+            _, _, information = rasterize(
+                parameters,
+                camera,
+                calibration,
+                width,
+                height,
+                sh_degree,
+                packed,
+                False,
+                rasterization_mode,
+                eps2d,
+            )
+            if not packed:
+                raise TrainingError("Contributor attribution requires packed gsplat mode.")
+            gs_ids, pixel_ids, image_ids = rasterize_to_indices_in_range(
+                0,
+                1_000_000_000,
+                torch.ones((height, width), device=device),
+                information["means2d"],
+                information["conics"],
+                information["opacities"],
+                width,
+                height,
+                int(information["tile_size"]),
+                information["isect_offsets"][0],
+                information["flatten_ids"],
+            )
+            if len(gs_ids) == 0:
+                continue
+            if bool((pixel_ids[1:] < pixel_ids[:-1]).any()):
+                order = torch.argsort(pixel_ids, stable=True)
+                gs_ids = gs_ids[order]
+                pixel_ids = pixel_ids[order]
+                image_ids = image_ids[order]
+            pixel_x = pixel_ids % width
+            pixel_y = pixel_ids // width
+            coordinates = torch.stack([pixel_x, pixel_y], dim=-1).to(torch.float32) + 0.5
+            deltas = coordinates - information["means2d"][gs_ids]
+            conics = information["conics"][gs_ids]
+            sigmas = 0.5 * (
+                conics[:, 0] * deltas[:, 0].square()
+                + conics[:, 2] * deltas[:, 1].square()
+            ) + conics[:, 1] * deltas[:, 0] * deltas[:, 1]
+            alphas = torch.clamp_max(
+                information["opacities"][gs_ids] * torch.exp(-sigmas),
+                0.999,
+            ).clamp_min(0.0)
+            ray_ids = image_ids * (height * width) + pixel_ids
+            weights = front_to_back_intersection_weights(alphas, ray_ids)
+            original_ids = information["gaussian_ids"][gs_ids].to(torch.int64)
+            labels = evidence.reshape(-1)[pixel_ids]
+            visible = weights >= minimum_weight
+            sky_hits = visible & (labels == CERTIFIED_SKY_EVIDENCE_SKY)
+            non_sky_hits = visible & (
+                labels == CERTIFIED_SKY_EVIDENCE_OBSERVED_NON_SKY
+            )
+            observed_intersections += int(visible.sum().item())
+            if bool(sky_hits.any()):
+                sky_mass.scatter_add_(0, original_ids[sky_hits], weights[sky_hits])
+                unique = torch.unique(original_ids[sky_hits])
+                separated = index - last_sky_view[unique] >= minimum_view_gap
+                accepted = unique[separated]
+                sky_views[accepted] += 1
+                last_sky_view[accepted] = index
+            if bool(non_sky_hits.any()):
+                non_sky_mass.scatter_add_(
+                    0, original_ids[non_sky_hits], weights[non_sky_hits]
+                )
+                non_sky_views[torch.unique(original_ids[non_sky_hits])] += 1
+            del information, gs_ids, pixel_ids, image_ids, weights
+            if (index + 1) % 25 == 0 or index + 1 == len(dataset):
+                emit(
+                    "contributor_attribution_progress",
+                    views=index + 1,
+                    totalViews=len(dataset),
+                )
+    qualified = (sky_views >= minimum_views) & (non_sky_views == 0)
+    mask_bytes = qualified.detach().to(device="cpu", dtype=torch.uint8).numpy().tobytes()
+    ledger = {
+        "schema": "servo.certified-sky-contributor-ledger/v1",
+        "method": CONTRIBUTOR_SKY_CLEANUP_METHOD,
+        "configurationHash": config["configurationHash"],
+        "trainingInputHash": config["trainingInputHash"],
+        "pipelineCodeHash": config["pipelineCodeHash"],
+        "certifiedSkyEvidenceManifestSha256": descriptor["manifestSha256"],
+        "gaussians": count,
+        "views": len(dataset),
+        "auditFactor": audit_factor,
+        "minimumCompositingWeight": minimum_weight,
+        "minimumTemporallySeparatedSkyViews": minimum_views,
+        "minimumViewGap": minimum_view_gap,
+        "observedIntersections": observed_intersections,
+        "gaussiansWithCertifiedSkyEvidence": int((sky_views > 0).sum().item()),
+        "gaussiansWithObservedNonSkyEvidence": int((non_sky_views > 0).sum().item()),
+        "qualifiedGaussians": int(qualified.sum().item()),
+        "qualifiedMaskSha256": "sha256:" + hashlib.sha256(mask_bytes).hexdigest(),
+        "maximumSkyViewCount": int(sky_views.max().item()),
+        "skyContributionMass": float(sky_mass.sum().item()),
+        "observedNonSkyContributionMass": float(non_sky_mass.sum().item()),
+        "meaning": (
+            "Reversible opacity-loss targets only; no Gaussian was deleted. "
+            "Any observed non-sky contribution vetoes qualification."
+        ),
+    }
+
+
+def gaussian_opacities(parameters: Any, geometry_only: bool = False) -> Any:
+    """Return geometry opacity or the export-equivalent appearance opacity.
+
+    The optional second gate follows StableGS's dual-opacity principle: depth,
+    road, and sky constraints act on the base geometry opacity, while RGB uses
+    the product.  Export bakes the product into a standard 3DGS opacity so the
+    runtime and PLY format need no special-case representation.
+    """
+
+    import torch
+
+    geometry = torch.sigmoid(parameters["opacities"])
+    if geometry_only or "appearanceOpacityGates" not in parameters:
+        return geometry
+    return geometry * torch.sigmoid(parameters["appearanceOpacityGates"])
+    atomic_json(output / "certified-sky-contributor-ledger.json", ledger)
+    emit("contributor_attribution_completed", **ledger)
+    torch.cuda.empty_cache()
+    return qualified, ledger
 
 
 def composite_raster_background(
@@ -1896,6 +2496,153 @@ def directional_raster_background(
         ) from error
 
 
+def cross_view_depth_consistency_loss(
+    source_depth: Any,
+    source_alpha: Any,
+    source_camera_to_world: Any,
+    source_calibration: Any,
+    target_depth: Any,
+    target_alpha: Any,
+    target_camera_to_world: Any,
+    target_calibration: Any,
+    confidence: Any | None = None,
+    *,
+    alpha_threshold: float = 0.5,
+    maximum_log_residual: float = math.log(2.0),
+) -> tuple[Any, int]:
+    """Reproject a rendered depth map and compare it in a calibrated view.
+
+    Only mutually supported, in-bounds samples contribute. A broad detached
+    visibility gate rejects genuine occlusion boundaries while retaining the
+    moderate inconsistent-depth layers that the loss is intended to remove.
+    Log-depth residuals make the objective insensitive to scene units.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    if (
+        source_depth.ndim != 4
+        or target_depth.ndim != 4
+        or source_depth.shape[-1] != 1
+        or target_depth.shape[-1] != 1
+        or source_alpha.shape != source_depth.shape
+        or target_alpha.shape != target_depth.shape
+    ):
+        raise TrainingError("Cross-view depth tensors must use [B,H,W,1] layout.")
+    batch, source_height, source_width, _ = source_depth.shape
+    if batch != 1 or int(target_depth.shape[0]) != batch:
+        raise TrainingError("Cross-view depth consistency currently requires one camera pair.")
+    if (
+        tuple(source_camera_to_world.shape) != (batch, 4, 4)
+        or tuple(target_camera_to_world.shape) != (batch, 4, 4)
+        or tuple(source_calibration.shape) != (batch, 3, 3)
+        or tuple(target_calibration.shape) != (batch, 3, 3)
+    ):
+        raise TrainingError("Cross-view camera tensors have incompatible shapes.")
+    if confidence is None:
+        confidence = torch.ones_like(source_depth)
+    if confidence.shape != source_depth.shape:
+        raise TrainingError("Cross-view confidence must match the source depth map.")
+
+    dtype = source_depth.dtype
+    device = source_depth.device
+    rows, columns = torch.meshgrid(
+        torch.arange(source_height, dtype=dtype, device=device),
+        torch.arange(source_width, dtype=dtype, device=device),
+        indexing="ij",
+    )
+    depth = source_depth[..., 0]
+    source_fx = source_calibration[:, 0, 0, None, None]
+    source_fy = source_calibration[:, 1, 1, None, None]
+    source_cx = source_calibration[:, 0, 2, None, None]
+    source_cy = source_calibration[:, 1, 2, None, None]
+    source_points = torch.stack(
+        [
+            (columns[None] - source_cx) * depth / source_fx,
+            (rows[None] - source_cy) * depth / source_fy,
+            depth,
+        ],
+        dim=-1,
+    )
+    source_rotation = source_camera_to_world[:, :3, :3]
+    source_translation = source_camera_to_world[:, :3, 3]
+    world_points = (
+        torch.einsum("bij,bhwj->bhwi", source_rotation, source_points)
+        + source_translation[:, None, None, :]
+    )
+    target_world_to_camera = torch.linalg.inv(target_camera_to_world)
+    target_points = (
+        torch.einsum(
+            "bij,bhwj->bhwi", target_world_to_camera[:, :3, :3], world_points
+        )
+        + target_world_to_camera[:, None, None, :3, 3]
+    )
+    projected_depth = target_points[..., 2]
+    safe_depth = projected_depth.clamp_min(1e-6)
+    target_columns = (
+        target_calibration[:, 0, 0, None, None] * target_points[..., 0] / safe_depth
+        + target_calibration[:, 0, 2, None, None]
+    )
+    target_rows = (
+        target_calibration[:, 1, 1, None, None] * target_points[..., 1] / safe_depth
+        + target_calibration[:, 1, 2, None, None]
+    )
+    target_height, target_width = target_depth.shape[1:3]
+    grid = torch.stack(
+        [
+            2.0 * (target_columns + 0.5) / target_width - 1.0,
+            2.0 * (target_rows + 0.5) / target_height - 1.0,
+        ],
+        dim=-1,
+    )
+    sampled_depth = functional.grid_sample(
+        target_depth.permute(0, 3, 1, 2),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=False,
+    ).permute(0, 2, 3, 1)[..., 0]
+    sampled_alpha = functional.grid_sample(
+        target_alpha.permute(0, 3, 1, 2),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=False,
+    ).permute(0, 2, 3, 1)[..., 0]
+    log_residual = (
+        torch.log(safe_depth) - torch.log(sampled_depth.clamp_min(1e-6))
+    ).abs()
+    valid = (
+        torch.isfinite(depth)
+        & torch.isfinite(projected_depth)
+        & torch.isfinite(sampled_depth)
+        & (depth > 1e-5)
+        & (projected_depth > 1e-5)
+        & (source_alpha[..., 0] >= alpha_threshold)
+        & (sampled_alpha >= alpha_threshold)
+        & (target_columns >= 0.0)
+        & (target_columns <= target_width - 1.0)
+        & (target_rows >= 0.0)
+        & (target_rows <= target_height - 1.0)
+        & (log_residual.detach() <= maximum_log_residual)
+        & (confidence[..., 0] > 0.0)
+    )
+    sample_count = int(valid.sum().item())
+    if sample_count == 0:
+        return source_depth.sum() * 0.0 + target_depth.sum() * 0.0, 0
+    weights = (
+        source_alpha[..., 0] * sampled_alpha * confidence[..., 0]
+    )[valid]
+    robust = functional.smooth_l1_loss(
+        torch.log(safe_depth[valid]),
+        torch.log(sampled_depth[valid].clamp_min(1e-6)),
+        beta=0.05,
+        reduction="none",
+    )
+    return (robust * weights).sum() / weights.sum().clamp_min(1e-6), sample_count
+
+
 def sparse_depth_consistency_loss(
     expected_depth: Any,
     alpha: Any,
@@ -2006,6 +2753,234 @@ def depth_layer_variance_loss(expected_depth: Any, second_moment: Any, alpha: An
     return relative_variance[valid].clamp(max=4.0).mean()
 
 
+def driving_surface_depth_variance_loss(
+    expected_depth: Any,
+    second_moment: Any,
+    alpha: Any,
+    semantic: Any,
+    confidence: Any,
+) -> Any:
+    """Concentrate splats along rays supported by driving-critical surfaces.
+
+    The loss reduces front/back layer mixtures without assuming that a road is
+    globally flat. Consequently, real slope, banking, curbs, and sign planes
+    can remain while unsupported floating layers receive no target.
+    """
+
+    import torch
+
+    if semantic.shape != expected_depth.shape or confidence.shape != expected_depth.shape:
+        raise TrainingError(
+            "Driving-surface variance requires depth-shaped semantic and confidence tensors."
+        )
+    depth = expected_depth[..., 0]
+    support = alpha[..., 0]
+    moment2 = second_moment[..., 0] / support.clamp_min(1e-6)
+    relative_variance = torch.clamp(moment2 - depth.square(), min=0.0) \
+                        / depth.square().clamp_min(1e-6)
+    labels = semantic[..., 0]
+    critical = (
+        (labels == 1)
+        | (labels == 2)
+        | (labels == 3)
+        | (labels == 4)
+        | (labels == 5)
+        | (labels == 10)
+        | (labels == 12)
+        | (labels == 13)
+        | (labels == 14)
+        | (labels == 15)
+        | (labels == 25)
+    )
+    weights = confidence[..., 0].clamp(0.0, 1.0)
+    weights = torch.where((labels == 2) | ((labels >= 12) & (labels <= 15)), weights * 2.0, weights)
+    valid = (
+        critical
+        & torch.isfinite(relative_variance)
+        & torch.isfinite(depth)
+        & (depth > 1e-4)
+        & (support >= 0.5)
+        & (weights > 0.0)
+    )
+    if not bool(valid.any()):
+        return expected_depth.sum() * 0.0
+    return (
+        relative_variance[valid].clamp(max=4.0) * weights[valid]
+    ).sum() / weights[valid].sum().clamp_min(1e-6)
+
+
+def driving_surface_alignment_loss(
+    rendered_features: Any,
+    depth_normals: Any,
+    alpha: Any,
+    semantic: Any,
+    confidence: Any,
+) -> tuple[Any, Any, int, int]:
+    """Align visible 3D Gaussian normals to observed driving surfaces.
+
+    ``rendered_features`` contains the alpha-composited shortest-axis normal
+    and shortest/longest scale ratio of every contributing 3D Gaussian.  The
+    normal target is derived from the same rendered expected-depth map, so the
+    loss regularizes internal surface consistency without claiming metric
+    depth.  Planarity is restricted to observed road-like pixels; it is not
+    applied to foliage, sky, or unobserved space.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    expected_shape = (*alpha.shape[:3], 4)
+    if (
+        rendered_features.shape != expected_shape
+        or depth_normals.shape != (*alpha.shape[:3], 3)
+        or semantic.shape != alpha.shape
+        or confidence.shape != alpha.shape
+    ):
+        raise TrainingError(
+            "Driving-surface alignment requires matching BHWC feature, normal, "
+            "alpha, semantic, and confidence tensors."
+        )
+    zero = rendered_features.sum() * 0.0
+    support = alpha[..., 0]
+    labels = semantic[..., 0]
+    weights = confidence[..., 0].clamp(0.0, 1.0)
+    accumulated_normal = rendered_features[..., :3]
+    visible_normal = functional.normalize(
+        accumulated_normal / support[..., None].clamp_min(1e-6), dim=-1
+    )
+    target_normal = functional.normalize(depth_normals, dim=-1)
+    normal_valid = (
+        torch.isfinite(visible_normal).all(dim=-1)
+        & torch.isfinite(target_normal).all(dim=-1)
+        & (torch.linalg.vector_norm(accumulated_normal, dim=-1) > 1e-4)
+        & (torch.linalg.vector_norm(depth_normals, dim=-1) > 0.5)
+        & (support >= 0.5)
+        & (weights > 0.0)
+    )
+    road_surface = (
+        (labels == 1) | (labels == 2) | (labels == 5) | (labels == 25)
+    )
+    normal_valid &= road_surface
+    normal_count = int(normal_valid.sum().item())
+    normal_loss = zero
+    if normal_count > 0:
+        cosine = (visible_normal * target_normal).sum(dim=-1).abs()
+        normal_loss = (
+            torch.clamp_min(1.0 - cosine[normal_valid], 0.0)
+            * weights[normal_valid]
+        ).sum() / weights[normal_valid].sum().clamp_min(1e-6)
+
+    planarity = rendered_features[..., 3] / support.clamp_min(1e-6)
+    planarity_valid = (
+        road_surface
+        & torch.isfinite(planarity)
+        & (support >= 0.5)
+        & (weights > 0.0)
+    )
+    planarity_count = int(planarity_valid.sum().item())
+    planarity_loss = zero
+    if planarity_count > 0:
+        # Smooth L1 avoids rewarding an unstable collapse to a zero-thickness
+        # primitive while still preferring surface-like road contributors.
+        planarity_loss = (
+            functional.smooth_l1_loss(
+                planarity[planarity_valid],
+                torch.full_like(planarity[planarity_valid], 0.10),
+                beta=0.05,
+                reduction="none",
+            )
+            * weights[planarity_valid]
+        ).sum() / weights[planarity_valid].sum().clamp_min(1e-6)
+    return normal_loss, planarity_loss, normal_count, planarity_count
+
+
+def observed_detail_gradient_loss(
+    rendered: Any,
+    reference: Any,
+    confidence: Any,
+    semantic: Any,
+) -> Any:
+    """Preserve source-resolved road, curb, marking, and sign edges.
+
+    This is an evidence-only loss: it compares against gradients present in the
+    registered source frame and therefore cannot invent unreadable sign text.
+    Semantic weights focus the finite training budget on driving-relevant rigid
+    surfaces while the existing confidence mask excludes dynamic/unknown pixels.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    if (
+        rendered.ndim != 4
+        or reference.shape != rendered.shape
+        or rendered.shape[-1] != 3
+        or confidence.shape != (*rendered.shape[:3], 1)
+        or semantic.shape != (*rendered.shape[:3], 1)
+    ):
+        raise TrainingError(
+            "Observed-detail loss requires matching BHWC RGB, confidence, and semantic tensors."
+        )
+    dtype = rendered.dtype
+    device = rendered.device
+    kernel_x = torch.tensor(
+        [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+        dtype=dtype,
+        device=device,
+    ).view(1, 1, 3, 3) / 8.0
+    kernel_y = kernel_x.transpose(-1, -2)
+    luminance = torch.tensor(
+        [0.2126, 0.7152, 0.0722], dtype=dtype, device=device
+    ).view(1, 3, 1, 1)
+
+    def gradients(image: Any) -> tuple[Any, Any]:
+        gray = (image.permute(0, 3, 1, 2) * luminance).sum(dim=1, keepdim=True)
+        return (
+            functional.conv2d(gray, kernel_x, padding=1),
+            functional.conv2d(gray, kernel_y, padding=1),
+        )
+
+    rendered_x, rendered_y = gradients(rendered)
+    reference_x, reference_y = gradients(reference.detach())
+    labels = semantic[..., 0]
+    importance = torch.ones_like(labels, dtype=dtype)
+    importance = torch.where(
+        (labels == 1) | (labels == 5), 1.5, importance
+    )
+    importance = torch.where(labels == 2, 3.0, importance)
+    importance = torch.where(
+        (labels == 3) | (labels == 4) | (labels == 10), 2.0, importance
+    )
+    importance = torch.where(
+        (labels == 12) | (labels == 13) | (labels == 14) | (labels == 15),
+        4.0,
+        importance,
+    )
+    weights = confidence[..., 0].clamp(0.0, 1.0) * importance
+    reference_strength = torch.sqrt(
+        reference_x.square() + reference_y.square() + 1e-8
+    )[:, 0]
+    # Retain smooth-surface supervision while prioritizing edges that the
+    # source actually resolved. The clamp prevents foliage or compression
+    # ringing from consuming the entire detail budget.
+    weights = weights * (0.25 + (reference_strength / 0.05).clamp(max=2.0))
+    supported = weights > 0.0
+    if not bool(supported.any()):
+        return rendered.sum() * 0.0
+    error = functional.smooth_l1_loss(
+        rendered_x,
+        reference_x,
+        beta=0.02,
+        reduction="none",
+    ) + functional.smooth_l1_loss(
+        rendered_y,
+        reference_y,
+        beta=0.02,
+        reduction="none",
+    )
+    return (error[:, 0] * weights).sum() / weights.sum().clamp_min(1e-6)
+
+
 def semantic_sky_tail_interior_mask(
     semantic: Any,
     *,
@@ -2066,6 +3041,7 @@ def semantic_sky_opacity_loss(
     tail_weight: float = 0.0,
     tail_bce_epsilon: float = SEMANTIC_SKY_TAIL_BCE_EPSILON,
     tail_erosion_radius: int = SEMANTIC_SKY_TAIL_EROSION_RADIUS,
+    l1_scope: str = "evidence-restricted",
 ) -> tuple[Any, int]:
     """Remove finite Gaussian support from pixels observed as sky.
 
@@ -2106,6 +3082,7 @@ def semantic_sky_opacity_loss(
         or isinstance(tail_erosion_radius, bool)
         or not isinstance(tail_erosion_radius, int)
         or tail_erosion_radius < 0
+        or l1_scope not in ("evidence-restricted", "semantic")
     ):
         raise TrainingError("Semantic sky-tail settings are invalid.")
     sky = semantic == 17
@@ -2127,6 +3104,10 @@ def semantic_sky_opacity_loss(
         ):
             raise TrainingError("Certified sky evidence contains an unknown label.")
         sky = sky & (evidence == CERTIFIED_SKY_EVIDENCE_SKY)
+    if l1_scope == "semantic":
+        # Diagnostic hybrid arm: the mean-L1 term keeps the full semantic-sky
+        # recall while only the tail term narrows to certified interior sky.
+        sky = semantic == 17
     valid = sky & torch.isfinite(alpha)
     samples = int(valid.sum().item())
     if samples == 0:
@@ -2513,27 +3494,33 @@ def validate_parameters(parameters: Any) -> None:
         raise TrainingError("Gaussian orientation contains a zero quaternion.")
 
 
-def clamp_parameters(parameters: Any) -> None:
+def clamp_parameters(parameters: Any, pin_surfel_z: bool = False) -> None:
     import torch
     import torch.nn.functional as functional
 
     with torch.no_grad():
         parameters["quats"].data.copy_(functional.normalize(parameters["quats"].data, dim=-1))
         parameters["scales"].data.clamp_(-12.0, 2.5)
+        if pin_surfel_z:
+            parameters["scales"].data[..., 2] = math.log(SURFEL_MINIMUM_SCALE)
         parameters["opacities"].data.clamp_(-12.0, 12.0)
 
 
 def cleanup_parameters(
     parameters: Any,
     normalization: dict[str, Any],
+    surfel: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     import torch
 
     with torch.no_grad():
         opacity = torch.sigmoid(parameters["opacities"])
         scales = torch.exp(parameters["scales"])
-        largest_scale = scales.max(dim=-1).values
-        anisotropy = largest_scale / scales.min(dim=-1).values.clamp_min(1e-12)
+        # Surfels are planar by construction; anisotropy is only meaningful
+        # across the two in-plane axes.
+        in_plane_scales = scales[..., :2] if surfel else scales
+        largest_scale = in_plane_scales.max(dim=-1).values
+        anisotropy = largest_scale / in_plane_scales.min(dim=-1).values.clamp_min(1e-12)
         radius = torch.linalg.vector_norm(parameters["means"], dim=-1)
         radius_limit = max(
             10.0,
@@ -2543,7 +3530,10 @@ def cleanup_parameters(
             2.0,
             float(normalization.get("cleanupScaleLimitNormalized", 2.0)),
         )
-        transparent = opacity < 0.01
+        # Match the pinned gsplat strategy's opacity pruning threshold. Using
+        # a stricter post-training cutoff silently discarded weak fine-detail
+        # splats that the optimizer itself considered valid.
+        transparent = opacity < 0.005
         needle = anisotropy > 50.0
         oversized = largest_scale > scale_limit
         spatial_outlier = radius > radius_limit
@@ -2570,7 +3560,7 @@ def cleanup_parameters(
             "radiusLimitNormalized": radius_limit,
             "scaleLimitNormalized": scale_limit,
             "policy": (
-                "opacity>=0.01, anisotropy<=50, "
+                "opacity>=0.005, anisotropy<=50, "
                 f"scale<={scale_limit:g}, normalized-radius<={radius_limit:g}"
             ),
         }
@@ -2599,6 +3589,7 @@ def evaluate(
     phase: str = "validation",
     background_color: Any | None = None,
     directional_environment: Any | None = None,
+    surfel_ablation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import numpy as np
     import torch
@@ -2656,6 +3647,7 @@ def evaluate(
                 eps2d,
                 render_mode="RGB+ED",
                 backgrounds=raster_background,
+                surfel_ablation=surfel_ablation,
             )
             rendered = rendered_depth[..., :3].clamp(0.0, 1.0)
             mse = torch.mean((rendered - pixels).square()).clamp_min(1e-12)
@@ -2680,6 +3672,7 @@ def evaluate(
                 rasterization_mode,
                 eps2d,
                 colors_override=camera_z.square().unsqueeze(1),
+                surfel_ablation=surfel_ablation,
             )
             depth = rendered_depth[..., 3]
             alpha_value = alpha[..., 0].clamp_min(1e-6)
@@ -2907,6 +3900,9 @@ def export_world(
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     count = int(parameters["means"].shape[0])
+    baked_opacity_logits = torch.logit(
+        gaussian_opacities(parameters).clamp(1e-6, 1.0 - 1e-6)
+    )
     sh_rest_count = int(parameters["shN"].shape[1]) * 3
     properties = [
         "x",
@@ -2957,7 +3953,7 @@ def export_world(
                         parameters["means"][start:stop],
                         parameters["sh0"][start:stop].squeeze(1),
                         sh_rest,
-                        parameters["opacities"][start:stop].unsqueeze(1),
+                        baked_opacity_logits[start:stop].unsqueeze(1),
                         parameters["scales"][start:stop],
                         parameters["quats"][start:stop],
                     ],
@@ -2978,6 +3974,10 @@ def export_world(
 def train(config_path: Path) -> int:
     import torch
     import torch.nn.functional as functional
+
+    from servo_gsplat_runtime import prepare_gsplat_runtime
+
+    gsplat_runtime_receipt = prepare_gsplat_runtime()
     from gsplat.strategy import DefaultStrategy
     from gsplat.strategy.ops import reset_opa
 
@@ -3008,6 +4008,7 @@ def train(config_path: Path) -> int:
     torch.cuda.set_per_process_memory_fraction(allocator_fraction, device=0)
     output = Path(config["output"])
     output.mkdir(parents=True, exist_ok=True)
+    atomic_json(output / "training-config.json", config)
     cancel_path = Path(config["cancelPath"])
     set_determinism(42)
     geometry_root = (
@@ -3018,6 +4019,7 @@ def train(config_path: Path) -> int:
     configured_semantic_sky_method = str(
         config.get("semanticSkyOpacityMethod", "")
     )
+    contributor_sky_cleanup_enabled = config.get("contributorSkyCleanup") is True
     semantic_photometric_method = str(
         config.get("semanticPhotometricMaskMethod", "")
     )
@@ -3061,6 +4063,7 @@ def train(config_path: Path) -> int:
         )
     expected_geometry_hash = config.get("geometryPriorsMetricsSha256")
     certified_sky_evidence_descriptor: dict[str, Any] | None = None
+    contributor_sky_evidence_descriptor: dict[str, Any] | None = None
     if config.get("geometryPriors") is True:
         if (
             geometry_root is None
@@ -3079,11 +4082,21 @@ def train(config_path: Path) -> int:
             raise TrainingError(
                 "r7 geometry priors require semantic exclusion during appearance fitting."
             )
-        if configured_semantic_sky_method == SEMANTIC_SKY_OPACITY_METHOD:
+        if configured_semantic_sky_method in (
+            SEMANTIC_SKY_OPACITY_METHOD,
+            SEMANTIC_SKY_HYBRID_DIAGNOSTIC_METHOD,
+        ):
             certified_sky_evidence_descriptor = validate_certified_sky_evidence_descriptor(
                 geometry_root,
                 config.get("certifiedSkyEvidence"),
             )
+        if contributor_sky_cleanup_enabled:
+            contributor_sky_evidence_descriptor = validate_certified_sky_evidence_descriptor(
+                geometry_root,
+                config.get("certifiedSkyEvidence"),
+            )
+    frame_oversampling_receipt: dict[str, Any] | None = None
+    oversampled_frame_multipliers: dict[int, int] | None = None
     dataset = ColmapDataset(
         Path(config["data"]),
         int(config["dataFactor"]),
@@ -3092,9 +4105,61 @@ def train(config_path: Path) -> int:
         geometry_root=geometry_root,
         require_geometry_priors=config.get("geometryPriors") is True,
         require_certified_sky_evidence=(
-            configured_semantic_sky_method == SEMANTIC_SKY_OPACITY_METHOD
+            configured_semantic_sky_method
+            in (
+                SEMANTIC_SKY_OPACITY_METHOD,
+                SEMANTIC_SKY_HYBRID_DIAGNOSTIC_METHOD,
+            )
+            or contributor_sky_cleanup_enabled
         ),
     )
+    if frame_oversampling_receipt is not None:
+        record_names = {
+            record.name: index for index, record in enumerate(dataset.records)
+        }
+        if not supported_frame_oversampling_contract(
+            config,
+            schema=frame_oversampling_receipt["schema"],
+            method=frame_oversampling_receipt["method"],
+            multiplier=frame_oversampling_receipt["multiplier"],
+            frames=frame_oversampling_receipt["frames"],
+            record_names=record_names,
+        ):
+            raise TrainingError(
+                "The frame-oversampling contract is sealed to non-publishable "
+                "diagnostics with 2-8x weight and explicitly named registered "
+                "offender frames."
+            )
+        trainable_names = {dataset.records[index].name for index in dataset.train_indices}
+        oversampled_train_indices = {
+            record_names[name]
+            for name in frame_oversampling_receipt["frames"]
+            if name in trainable_names
+        }
+        if not oversampled_train_indices:
+            raise TrainingError(
+                "Frame oversampling listed no trainable camera; every listed "
+                "frame was excluded as held-out validation evidence."
+            )
+        oversampled_frame_multipliers = {
+            index: int(frame_oversampling_receipt["multiplier"])
+            for index in oversampled_train_indices
+        }
+        dataset.training_sampling_plan = build_training_sampling_plan(
+            dataset.records,
+            dataset.train_indices,
+            dataset.sequence_groups,
+            frame_multipliers=oversampled_frame_multipliers,
+        )
+        frame_oversampling_receipt["trainableFrames"] = sorted(
+            dataset.records[index].name
+            for index in oversampled_train_indices
+        )
+        frame_oversampling_receipt["heldOutFrames"] = sorted(
+            name
+            for name in frame_oversampling_receipt["frames"]
+            if name not in trainable_names
+        )
     device = "cuda:0"
     background_values = config.get("backgroundColorSrgb", [0.0, 0.0, 0.0])
     if (
@@ -3204,6 +4269,23 @@ def train(config_path: Path) -> int:
     depth_layer_variance_weight = float(
         config.get("depthLayerVarianceWeight", 0.0)
     )
+    driving_surface_variance_weight = float(
+        config.get("drivingSurfaceVarianceWeight", 0.0)
+    )
+    surface_alignment_weight = float(config.get("surfaceAlignmentWeight", 0.0))
+    road_planarity_weight = float(config.get("roadPlanarityWeight", 0.0))
+    dual_opacity_enabled = config.get("dualOpacityEnabled") is True
+    cross_view_depth_weight = float(
+        config.get("crossViewDepthConsistencyWeight", 0.0)
+    )
+    cross_view_depth_every = int(
+        config.get("crossViewDepthConsistencyEvery", 8)
+    )
+    cross_view_depth_start = int(
+        config.get("crossViewDepthConsistencyStart", 1_000)
+    )
+    surface_alignment_every = int(config.get("surfaceAlignmentEvery", 4))
+    surface_alignment_start = int(config.get("surfaceAlignmentStart", 1_000))
     depth_layer_variance_every = int(config.get("depthLayerVarianceEvery", 8))
     depth_layer_variance_start = int(config.get("depthLayerVarianceStart", 1_000))
     dense_relative_depth_weight = float(
@@ -3212,6 +4294,9 @@ def train(config_path: Path) -> int:
     road_surface_depth_weight = float(
         config.get("roadSurfaceDepthWeight", 0.0)
     )
+    observed_detail_weight = float(config.get("observedDetailWeight", 0.0))
+    observed_detail_every = int(config.get("observedDetailEvery", 1))
+    observed_detail_start = int(config.get("observedDetailStart", coarse_steps))
     semantic_sky_opacity_weight = float(
         config.get("semanticSkyOpacityWeight", 0.0)
     )
@@ -3233,8 +4318,88 @@ def train(config_path: Path) -> int:
     semantic_sky_tail_erosion_radius = int(
         config.get("semanticSkyOpacityTailErosionRadius", -1)
     )
+    contributor_sky_cleanup_method = str(
+        config.get("contributorSkyCleanupMethod", "")
+    )
+    contributor_sky_cleanup_start = int(
+        config.get("contributorSkyCleanupStart", -1)
+    )
+    contributor_sky_cleanup_weight = float(
+        config.get("contributorSkyCleanupWeight", 0.0)
+    )
+    contributor_sky_cleanup_minimum_weight = float(
+        config.get("contributorSkyCleanupMinimumCompositingWeight", 0.0)
+    )
+    contributor_sky_cleanup_minimum_views = int(
+        config.get("contributorSkyCleanupMinimumViews", 0)
+    )
+    contributor_sky_cleanup_minimum_view_gap = int(
+        config.get("contributorSkyCleanupMinimumViewGap", 0)
+    )
+    contributor_sky_cleanup_audit_factor = int(
+        config.get("contributorSkyCleanupAuditFactor", 0)
+    )
     dense_geometry_every = int(config.get("denseGeometryEvery", 2))
     dense_geometry_start = int(config.get("denseGeometryStart", 500))
+    surfel_ablation: dict[str, Any] | None = None
+    surfel_depth_distortion_weight = 0.0
+    surfel_normal_consistency_weight = 0.0
+    surfel_normal_consistency_start = 0
+    configured_surfel_schema = ""
+    if isinstance(config.get("surfelAblation"), Mapping):
+        raw_surfel = dict(config["surfelAblation"])
+        configured_surfel_schema = str(raw_surfel.get("schema", ""))
+        try:
+            surfel_depth_distortion_weight = float(
+                raw_surfel["depthDistortionWeight"]
+            )
+            surfel_normal_consistency_weight = float(
+                raw_surfel["normalConsistencyWeight"]
+            )
+            surfel_normal_consistency_start = int(
+                raw_surfel["normalConsistencyStart"]
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise TrainingError(
+                "The surfel 2DGS A/B configuration is incomplete."
+            ) from error
+        if not supported_surfel_ablation_contract(
+            config,
+            schema=configured_surfel_schema,
+            method=str(raw_surfel.get("method", "")),
+            depth_distortion_weight=surfel_depth_distortion_weight,
+            normal_consistency_weight=surfel_normal_consistency_weight,
+            normal_consistency_start=surfel_normal_consistency_start,
+            coarse_steps=coarse_steps,
+        ):
+            raise TrainingError(
+                "The surfel 2DGS A/B contract is sealed to non-publishable "
+                "diagnostics with bounded weights and a post-coarse normal start."
+            )
+        surfel_ablation = {
+            "schema": configured_surfel_schema,
+            "method": str(raw_surfel.get("method", "")),
+            "depthDistortionWeight": surfel_depth_distortion_weight,
+            "normalConsistencyWeight": surfel_normal_consistency_weight,
+            "normalConsistencyStart": surfel_normal_consistency_start,
+        }
+    if isinstance(config.get("frameOversampling"), Mapping):
+        raw_oversampling = dict(config["frameOversampling"])
+        try:
+            oversampling_multiplier = int(raw_oversampling["multiplier"])
+            oversampling_frames = [str(name) for name in raw_oversampling["frames"]]
+        except (KeyError, TypeError, ValueError) as error:
+            raise TrainingError(
+                "The frame-oversampling configuration is incomplete."
+            ) from error
+        # Dataset records are needed to validate frame names; resolve them
+        # after ColmapDataset loads, so defer final validation there.
+        frame_oversampling_receipt = {
+            "schema": str(raw_oversampling.get("schema", "")),
+            "method": str(raw_oversampling.get("method", "")),
+            "multiplier": oversampling_multiplier,
+            "frames": oversampling_frames,
+        }
     if max_steps <= 0 or checkpoint_every <= 0:
         raise TrainingError("Training and checkpoint step counts must be positive.")
     if rasterization_mode not in {"classic", "antialiased"}:
@@ -3318,6 +4483,19 @@ def train(config_path: Path) -> int:
         or dense_relative_depth_weight < 0.0
         or not math.isfinite(road_surface_depth_weight)
         or road_surface_depth_weight < 0.0
+        or not math.isfinite(observed_detail_weight)
+        or observed_detail_weight < 0.0
+        or observed_detail_every <= 0
+        or observed_detail_start < 0
+        or not math.isfinite(driving_surface_variance_weight)
+        or driving_surface_variance_weight < 0.0
+        or not math.isfinite(surface_alignment_weight)
+        or surface_alignment_weight < 0.0
+        or not math.isfinite(road_planarity_weight)
+        or road_planarity_weight < 0.0
+        or surface_alignment_every <= 0
+        or surface_alignment_start < 0
+        or surface_alignment_start >= max_steps
         or not math.isfinite(semantic_sky_opacity_weight)
         or semantic_sky_opacity_weight < 0.0
         or not math.isfinite(semantic_sky_tail_threshold)
@@ -3340,6 +4518,40 @@ def train(config_path: Path) -> int:
         raise TrainingError(
             "Dense geometry regularization requires complete depth and semantic priors."
         )
+    if dual_opacity_enabled and not any(
+        weight > 0.0
+        for weight in (
+            sparse_depth_weight,
+            depth_layer_variance_weight,
+            dense_relative_depth_weight,
+            road_surface_depth_weight,
+            surface_alignment_weight,
+            road_planarity_weight,
+            semantic_sky_opacity_weight,
+            contributor_sky_cleanup_weight,
+            cross_view_depth_weight,
+        )
+    ):
+        raise TrainingError(
+            "Dual opacity requires at least one geometry or certified cleanup "
+            "objective; otherwise its geometry channel is unconstrained."
+        )
+    if (
+        cross_view_depth_weight < 0.0
+        or cross_view_depth_every <= 0
+        or cross_view_depth_start < 0
+        or cross_view_depth_start >= max_steps
+    ):
+        raise TrainingError("Cross-view depth consistency settings are invalid.")
+    if cross_view_depth_weight > 0.0 and not dual_opacity_enabled:
+        raise TrainingError(
+            "Cross-view depth consistency requires dual opacity so geometry "
+            "regularization cannot directly erase appearance detail."
+        )
+    if cross_view_depth_weight > 0.0 and not dataset.cross_view_pairs:
+        raise TrainingError(
+            "No calibrated co-visible training pairs satisfy the cross-view contract."
+        )
     if (
         semantic_sky_opacity_weight > 0.0
         and not supported_semantic_sky_opacity_contract(
@@ -3355,6 +4567,21 @@ def train(config_path: Path) -> int:
         raise TrainingError(
             "Semantic sky-opacity regularization has an unsupported evidence contract."
         )
+    if not supported_contributor_sky_cleanup_contract(
+        config,
+        enabled=contributor_sky_cleanup_enabled,
+        method=contributor_sky_cleanup_method,
+        start_step=contributor_sky_cleanup_start,
+        refine_stop_iter=refine_scale2d_stop_iter,
+        minimum_weight=contributor_sky_cleanup_minimum_weight,
+        minimum_views=contributor_sky_cleanup_minimum_views,
+        minimum_view_gap=contributor_sky_cleanup_minimum_view_gap,
+        audit_factor=contributor_sky_cleanup_audit_factor,
+        loss_weight=contributor_sky_cleanup_weight,
+    ):
+        raise TrainingError(
+            "Contributor sky cleanup has an unsupported diagnostic contract."
+        )
     if (
         sparse_depth_weight > 0.0
         and int(dataset.initialization_stats.get("sparseDepthObservations", 0))
@@ -3366,7 +4593,7 @@ def train(config_path: Path) -> int:
         )
     strategy = DefaultStrategy(
         prune_opa=0.005,
-        grow_grad2d=grow_grad2d,
+        grow_grad2d=0.0002 if surfel_ablation is not None else grow_grad2d,
         grow_scale3d=0.01,
         grow_scale2d=grow_scale2d,
         prune_scale3d=0.10,
@@ -3374,15 +4601,23 @@ def train(config_path: Path) -> int:
         refine_scale2d_stop_iter=refine_scale2d_stop_iter,
         refine_start_iter=500,
         refine_stop_iter=refine_scale2d_stop_iter,
-        reset_every=3_000,
+        # Resetting the geometry opacity would collapse the RGB product and
+        # defeat the dual-opacity representation. Densification and pruning
+        # remain active; only periodic opacity reset is moved beyond the run.
+        reset_every=max_steps + 1 if dual_opacity_enabled else 3_000,
         refine_every=100,
-        absgrad=absgrad,
+        absgrad=False if surfel_ablation is not None else absgrad,
         verbose=False,
+        key_for_gradient=(
+            "gradient_2dgs" if surfel_ablation is not None else "means2d"
+        ),
     )
     checkpoint_dir = output / "checkpoints"
     checkpoint = load_checkpoint(checkpoint_dir, config)
     if checkpoint is None:
-        parameters = create_parameters(dataset, sh_degree, device)
+        parameters = create_parameters(
+            dataset, sh_degree, device, dual_opacity=dual_opacity_enabled
+        )
         optimizers = create_optimizers(parameters)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
             optimizers["means"], gamma=0.01 ** (1.0 / max_steps)
@@ -3412,14 +4647,32 @@ def train(config_path: Path) -> int:
         density_growth_frozen = False
         recent_loss: float | None = None
         sparse_depth_samples = 0
+        cross_view_depth_steps = 0
+        cross_view_depth_samples = 0
+        recent_cross_view_depth_loss = 0.0
         depth_layer_variance_steps = 0
         recent_sparse_depth_loss = 0.0
         recent_depth_layer_variance_loss = 0.0
+        recent_depth_layer_variance_step: int | None = None
+        recent_driving_surface_variance_loss = 0.0
+        surface_alignment_steps = 0
+        surface_alignment_samples = 0
+        road_planarity_samples = 0
+        recent_surface_alignment_loss = 0.0
+        recent_road_planarity_loss = 0.0
         dense_geometry_steps = 0
         dense_relative_depth_samples = 0
         road_surface_depth_samples = 0
         recent_dense_relative_depth_loss = 0.0
         recent_road_surface_depth_loss = 0.0
+        recent_dense_geometry_step: int | None = None
+        observed_detail_steps = 0
+        recent_observed_detail_loss = 0.0
+        recent_observed_detail_step: int | None = None
+        surfel_depth_distortion_steps = 0
+        recent_surfel_depth_distortion_loss = 0.0
+        surfel_normal_consistency_steps = 0
+        recent_surfel_normal_consistency_loss = 0.0
         semantic_sky_opacity_steps = 0
         semantic_sky_opacity_samples = 0
         recent_semantic_sky_opacity_loss = 0.0
@@ -3428,7 +4681,9 @@ def train(config_path: Path) -> int:
         peak_reserved_before = 0.0
         emit("training_initialized", gaussians=len(parameters["means"]), images=len(dataset))
     else:
-        parameters = parameters_from_state(checkpoint["splats"], device)
+        parameters = parameters_from_state(
+            checkpoint["splats"], device, dual_opacity=dual_opacity_enabled
+        )
         optimizers = create_optimizers(parameters)
         for name, optimizer in optimizers.items():
             optimizer.load_state_dict(checkpoint["optimizers"][name])
@@ -3493,6 +4748,17 @@ def train(config_path: Path) -> int:
         sparse_depth_samples = int(
             checkpoint.get("policyState", {}).get("sparseDepthSamples", 0)
         )
+        cross_view_depth_steps = int(
+            checkpoint.get("policyState", {}).get("crossViewDepthSteps", 0)
+        )
+        cross_view_depth_samples = int(
+            checkpoint.get("policyState", {}).get("crossViewDepthSamples", 0)
+        )
+        recent_cross_view_depth_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentCrossViewDepthLoss", 0.0
+            )
+        )
         depth_layer_variance_steps = int(
             checkpoint.get("policyState", {}).get("depthLayerVarianceSteps", 0)
         )
@@ -3503,6 +4769,36 @@ def train(config_path: Path) -> int:
             checkpoint.get("policyState", {}).get(
                 "recentDepthLayerVarianceLoss", 0.0
             )
+        )
+        recent_depth_layer_variance_step_value = checkpoint.get(
+            "policyState", {}
+        ).get("recentDepthLayerVarianceStep")
+        recent_depth_layer_variance_step = (
+            int(recent_depth_layer_variance_step_value)
+            if isinstance(recent_depth_layer_variance_step_value, int)
+            else None
+        )
+        recent_driving_surface_variance_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentDrivingSurfaceVarianceLoss", 0.0
+            )
+        )
+        surface_alignment_steps = int(
+            checkpoint.get("policyState", {}).get("surfaceAlignmentSteps", 0)
+        )
+        surface_alignment_samples = int(
+            checkpoint.get("policyState", {}).get("surfaceAlignmentSamples", 0)
+        )
+        road_planarity_samples = int(
+            checkpoint.get("policyState", {}).get("roadPlanaritySamples", 0)
+        )
+        recent_surface_alignment_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentSurfaceAlignmentLoss", 0.0
+            )
+        )
+        recent_road_planarity_loss = float(
+            checkpoint.get("policyState", {}).get("recentRoadPlanarityLoss", 0.0)
         )
         dense_geometry_steps = int(
             checkpoint.get("policyState", {}).get("denseGeometrySteps", 0)
@@ -3527,6 +4823,28 @@ def train(config_path: Path) -> int:
                 "recentRoadSurfaceDepthLoss", 0.0
             )
         )
+        recent_dense_geometry_step_value = checkpoint.get("policyState", {}).get(
+            "recentDenseGeometryStep"
+        )
+        recent_dense_geometry_step = (
+            int(recent_dense_geometry_step_value)
+            if isinstance(recent_dense_geometry_step_value, int)
+            else None
+        )
+        observed_detail_steps = int(
+            checkpoint.get("policyState", {}).get("observedDetailSteps", 0)
+        )
+        recent_observed_detail_loss = float(
+            checkpoint.get("policyState", {}).get("recentObservedDetailLoss", 0.0)
+        )
+        recent_observed_detail_step_value = checkpoint.get("policyState", {}).get(
+            "recentObservedDetailStep"
+        )
+        recent_observed_detail_step = (
+            int(recent_observed_detail_step_value)
+            if isinstance(recent_observed_detail_step_value, int)
+            else None
+        )
         semantic_sky_opacity_steps = int(
             checkpoint.get("policyState", {}).get(
                 "semanticSkyOpacitySteps", 0
@@ -3540,6 +4858,26 @@ def train(config_path: Path) -> int:
         recent_semantic_sky_opacity_loss = float(
             checkpoint.get("policyState", {}).get(
                 "recentSemanticSkyOpacityLoss", 0.0
+            )
+        )
+        surfel_depth_distortion_steps = int(
+            checkpoint.get("policyState", {}).get(
+                "surfelDepthDistortionSteps", 0
+            )
+        )
+        recent_surfel_depth_distortion_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentSurfelDepthDistortionLoss", 0.0
+            )
+        )
+        surfel_normal_consistency_steps = int(
+            checkpoint.get("policyState", {}).get(
+                "surfelNormalConsistencySteps", 0
+            )
+        )
+        recent_surfel_normal_consistency_loss = float(
+            checkpoint.get("policyState", {}).get(
+                "recentSurfelNormalConsistencyLoss", 0.0
             )
         )
         elapsed_before = float(
@@ -3578,6 +4916,10 @@ def train(config_path: Path) -> int:
     final_fit_seen: set[int] = set()
     final_fit_epoch = -1
     final_fit_order: list[int] = []
+    contributor_sky_cleanup_mask = None
+    contributor_sky_cleanup_ledger: dict[str, Any] | None = None
+    contributor_sky_cleanup_steps = 0
+    recent_contributor_sky_cleanup_loss = 0.0
 
     def final_fit_index(offset: int) -> int:
         nonlocal final_fit_epoch, final_fit_order
@@ -3659,17 +5001,39 @@ def train(config_path: Path) -> int:
             "densityGrowthCapPolicy": DENSITY_GROWTH_CAP_POLICY,
             "recentLoss": recent_loss,
             "sparseDepthSamples": sparse_depth_samples,
+            "crossViewDepthSteps": cross_view_depth_steps,
+            "crossViewDepthSamples": cross_view_depth_samples,
+            "recentCrossViewDepthLoss": recent_cross_view_depth_loss,
             "depthLayerVarianceSteps": depth_layer_variance_steps,
             "recentSparseDepthLoss": recent_sparse_depth_loss,
             "recentDepthLayerVarianceLoss": recent_depth_layer_variance_loss,
+            "recentDepthLayerVarianceStep": recent_depth_layer_variance_step,
+            "recentDrivingSurfaceVarianceLoss": recent_driving_surface_variance_loss,
+            "surfaceAlignmentSteps": surface_alignment_steps,
+            "surfaceAlignmentSamples": surface_alignment_samples,
+            "roadPlanaritySamples": road_planarity_samples,
+            "recentSurfaceAlignmentLoss": recent_surface_alignment_loss,
+            "recentRoadPlanarityLoss": recent_road_planarity_loss,
             "denseGeometrySteps": dense_geometry_steps,
             "denseRelativeDepthSamples": dense_relative_depth_samples,
             "roadSurfaceDepthSamples": road_surface_depth_samples,
             "recentDenseRelativeDepthLoss": recent_dense_relative_depth_loss,
             "recentRoadSurfaceDepthLoss": recent_road_surface_depth_loss,
+            "recentDenseGeometryStep": recent_dense_geometry_step,
+            "observedDetailSteps": observed_detail_steps,
+            "recentObservedDetailLoss": recent_observed_detail_loss,
+            "recentObservedDetailStep": recent_observed_detail_step,
             "semanticSkyOpacitySteps": semantic_sky_opacity_steps,
             "semanticSkyOpacitySamples": semantic_sky_opacity_samples,
             "recentSemanticSkyOpacityLoss": recent_semantic_sky_opacity_loss,
+            "surfelDepthDistortionSteps": surfel_depth_distortion_steps,
+            "recentSurfelDepthDistortionLoss": recent_surfel_depth_distortion_loss,
+            "surfelNormalConsistencySteps": surfel_normal_consistency_steps,
+            "recentSurfelNormalConsistencyLoss": (
+                recent_surfel_normal_consistency_loss
+            ),
+            "contributorSkyCleanupSteps": contributor_sky_cleanup_steps,
+            "recentContributorSkyCleanupLoss": recent_contributor_sky_cleanup_loss,
             "elapsedSeconds": elapsed_before + time.monotonic() - started,
             "peakVramGiB": max(
                 peak_allocated_before,
@@ -3748,6 +5112,47 @@ def train(config_path: Path) -> int:
                 )
             emit("training_cancelled", step=step)
             return 130
+        if (
+            contributor_sky_cleanup_enabled
+            and contributor_sky_cleanup_mask is None
+            and step >= contributor_sky_cleanup_start
+        ):
+            if contributor_sky_evidence_descriptor is None:
+                raise TrainingError(
+                    "Contributor cleanup requires certified sky evidence."
+                )
+            if step < int(strategy.refine_stop_iter):
+                raise TrainingError(
+                    "Contributor attribution cannot run before Gaussian IDs freeze."
+                )
+            (
+                contributor_sky_cleanup_mask,
+                contributor_sky_cleanup_ledger,
+            ) = build_certified_sky_contributor_ledger(
+                parameters,
+                dataset,
+                device,
+                sh_degree=sh_degree,
+                packed=packed,
+                rasterization_mode=rasterization_mode,
+                eps2d=eps2d,
+                audit_factor=contributor_sky_cleanup_audit_factor,
+                minimum_weight=contributor_sky_cleanup_minimum_weight,
+                minimum_views=contributor_sky_cleanup_minimum_views,
+                minimum_view_gap=contributor_sky_cleanup_minimum_view_gap,
+                cancel_path=cancel_path,
+                descriptor=contributor_sky_evidence_descriptor,
+                config=config,
+                output=output,
+            )
+            if not bool(contributor_sky_cleanup_mask.any()):
+                contributor_sky_cleanup_enabled = False
+                contributor_sky_cleanup_mask = None
+                emit(
+                    "contributor_cleanup_skipped",
+                    reason="no-qualified-targets",
+                    qualifiedGaussians=0,
+                )
         if step == heldout_evaluation_step:
             # Persist the exact parameter/optimizer state that is about to be
             # evaluated.  Later final-fit checkpoints must not replace it:
@@ -3804,6 +5209,7 @@ def train(config_path: Path) -> int:
                     phase="heldout-validation",
                     background_color=background_color,
                     directional_environment=directional_environment,
+                    surfel_ablation=surfel_ablation,
                 ),
             }
             if dataset.path_stress_indices:
@@ -3821,6 +5227,7 @@ def train(config_path: Path) -> int:
                     phase="path-stress-validation",
                     background_color=background_color,
                     directional_environment=directional_environment,
+                    surfel_ablation=surfel_ablation,
                 )
             atomic_json(heldout_metrics_path, heldout_snapshot)
             emit(
@@ -3935,8 +5342,16 @@ def train(config_path: Path) -> int:
                 or depth_layer_variance_weight > 0.0
                 or dense_relative_depth_weight > 0.0
                 or road_surface_depth_weight > 0.0
+                or surface_alignment_weight > 0.0
+                or road_planarity_weight > 0.0
+                or cross_view_depth_weight > 0.0
             )
-            rendered_depth, alpha, information = rasterize(
+            appearance_render_mode = (
+                "RGB"
+                if dual_opacity_enabled
+                else ("RGB+ED" if geometry_regularization_enabled else "RGB")
+            )
+            rendered_depth, appearance_alpha, information = rasterize(
                 parameters,
                 camera,
                 calibration,
@@ -3947,15 +5362,38 @@ def train(config_path: Path) -> int:
                 absgrad,
                 rasterization_mode,
                 eps2d,
-                render_mode="RGB+ED" if geometry_regularization_enabled else "RGB",
+                render_mode=appearance_render_mode,
                 backgrounds=raster_background,
+                surfel_ablation=surfel_ablation,
             )
             rendered = rendered_depth[..., :3]
             expected_depth = (
                 rendered_depth[..., 3:4]
-                if geometry_regularization_enabled
+                if geometry_regularization_enabled and not dual_opacity_enabled
                 else None
             )
+            alpha = appearance_alpha
+            if dual_opacity_enabled and geometry_regularization_enabled:
+                # Render geometry evidence through the base opacity.  RGB and
+                # the densification gradient continue to use the appearance
+                # product above, preventing road/sign detail from being
+                # sacrificed to a geometry-only objective.
+                geometry_depth, alpha, _ = rasterize(
+                    parameters,
+                    camera,
+                    calibration,
+                    width,
+                    height,
+                    active_degree,
+                    packed,
+                    False,
+                    rasterization_mode,
+                    eps2d,
+                    render_mode="ED",
+                    surfel_ablation=surfel_ablation,
+                    geometry_opacity=True,
+                )
+                expected_depth = geometry_depth[..., :1]
             training_render = apply_appearance(rendered, appearance, index)
             strategy.step_pre_backward(
                 params=parameters,
@@ -3975,10 +5413,65 @@ def train(config_path: Path) -> int:
             )
             loss = 0.8 * l1 + 0.2 * ssim_loss
             recent_sparse_depth_loss = 0.0
-            recent_depth_layer_variance_loss = 0.0
-            recent_dense_relative_depth_loss = 0.0
-            recent_road_surface_depth_loss = 0.0
             recent_semantic_sky_opacity_loss = 0.0
+            recent_contributor_sky_cleanup_loss = 0.0
+            recent_surfel_depth_distortion_loss = 0.0
+            recent_surfel_normal_consistency_loss = 0.0
+            if (
+                surfel_ablation is not None
+                and surfel_depth_distortion_weight > 0.0
+                and information.get("surfelDistortion") is not None
+                and geometry_regularization_enabled
+            ):
+                depth_distortion_loss = information[
+                    "surfelDistortion"
+                ].mean()
+                loss = loss + surfel_depth_distortion_weight * (
+                    depth_distortion_loss
+                )
+                surfel_depth_distortion_steps += 1
+                recent_surfel_depth_distortion_loss = float(
+                    depth_distortion_loss.detach().item()
+                )
+            if (
+                surfel_ablation is not None
+                and surfel_normal_consistency_weight > 0.0
+                and step >= surfel_normal_consistency_start
+                and information.get("surfelNormal") is not None
+                and information.get("surfelDepthNormal") is not None
+            ):
+                normal_mask = alpha[..., 0].detach() > 0.5
+                if bool(normal_mask.any()):
+                    cosine = (
+                        information["surfelNormal"]
+                        * information["surfelDepthNormal"]
+                    ).sum(dim=-1)
+                    normal_consistency_loss = torch.clamp_min(
+                        1.0 - cosine[normal_mask], 0.0
+                    ).mean()
+                    loss = loss + surfel_normal_consistency_weight * (
+                        normal_consistency_loss
+                    )
+                    surfel_normal_consistency_steps += 1
+                    recent_surfel_normal_consistency_loss = float(
+                        normal_consistency_loss.detach().item()
+                    )
+            if (
+                observed_detail_weight > 0.0
+                and semantic_prior is not None
+                and step >= observed_detail_start
+                and step % observed_detail_every == 0
+            ):
+                detail_loss = observed_detail_gradient_loss(
+                    training_render,
+                    pixels,
+                    confidence,
+                    semantic_prior,
+                )
+                loss = loss + observed_detail_weight * detail_loss
+                observed_detail_steps += 1
+                recent_observed_detail_loss = float(detail_loss.detach().item())
+                recent_observed_detail_step = step
             if sparse_depth_weight > 0.0 and expected_depth is not None:
                 sparse_loss, supported_sparse_depths = sparse_depth_consistency_loss(
                     expected_depth,
@@ -3989,6 +5482,70 @@ def train(config_path: Path) -> int:
                 loss = loss + sparse_depth_weight * sparse_loss
                 sparse_depth_samples += supported_sparse_depths
                 recent_sparse_depth_loss = float(sparse_loss.detach().item())
+            if (
+                cross_view_depth_weight > 0.0
+                and expected_depth is not None
+                and step >= cross_view_depth_start
+                and step % cross_view_depth_every == 0
+                and index in dataset.cross_view_pairs
+            ):
+                target_index = dataset.cross_view_pairs[index]
+                target_record = dataset.records[target_index]
+                target_camera = torch.from_numpy(
+                    target_record.camera_to_world
+                ).to(device=device, dtype=torch.float32).unsqueeze(0)
+                target_calibration = torch.from_numpy(
+                    target_record.calibration
+                ).to(device=device, dtype=torch.float32).unsqueeze(0)
+                target_width = max(
+                    1, round(target_record.width / active_resolution_factor)
+                )
+                target_height = max(
+                    1, round(target_record.height / active_resolution_factor)
+                )
+                if active_resolution_factor > 1:
+                    target_calibration = target_calibration.clone()
+                    target_calibration[:, 0, :] *= (
+                        target_width / target_record.width
+                    )
+                    target_calibration[:, 1, :] *= (
+                        target_height / target_record.height
+                    )
+                target_geometry_depth, target_geometry_alpha, _ = rasterize(
+                    parameters,
+                    target_camera,
+                    target_calibration,
+                    target_width,
+                    target_height,
+                    active_degree,
+                    packed,
+                    False,
+                    rasterization_mode,
+                    eps2d,
+                    render_mode="ED",
+                    surfel_ablation=surfel_ablation,
+                    geometry_opacity=True,
+                )
+                cross_view_loss, cross_view_samples = (
+                    cross_view_depth_consistency_loss(
+                        expected_depth,
+                        alpha,
+                        camera,
+                        calibration,
+                        target_geometry_depth[..., :1],
+                        target_geometry_alpha,
+                        target_camera,
+                        target_calibration,
+                        confidence,
+                    )
+                )
+                loss = loss + cross_view_depth_weight * cross_view_loss
+                if cross_view_samples > 0:
+                    cross_view_depth_steps += 1
+                    cross_view_depth_samples += cross_view_samples
+                    recent_cross_view_depth_loss = float(
+                        cross_view_loss.detach().item()
+                    )
             if (
                 depth_layer_variance_weight > 0.0
                 and expected_depth is not None
@@ -4012,15 +5569,115 @@ def train(config_path: Path) -> int:
                     rasterization_mode,
                     eps2d,
                     colors_override=camera_z.square().unsqueeze(1),
+                    surfel_ablation=surfel_ablation,
+                    geometry_opacity=dual_opacity_enabled,
                 )
                 variance_loss = depth_layer_variance_loss(
                     expected_depth, second_moment, alpha
                 )
                 loss = loss + depth_layer_variance_weight * variance_loss
+                if (
+                    driving_surface_variance_weight > 0.0
+                    and semantic_prior is not None
+                    and geometry_confidence is not None
+                ):
+                    driving_variance_loss = driving_surface_depth_variance_loss(
+                        expected_depth,
+                        second_moment,
+                        alpha,
+                        semantic_prior,
+                        confidence * geometry_confidence,
+                    )
+                    loss = (
+                        loss
+                        + driving_surface_variance_weight * driving_variance_loss
+                    )
+                    recent_driving_surface_variance_loss = float(
+                        driving_variance_loss.detach().item()
+                    )
                 depth_layer_variance_steps += 1
                 recent_depth_layer_variance_loss = float(
                     variance_loss.detach().item()
                 )
+                recent_depth_layer_variance_step = step
+            if (
+                expected_depth is not None
+                and semantic_prior is not None
+                and geometry_confidence is not None
+                and step >= surface_alignment_start
+                and step % surface_alignment_every == 0
+                and (
+                    surface_alignment_weight > 0.0
+                    or road_planarity_weight > 0.0
+                )
+            ):
+                from gsplat.utils import depth_to_normal, normalized_quat_to_rotmat
+
+                gaussian_scales = torch.exp(parameters["scales"])
+                shortest_axis = gaussian_scales.argmin(dim=-1)
+                rotations = normalized_quat_to_rotmat(parameters["quats"])
+                gaussian_normals = rotations.gather(
+                    2,
+                    shortest_axis[:, None, None].expand(-1, 3, 1),
+                ).squeeze(2)
+                camera_position = camera[0, :3, 3]
+                facing = (
+                    (camera_position - parameters["means"]) * gaussian_normals
+                ).sum(dim=-1)
+                gaussian_normals = gaussian_normals * torch.where(
+                    facing >= 0.0,
+                    torch.ones_like(facing),
+                    -torch.ones_like(facing),
+                ).detach()[:, None]
+                thickness_ratio = (
+                    gaussian_scales.min(dim=-1).values
+                    / gaussian_scales.max(dim=-1).values.clamp_min(1e-6)
+                )
+                surface_features = torch.cat(
+                    [gaussian_normals, thickness_ratio[:, None]], dim=-1
+                )
+                rendered_features, feature_alpha, _ = rasterize(
+                    parameters,
+                    camera,
+                    calibration,
+                    width,
+                    height,
+                    None,
+                    packed,
+                    False,
+                    rasterization_mode,
+                    eps2d,
+                    colors_override=surface_features,
+                    surfel_ablation=surfel_ablation,
+                    geometry_opacity=dual_opacity_enabled,
+                )
+                depth_normals = depth_to_normal(
+                    expected_depth, camera, calibration, z_depth=True
+                )
+                (
+                    alignment_loss,
+                    planarity_loss,
+                    alignment_samples,
+                    planarity_samples,
+                ) = driving_surface_alignment_loss(
+                    rendered_features,
+                    depth_normals,
+                    feature_alpha,
+                    semantic_prior,
+                    confidence * geometry_confidence,
+                )
+                loss = (
+                    loss
+                    + surface_alignment_weight * alignment_loss
+                    + road_planarity_weight * planarity_loss
+                )
+                surface_alignment_steps += 1
+                surface_alignment_samples += alignment_samples
+                road_planarity_samples += planarity_samples
+                recent_surface_alignment_loss = float(
+                    alignment_loss.detach().item()
+                )
+                recent_road_planarity_loss = float(planarity_loss.detach().item())
             if (
                 expected_depth is not None
                 and relative_prior is not None
@@ -4060,10 +5717,19 @@ def train(config_path: Path) -> int:
                 recent_road_surface_depth_loss = float(
                     road_loss.detach().item()
                 )
+                recent_dense_geometry_step = step
             if (
                 semantic_sky_opacity_weight > 0.0
                 and semantic_prior is not None
             ):
+                # Diagnostic offender frames carry a strengthened observed-sky
+                # alpha objective; the non-sky veto semantics of the loss are
+                # untouched, only its weight scales for the listed frames.
+                sky_weight_for_frame = semantic_sky_opacity_weight * (
+                    oversampled_frame_multipliers.get(index, 1)
+                    if oversampled_frame_multipliers is not None
+                    else 1
+                )
                 sky_opacity_loss, sky_opacity_samples = semantic_sky_opacity_loss(
                     alpha,
                     semantic_prior,
@@ -4072,14 +5738,29 @@ def train(config_path: Path) -> int:
                     tail_weight=semantic_sky_tail_weight,
                     tail_bce_epsilon=semantic_sky_tail_bce_epsilon,
                     tail_erosion_radius=semantic_sky_tail_erosion_radius,
+                    l1_scope=(
+                        "semantic"
+                        if configured_semantic_sky_method
+                        == SEMANTIC_SKY_HYBRID_DIAGNOSTIC_METHOD
+                        else "evidence-restricted"
+                    ),
                 )
-                loss = loss + semantic_sky_opacity_weight * sky_opacity_loss
+                loss = loss + sky_weight_for_frame * sky_opacity_loss
                 if sky_opacity_samples > 0:
                     semantic_sky_opacity_steps += 1
                     semantic_sky_opacity_samples += sky_opacity_samples
                     recent_semantic_sky_opacity_loss = float(
                         sky_opacity_loss.detach().item()
                     )
+            if contributor_sky_cleanup_mask is not None:
+                cleanup_loss = contributor_sky_cleanup_loss(
+                    parameters["opacities"], contributor_sky_cleanup_mask
+                )
+                loss = loss + contributor_sky_cleanup_weight * cleanup_loss
+                contributor_sky_cleanup_steps += 1
+                recent_contributor_sky_cleanup_loss = float(
+                    cleanup_loss.detach().item()
+                )
             if appearance is not None and appearance_regularization_weight > 0.0:
                 loss = loss + appearance_regularization_weight * appearance_regularization(
                     appearance,
@@ -4087,6 +5768,10 @@ def train(config_path: Path) -> int:
                 )
             if scale_regularization > 0:
                 scales = torch.exp(parameters["scales"])
+                if surfel_ablation is not None:
+                    # Anisotropy across a pinned near-zero surfel normal axis
+                    # is meaningless, so regularize the in-plane pair only.
+                    scales = scales[..., :2]
                 anisotropy = scales.max(dim=-1).values / scales.min(dim=-1).values.clamp_min(1e-6)
                 loss = loss + scale_regularization * (
                     scales.mean() + functional.relu(anisotropy - 20.0).mean()
@@ -4148,7 +5833,7 @@ def train(config_path: Path) -> int:
                 state=strategy_state,
                 step=step,
                 info=information,
-                packed=packed,
+                packed=False if surfel_ablation is not None else packed,
             )
             # gsplat 1.5.3 uses a bitwise operator in this condition, so its
             # intended periodic opacity reset never runs. Keep the pinned
@@ -4163,7 +5848,9 @@ def train(config_path: Path) -> int:
                     value=strategy.prune_opa * 2.0,
                 )
                 emit("opacity_reset", step=step)
-            clamp_parameters(parameters)
+            clamp_parameters(
+                parameters, pin_surfel_z=surfel_ablation is not None
+            )
             clamp_appearance(appearance)
             reserved_gib = torch.cuda.memory_reserved() / 1024**3
             if not densification_limited and reserved_gib >= max_vram_gib * 0.80:
@@ -4227,16 +5914,27 @@ def train(config_path: Path) -> int:
                 elapsedSeconds=time.monotonic() - started,
                 sparseDepthLoss=recent_sparse_depth_loss,
                 sparseDepthSamples=sparse_depth_samples,
+                crossViewDepthLoss=recent_cross_view_depth_loss,
+                crossViewDepthSteps=cross_view_depth_steps,
+                crossViewDepthSamples=cross_view_depth_samples,
                 depthLayerVarianceLoss=recent_depth_layer_variance_loss,
                 depthLayerVarianceSteps=depth_layer_variance_steps,
+                drivingSurfaceVarianceLoss=recent_driving_surface_variance_loss,
+                surfaceAlignmentLoss=recent_surface_alignment_loss,
+                roadPlanarityLoss=recent_road_planarity_loss,
+                surfaceAlignmentSteps=surface_alignment_steps,
                 denseRelativeDepthLoss=recent_dense_relative_depth_loss,
                 roadSurfaceDepthLoss=recent_road_surface_depth_loss,
                 denseGeometrySteps=dense_geometry_steps,
                 denseRelativeDepthSamples=dense_relative_depth_samples,
                 roadSurfaceDepthSamples=road_surface_depth_samples,
+                observedDetailLoss=recent_observed_detail_loss,
+                observedDetailSteps=observed_detail_steps,
                 semanticSkyOpacityLoss=recent_semantic_sky_opacity_loss,
                 semanticSkyOpacitySteps=semantic_sky_opacity_steps,
                 semanticSkyOpacitySamples=semantic_sky_opacity_samples,
+                contributorSkyCleanupSteps=contributor_sky_cleanup_steps,
+                contributorSkyCleanupLoss=recent_contributor_sky_cleanup_loss,
             )
         if completed_step % checkpoint_every == 0 or completed_step == max_steps:
             validate_parameters(parameters)
@@ -4293,7 +5991,9 @@ def train(config_path: Path) -> int:
         del appearance_scheduler
     gc.collect()
     torch.cuda.empty_cache()
-    parameters, cleanup = cleanup_parameters(parameters, dataset.normalization)
+    parameters, cleanup = cleanup_parameters(
+        parameters, dataset.normalization, surfel=surfel_ablation is not None
+    )
     validate_parameters(parameters)
     final_artifact_validation = evaluate(
         parameters,
@@ -4309,6 +6009,7 @@ def train(config_path: Path) -> int:
         phase="final-artifact-validation",
         background_color=background_color,
         directional_environment=directional_environment,
+        surfel_ablation=surfel_ablation,
     )
     semantic_geometry = final_artifact_validation.get("semanticGeometry")
     if not isinstance(semantic_geometry, dict):
@@ -4366,7 +6067,11 @@ def train(config_path: Path) -> int:
         output / "world.ply",
         rasterization_mode,
         eps2d,
-        REPRESENTATION_TYPE,
+        (
+            SURFEL_ABLATION_REPRESENTATION
+            if surfel_ablation is not None
+            else REPRESENTATION_TYPE
+        ),
     )
     world_sha256 = sha256_file(output / "world.ply")
     import importlib.metadata
@@ -4422,10 +6127,19 @@ def train(config_path: Path) -> int:
         "configurationHash": config["configurationHash"],
         "pipelineCodeHash": config["pipelineCodeHash"],
         "trainingInputHash": config["trainingInputHash"],
-        "representationType": REPRESENTATION_TYPE,
+        "representationType": (
+            SURFEL_ABLATION_REPRESENTATION
+            if surfel_ablation is not None
+            else REPRESENTATION_TYPE
+        ),
         "rasterizationMode": rasterization_mode,
+        "antialiasedRasterizationApplied": surfel_ablation is None,
         "eps2d": eps2d,
-        "densificationStrategy": "default-absgrad" if absgrad else "default",
+        "densificationStrategy": (
+            "default-2dgs-gradient"
+            if surfel_ablation is not None
+            else ("default-absgrad" if absgrad else "default")
+        ),
         "absgrad": absgrad,
         "growGrad2d": grow_grad2d,
         "screenSpaceRefinement": {
@@ -4441,6 +6155,28 @@ def train(config_path: Path) -> int:
             "radiusNormalization": "max-image-dimension",
         },
         "mainSampling": main_sampling_receipt,
+        "frameOversampling": frame_oversampling_receipt,
+        "surfelAblation": (
+            {
+                **surfel_ablation,
+                "depthDistortionSteps": surfel_depth_distortion_steps,
+                "recentDepthDistortionLoss": recent_surfel_depth_distortion_loss,
+                "normalConsistencySteps": surfel_normal_consistency_steps,
+                "recentNormalConsistencyLoss": (
+                    recent_surfel_normal_consistency_loss
+                ),
+                "densificationGradientKey": "gradient_2dgs",
+                "absgradDensification": False,
+                "packedForcedFalse": True,
+                "note": (
+                    "Diagnostic 2DGS surfel A/B; rasterization_2dgs does not "
+                    "apply the antialiased mode and render/export parity with "
+                    "the Vulkan 3DGS renderer is unverified."
+                ),
+            }
+            if surfel_ablation is not None
+            else None
+        ),
         "targetGaussians": target_gaussians,
         "maxGaussians": max_gaussians,
         "resolutionSchedule": {
@@ -4449,6 +6185,17 @@ def train(config_path: Path) -> int:
             "fullResolutionSteps": max_steps - coarse_steps,
         },
         "appearance": appearance_summary,
+        "dualOpacity": {
+            "enabled": dual_opacity_enabled,
+            "method": (
+                "stablegs-inspired-geometry-opacity-times-appearance-gate-v1"
+                if dual_opacity_enabled
+                else "disabled"
+            ),
+            "geometryObjectivesUseBaseOpacity": dual_opacity_enabled,
+            "rgbAndExportUseProductOpacity": dual_opacity_enabled,
+            "opacityResetDisabled": dual_opacity_enabled,
+        },
         "geometryRegularization": {
             "staticConfidenceMasks": dataset.static_confidence_masks,
             "staticConfidenceMethod": config.get("staticConfidenceMethod"),
@@ -4473,11 +6220,33 @@ def train(config_path: Path) -> int:
             "sparseDepthWeight": sparse_depth_weight,
             "sparseDepthSamples": sparse_depth_samples,
             "recentSparseDepthLoss": recent_sparse_depth_loss,
+            "crossViewDepthConsistencyWeight": cross_view_depth_weight,
+            "crossViewDepthConsistencyEvery": cross_view_depth_every,
+            "crossViewDepthConsistencyStart": cross_view_depth_start,
+            "crossViewDepthPairPlan": dataset.cross_view_pair_receipt,
+            "crossViewDepthSteps": cross_view_depth_steps,
+            "crossViewDepthSamples": cross_view_depth_samples,
+            "recentCrossViewDepthLoss": recent_cross_view_depth_loss,
             "depthLayerVarianceWeight": depth_layer_variance_weight,
             "depthLayerVarianceEvery": depth_layer_variance_every,
             "depthLayerVarianceStart": depth_layer_variance_start,
             "depthLayerVarianceSteps": depth_layer_variance_steps,
             "recentDepthLayerVarianceLoss": recent_depth_layer_variance_loss,
+            "recentDepthLayerVarianceStep": recent_depth_layer_variance_step,
+            "drivingSurfaceVarianceWeight": driving_surface_variance_weight,
+            "recentDrivingSurfaceVarianceLoss": recent_driving_surface_variance_loss,
+            "surfaceAlignmentMethod": (
+                "3dgs-shortest-axis-vs-rendered-depth-normal-road-only-v2"
+            ),
+            "surfaceAlignmentWeight": surface_alignment_weight,
+            "roadPlanarityWeight": road_planarity_weight,
+            "surfaceAlignmentEvery": surface_alignment_every,
+            "surfaceAlignmentStart": surface_alignment_start,
+            "surfaceAlignmentSteps": surface_alignment_steps,
+            "surfaceAlignmentSamples": surface_alignment_samples,
+            "roadPlanaritySamples": road_planarity_samples,
+            "recentSurfaceAlignmentLoss": recent_surface_alignment_loss,
+            "recentRoadPlanarityLoss": recent_road_planarity_loss,
             "denseRelativeDepthSource": "video-depth-anything-small-relative-inverse-depth",
             "denseRelativeDepthWeight": dense_relative_depth_weight,
             "roadSurfaceDepthSource": (
@@ -4491,6 +6260,13 @@ def train(config_path: Path) -> int:
             "roadSurfaceDepthSamples": road_surface_depth_samples,
             "recentDenseRelativeDepthLoss": recent_dense_relative_depth_loss,
             "recentRoadSurfaceDepthLoss": recent_road_surface_depth_loss,
+            "recentDenseGeometryStep": recent_dense_geometry_step,
+            "observedDetailWeight": observed_detail_weight,
+            "observedDetailEvery": observed_detail_every,
+            "observedDetailStart": observed_detail_start,
+            "observedDetailSteps": observed_detail_steps,
+            "recentObservedDetailLoss": recent_observed_detail_loss,
+            "recentObservedDetailStep": recent_observed_detail_step,
             "semanticSkyOpacitySource": (
                 "oneformer-rotation-only-temporally-confirmed-sky-alpha-zero"
             ),
@@ -4505,6 +6281,15 @@ def train(config_path: Path) -> int:
             "semanticSkyOpacitySteps": semantic_sky_opacity_steps,
             "semanticSkyOpacitySamples": semantic_sky_opacity_samples,
             "recentSemanticSkyOpacityLoss": recent_semantic_sky_opacity_loss,
+            "contributorSkyCleanup": {
+                "enabled": contributor_sky_cleanup_enabled,
+                "method": contributor_sky_cleanup_method,
+                "startStep": contributor_sky_cleanup_start,
+                "lossWeight": contributor_sky_cleanup_weight,
+                "steps": contributor_sky_cleanup_steps,
+                "recentLoss": recent_contributor_sky_cleanup_loss,
+                "ledger": contributor_sky_cleanup_ledger,
+            },
         },
         "environment": {
             "backgroundColorSrgb": [float(value) for value in background_values],
@@ -4557,8 +6342,14 @@ def train(config_path: Path) -> int:
             "torch": torch.__version__,
             "cuda": torch.version.cuda,
             "gsplat": importlib.metadata.version("gsplat"),
-            "pycolmap": importlib.metadata.version("pycolmap"),
+            "pycolmap": (
+                importlib.metadata.version("pycolmap")
+                if dataset.colmap_runtime == "pycolmap"
+                else None
+            ),
+            "colmapReader": dataset.colmap_runtime,
             "device": torch.cuda.get_device_name(0),
+            "nativeExtension": gsplat_runtime_receipt,
         },
         **validation,
     }
@@ -4570,6 +6361,10 @@ def train(config_path: Path) -> int:
 def kernel_check() -> int:
     import numpy as np
     import torch
+
+    from servo_gsplat_runtime import prepare_gsplat_runtime
+
+    gsplat_runtime_receipt = prepare_gsplat_runtime()
     from gsplat.rendering import rasterization
 
     if not torch.cuda.is_available():
@@ -4724,6 +6519,7 @@ def kernel_check() -> int:
         sparseDepthSamples=sparse_depth_samples,
         sparseDepthLoss=float(sparse_depth_loss.detach().item()),
         depthLayerVarianceLoss=float(layer_variance_loss.detach().item()),
+        nativeExtension=gsplat_runtime_receipt,
     )
     return 0
 
