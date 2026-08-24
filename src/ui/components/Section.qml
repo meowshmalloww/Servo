@@ -14,34 +14,57 @@ Column {
     height: header.height + body.height
     spacing: 0
 
-    Rectangle {
+    Item {
         id: header
         width: root.width
-        height: 32
-        color: headerArea.containsMouse ? Theme.panelHover : Theme.panelRaised
-        border.width: 1
-        border.color: Theme.borderSoft
+        height: 34
+
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.cornerControl
+            color: headerArea.containsMouse ? Theme.panelHover : "transparent"
+            opacity: headerArea.containsMouse ? 0.6 : 1
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: Theme.animFast
+                }
+            }
+        }
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 8
-            anchors.rightMargin: 10
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
             spacing: 7
 
             SvgIcon {
-                source: root.expanded ? Theme.icon("chevron-down") : Theme.icon("chevron-right")
-                iconSize: 13
+                source: Theme.icon("chevron-down")
+                iconSize: Theme.iconSm
+                color: Theme.textMuted
+                rotation: root.expanded ? 0 : -90
+
+                Behavior on rotation {
+                    NumberAnimation {
+                        duration: Theme.animMove
+                        easing.type: Easing.OutCubic
+                    }
+                }
             }
 
             Text {
                 text: root.title
-                color: Theme.text
+                color: Theme.textSecondary
                 font.family: Theme.uiFont
-                font.pixelSize: 11
+                font.pixelSize: 10
                 font.weight: Font.DemiBold
+                font.letterSpacing: 0.7
+                font.capitalization: Font.AllUppercase
             }
 
-            Item { Layout.fillWidth: true }
+            Item {
+                Layout.fillWidth: true
+            }
 
             Text {
                 visible: root.summary.length > 0
@@ -50,7 +73,7 @@ Column {
                 font.family: Theme.uiFont
                 font.pixelSize: 10
                 elide: Text.ElideRight
-                Layout.maximumWidth: 220
+                Layout.maximumWidth: 240
             }
         }
 
@@ -67,7 +90,24 @@ Column {
         id: body
         width: root.width
         height: root.expanded ? implicitHeight : 0
-        visible: root.expanded
+        visible: height > 0
+        opacity: root.expanded ? 1 : 0
         spacing: 0
+
+        clip: true
+
+        Behavior on height {
+            NumberAnimation {
+                duration: Theme.animMove
+                easing.type: Easing.InOutCubic
+            }
+        }
+
+        Behavior on opacity {
+            NumberAnimation {
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 }

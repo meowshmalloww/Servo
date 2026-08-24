@@ -12,6 +12,7 @@ include(CTest)
 find_package(Qt6 6.11 REQUIRED COMPONENTS
     Concurrent
     GuiPrivate
+    Network
     Quick
     Quick3D
     QuickControls2

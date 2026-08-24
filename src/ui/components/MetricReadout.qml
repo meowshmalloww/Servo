@@ -16,20 +16,21 @@ Item {
     RowLayout {
         id: row
         anchors.centerIn: parent
-        spacing: 5
+        spacing: 6
 
         Text {
             text: root.label
             color: Theme.textMuted
             font.family: Theme.uiFont
             font.pixelSize: 9
+            font.letterSpacing: 0.5
         }
 
         Text {
             text: root.value
-            color: Theme.textSecondary
+            color: Theme.text
             font.family: Theme.monoFont
-            font.pixelSize: 9
+            font.pixelSize: 10
             font.weight: Font.DemiBold
         }
     }

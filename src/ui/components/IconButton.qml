@@ -7,28 +7,69 @@ T.Button {
 
     property url iconSource: ""
     property string toolTip: ""
-    property int buttonSize: 28
+    property int buttonSize: 26
     property bool selected: false
+    property string tone: "default"
 
     text: toolTip
     implicitWidth: buttonSize
     implicitHeight: buttonSize
     hoverEnabled: true
+    font.family: Theme.uiFont
     Accessible.role: Accessible.Button
     Accessible.name: toolTip
 
     contentItem: SvgIcon {
         anchors.centerIn: parent
         source: control.iconSource
-        iconSize: 15
-        opacity: control.enabled ? 1 : 0.4
+        iconSize: Math.round(control.buttonSize * 0.54)
+        color: {
+            if (!control.enabled)
+                return Theme.textDisabled;
+            if (control.selected || (control.tone === "primary" && control.checked))
+                return Theme.accent;
+            if (control.tone === "danger")
+                return Theme.error;
+            return Theme.textSecondary;
+        }
+
+        Behavior on scale {
+            NumberAnimation {
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
+        }
+    }
+
+    scale: control.pressed ? 0.92 : 1.0
+
+    Behavior on scale {
+        NumberAnimation {
+            duration: Theme.animFast
+            easing.type: Easing.OutCubic
+        }
     }
 
     background: Rectangle {
-        radius: 0
-        color: control.selected ? Theme.selection : (control.down ? Theme.panelHover : (control.hovered ? Theme.panelRaised : "transparent"))
-        border.width: control.selected || control.activeFocus ? 1 : 0
-        border.color: control.activeFocus ? Theme.selectionBorder : Theme.borderStrong
+        radius: Theme.cornerControl
+        color: {
+            if (control.tone === "danger" && !control.selected)
+                return control.hovered ? Theme.tintError : "transparent";
+            if (control.selected)
+                return Theme.selection;
+            if (control.down)
+                return Theme.panelHover;
+            if (control.hovered)
+                return Theme.panelRaised;
+            return "transparent";
+        }
+
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 
     T.ToolTip.visible: control.toolTip.length > 0 && control.hovered

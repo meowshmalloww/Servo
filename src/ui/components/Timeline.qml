@@ -19,8 +19,6 @@ Panel {
             Layout.fillWidth: true
             Layout.preferredHeight: 34
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
 
             RowLayout {
                 anchors.fill: parent
@@ -42,7 +40,11 @@ Panel {
                     onClicked: root.stopRequested()
                 }
 
-                Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 18; color: Theme.border }
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 16
+                    color: Theme.borderSoft
+                }
 
                 Text {
                     text: root.available ? "00:00:00.000" : "No run selected"
@@ -51,7 +53,9 @@ Panel {
                     font.pixelSize: 10
                 }
 
-                Item { Layout.fillWidth: true }
+                Item {
+                    Layout.fillWidth: true
+                }
 
                 Text {
                     text: root.available ? "Frame 0 / 0" : ""
@@ -63,24 +67,52 @@ Panel {
         }
 
         Item {
+            id: trackArea
             Layout.fillWidth: true
             Layout.fillHeight: true
-            opacity: root.available ? 1 : 0.45
+            opacity: root.available ? 1 : 0.4
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: Theme.animBase
+                }
+            }
 
             Rectangle {
+                id: track
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.leftMargin: 14
                 anchors.rightMargin: 14
-                height: 2
-                color: Theme.borderStrong
+                height: trackHover.hovered ? 5 : 3
+                radius: height / 2
+                color: Theme.panelHover
+
+                Behavior on height {
+                    NumberAnimation {
+                        duration: Theme.animFast
+                        easing.type: Easing.OutCubic
+                    }
+                }
 
                 Rectangle {
                     width: parent.width * root.position
                     height: parent.height
+                    radius: parent.radius
                     color: Theme.accent
+
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: Theme.animFast
+                            easing.type: Easing.OutCubic
+                        }
+                    }
                 }
+            }
+
+            HoverHandler {
+                id: trackHover
             }
 
             MouseArea {

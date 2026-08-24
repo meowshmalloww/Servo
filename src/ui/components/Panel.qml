@@ -1,9 +1,11 @@
 import QtQuick
 
 Rectangle {
+    id: root
+
+    property real panelRadius: 0
+
     color: Theme.panel
-    border.width: 1
-    border.color: Theme.borderSoft
-    radius: 0
+    radius: panelRadius
     clip: true
 }

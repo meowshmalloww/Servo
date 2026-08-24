@@ -1,4 +1,4 @@
-pragma ComponentBehavior: Bound
+﻿pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Layouts
@@ -44,6 +44,10 @@ Panel {
     color: Theme.viewport
 
     onStatsVisibleChanged: worldView.renderStats.extendedDataCollectionEnabled = statsVisible
+    onAvailableChanged: {
+        if (!available)
+            statsVisible = false;
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -53,8 +57,6 @@ Panel {
             Layout.fillWidth: true
             Layout.preferredHeight: 34
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
 
             RowLayout {
                 anchors.fill: parent
@@ -66,7 +68,7 @@ Panel {
                     iconSource: Theme.icon("select")
                     toolTip: "Select tool"
                     selected: root.toolMode === 0
-                    buttonSize: 25
+                    buttonSize: 24
                     onClicked: root.toolMode = 0
                 }
 
@@ -74,16 +76,8 @@ Panel {
                     iconSource: Theme.icon("orbit")
                     toolTip: "Orbit camera - drag to orbit, Ctrl+drag to pan, wheel to zoom"
                     selected: root.toolMode === 1
-                    buttonSize: 25
+                    buttonSize: 24
                     onClicked: root.toolMode = 1
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: 18
-                    color: Theme.border
-                    Layout.leftMargin: 3
-                    Layout.rightMargin: 3
                 }
 
                 SelectField {
@@ -91,6 +85,7 @@ Panel {
                     Layout.preferredWidth: 126
                     Layout.preferredHeight: 25
                     Layout.fillWidth: false
+                    Layout.leftMargin: 3
                     model: ["Perspective", "Top", "Front", "Right"]
                     currentIndex: 0
                     onActivated: root.applyCameraPreset(currentIndex)
@@ -99,7 +94,7 @@ Panel {
                 IconButton {
                     iconSource: Theme.icon("focus")
                     toolTip: "Reset camera"
-                    buttonSize: 25
+                    buttonSize: 24
                     onClicked: root.resetCamera()
                 }
 
@@ -116,19 +111,11 @@ Panel {
                     Layout.maximumWidth: 180
                 }
 
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: 18
-                    color: Theme.border
-                    Layout.leftMargin: 4
-                    Layout.rightMargin: 4
-                }
-
                 IconButton {
                     iconSource: Theme.icon("grid")
                     toolTip: root.gridVisible ? "Hide editor grid" : "Show editor grid"
                     selected: root.gridVisible
-                    buttonSize: 25
+                    buttonSize: 24
                     onClicked: root.gridVisible = !root.gridVisible
                 }
 
@@ -136,7 +123,8 @@ Panel {
                     iconSource: Theme.icon("chart")
                     toolTip: root.statsVisible ? "Hide render statistics" : "Show render statistics"
                     selected: root.statsVisible
-                    buttonSize: 25
+                    buttonSize: 24
+                    enabled: root.available
                     onClicked: root.statsVisible = !root.statsVisible
                 }
 
@@ -144,7 +132,7 @@ Panel {
                     iconSource: Theme.icon(Session.viewportFocusMode ? "minimize" : "maximize")
                     toolTip: Session.viewportFocusMode ? "Restore editor panels" : "Focus viewport"
                     selected: Session.viewportFocusMode
-                    buttonSize: 25
+                    buttonSize: 24
                     onClicked: Session.viewportFocusMode = !Session.viewportFocusMode
                 }
             }
@@ -190,7 +178,7 @@ Panel {
                 DirectionalLight {
                     eulerRotation: Qt.vector3d(-45, -35, 0)
                     brightness: 0.7
-                    ambientColor: "#2b2e30"
+                    ambientColor: "#2b2721"
                     castsShadow: false
                 }
             }
@@ -210,9 +198,7 @@ Panel {
                 width: Math.min(430, parent.width - 48)
                 height: 112
                 visible: !root.available
-                color: "#d817191b"
-                border.width: 1
-                border.color: Theme.border
+                color: Theme.overlayHud
                 radius: Theme.cornerPopup
 
                 ColumnLayout {
@@ -225,7 +211,8 @@ Panel {
                         spacing: 8
                         SvgIcon {
                             source: Theme.icon("world")
-                            iconSize: 17
+                            iconSize: Theme.iconXl
+                            color: Theme.accent
                         }
                         Text {
                             text: root.emptyTitle
@@ -264,11 +251,9 @@ Panel {
                 anchors.rightMargin: 10
                 width: 190
                 height: 116
-                visible: root.statsVisible
-                color: "#e5191c1e"
-                border.width: 1
-                border.color: Theme.borderStrong
-                radius: Theme.cornerControl
+                visible: root.available && root.statsVisible
+                color: Theme.overlayHud
+                radius: Theme.cornerCard - 2
 
                 GridLayout {
                     anchors.fill: parent
@@ -351,9 +336,7 @@ Panel {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 height: 24
-                color: "#e5191c1e"
-                border.width: 1
-                border.color: Theme.borderSoft
+                color: Theme.overlayHud
 
                 RowLayout {
                     anchors.fill: parent
@@ -366,11 +349,6 @@ Panel {
                         color: Theme.textMuted
                         font.family: Theme.uiFont
                         font.pixelSize: 9
-                    }
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.preferredHeight: 11
-                        color: Theme.border
                     }
                     Text {
                         text: root.gridVisible ? "Grid 1 m" : "Grid hidden"
@@ -386,11 +364,6 @@ Panel {
                         color: Theme.textMuted
                         font.family: Theme.monoFont
                         font.pixelSize: 8
-                    }
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.preferredHeight: 11
-                        color: Theme.border
                     }
                     Text {
                         text: root.available ? "World attached" : "No world source"

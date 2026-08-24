@@ -13,10 +13,20 @@ T.Button {
     property bool selected: false
 
     implicitHeight: compact ? 26 : Theme.controlHeight
-    implicitWidth: Math.max(54, contentRow.implicitWidth + 18)
-    leftPadding: 9
-    rightPadding: 9
+    implicitWidth: Math.max(54, contentRow.implicitWidth + 22)
+    leftPadding: 11
+    rightPadding: 11
     hoverEnabled: true
+    font.family: Theme.uiFont
+
+    scale: control.pressed ? 0.97 : 1.0
+
+    Behavior on scale {
+        NumberAnimation {
+            duration: Theme.animFast
+            easing.type: Easing.OutCubic
+        }
+    }
 
     contentItem: RowLayout {
         id: contentRow
@@ -25,52 +35,73 @@ T.Button {
         SvgIcon {
             visible: control.iconSource.toString().length > 0
             source: control.iconSource
-            iconSize: control.compact ? 13 : 14
-            opacity: control.enabled ? 1 : 0.45
+            iconSize: control.compact ? Theme.iconXs : Theme.iconSm
+            color: {
+                if (!control.enabled)
+                    return Theme.textDisabled;
+                if (control.tone === "primary")
+                    return Theme.accentText;
+                if (control.tone === "danger")
+                    return Theme.error;
+                return Theme.textSecondary;
+            }
         }
 
         Text {
             text: control.text
-            color: control.enabled ? Theme.text : Theme.textDisabled
+            color: {
+                if (!control.enabled)
+                    return Theme.textDisabled;
+                if (control.tone === "primary")
+                    return Theme.accentText;
+                if (control.tone === "danger")
+                    return control.hovered ? Theme.error : Theme.textSecondary;
+                if (control.selected)
+                    return Theme.accent;
+                return Theme.text;
+            }
             font.family: Theme.uiFont
             font.pixelSize: 11
             font.weight: control.tone === "primary" ? Font.DemiBold : Font.Normal
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             Layout.fillWidth: true
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: Theme.animFast
+                }
+            }
         }
     }
 
     background: Rectangle {
         radius: Theme.cornerControl
         color: {
-            if (!control.enabled)
-                return Theme.field;
+            if (!control.enabled && control.tone !== "primary")
+                return "transparent";
             if (control.selected)
                 return Theme.selection;
             if (control.down)
-                return control.tone === "primary" ? Theme.selectionBorder : Theme.panelHover;
+                return control.tone === "primary" ? Theme.accentPress : Theme.panelHover;
             if (control.hovered)
-                return control.tone === "primary" ? Theme.accentHover : Theme.panelHover;
+                return control.tone === "primary" ? Theme.accentHover
+                                                  : (control.tone === "danger" ? Theme.tintError
+                                                                               : Theme.panelHover);
             if (control.tone === "primary")
                 return Theme.accent;
             if (control.tone === "danger")
-                return "#3b292b";
+                return "transparent";
             return Theme.panelRaised;
         }
-        border.width: 1
-        border.color: {
-            if (!control.enabled)
-                return Theme.border;
-            if (control.activeFocus)
-                return Theme.selectionBorder;
-            if (control.selected)
-                return Theme.selectionBorder;
-            if (control.tone === "primary")
-                return Theme.accentHover;
-            if (control.tone === "danger")
-                return Theme.error;
-            return control.hovered ? Theme.borderStrong : Theme.border;
+        border.width: control.activeFocus ? 1 : 0
+        border.color: Theme.selectionBorder
+
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
         }
     }
 

@@ -18,6 +18,25 @@ target_link_libraries(MediaSourceModelTests
 
 add_test(NAME MediaSourceModelTests COMMAND MediaSourceModelTests)
 
+qt_add_executable(AiChatControllerTests
+    AiChatControllerTests.cpp
+    ../src/ui/chat/AiChatController.cpp
+    ../src/ui/chat/AiChatController.h
+)
+
+target_include_directories(AiChatControllerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui/chat
+)
+
+target_link_libraries(AiChatControllerTests
+    PRIVATE
+        Qt6::Network
+        Qt6::Qml
+        Qt6::Test
+)
+
+add_test(NAME AiChatControllerTests COMMAND AiChatControllerTests)
+
 qt_add_executable(ReconstructionControllerTests
     ReconstructionControllerTests.cpp
     ../src/ui/reconstruction/ReconstructionController.cpp

@@ -12,7 +12,7 @@ Panel {
     property var values: []
     property real minimum: 0
     property real maximum: 1
-    property color lineColor: Theme.info
+    property color lineColor: Theme.accent
 
     ColumnLayout {
         anchors.fill: parent

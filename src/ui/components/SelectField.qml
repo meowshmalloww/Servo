@@ -12,11 +12,10 @@ T.ComboBox {
     property string placeholderText: "Not configured"
 
     Layout.fillWidth: true
-    Layout.fillHeight: true
     implicitWidth: 190
     implicitHeight: Theme.controlHeight
-    leftPadding: 9
-    rightPadding: 30
+    leftPadding: 10
+    rightPadding: 28
     currentIndex: -1
     font.family: Theme.uiFont
     font.pixelSize: 11
@@ -31,18 +30,39 @@ T.ComboBox {
 
     indicator: SvgIcon {
         anchors.right: parent.right
-        anchors.rightMargin: 7
+        anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
         source: Theme.icon("chevron-down")
-        iconSize: 13
-        opacity: control.enabled ? 0.85 : 0.4
+        iconSize: Theme.iconSm
+        color: control.enabled ? Theme.textMuted : Theme.textDisabled
+        rotation: control.popup.visible ? 180 : 0
+
+        Behavior on rotation {
+            NumberAnimation {
+                duration: Theme.animMove
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 
     background: Rectangle {
         radius: Theme.cornerControl
-        color: control.enabled ? (control.hovered ? Theme.fieldHover : Theme.field) : Theme.panel
-        border.width: 1
-        border.color: control.activeFocus || control.popup.visible ? Theme.selectionBorder : Theme.border
+        color: {
+            if (!control.enabled)
+                return Theme.panel;
+            if (control.activeFocus || control.hovered || control.popup.visible)
+                return Theme.fieldHover;
+            return Theme.field;
+        }
+        border.width: control.activeFocus || control.popup.visible ? 1 : 0
+        border.color: Theme.selectionBorder
+
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 
     delegate: T.ItemDelegate {
@@ -51,30 +71,68 @@ T.ComboBox {
         required property var modelData
 
         width: control.popup.width
-        height: 29
+        height: 30
         highlighted: control.highlightedIndex === index
 
         contentItem: Text {
             text: optionDelegate.modelData === undefined ? "" : String(optionDelegate.modelData)
-            color: Theme.text
+            color: optionDelegate.highlighted ? Theme.accent : Theme.text
             font: control.font
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: Theme.animFast
+                }
+            }
         }
 
         background: Rectangle {
+            radius: Theme.cornerControl - 2
+            anchors.fill: parent
+            anchors.margins: 3
             color: optionDelegate.highlighted ? Theme.selection : "transparent"
-            border.width: optionDelegate.highlighted ? 1 : 0
-            border.color: Theme.selectionBorder
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: Theme.animFast
+                }
+            }
         }
     }
 
     popup: T.Popup {
-        y: control.height + 2
+        y: control.height + 4
         width: control.width
-        height: Math.min(contentItem.implicitHeight + 2, 260)
-        padding: 1
+        height: Math.min(contentItem.implicitHeight + 12, 264)
+        padding: 4
         closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside
+
+        enter: Transition {
+            NumberAnimation {
+                property: "opacity"
+                from: 0
+                to: 1
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
+            NumberAnimation {
+                property: "scale"
+                from: 0.96
+                to: 1
+                duration: Theme.animBase
+                easing.type: Easing.OutCubic
+            }
+        }
+        exit: Transition {
+            NumberAnimation {
+                property: "opacity"
+                to: 0
+                duration: Theme.animFast
+                easing.type: Easing.InCubic
+            }
+        }
 
         contentItem: ListView {
             clip: true
@@ -82,8 +140,10 @@ T.ComboBox {
             model: control.delegateModel
             currentIndex: control.highlightedIndex
             boundsBehavior: Flickable.StopAtBounds
-            highlightMoveDuration: 0
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            highlightMoveDuration: Theme.animBase
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
+            }
         }
 
         background: Rectangle {

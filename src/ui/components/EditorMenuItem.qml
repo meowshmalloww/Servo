@@ -7,13 +7,13 @@ T.MenuItem {
     id: control
 
     implicitWidth: 226
-    implicitHeight: 30
+    implicitHeight: 32
     leftPadding: 9
     rightPadding: 9
     hoverEnabled: true
 
     contentItem: RowLayout {
-        spacing: 7
+        spacing: 8
 
         Item {
             Layout.preferredWidth: 15
@@ -23,15 +23,22 @@ T.MenuItem {
                 anchors.centerIn: parent
                 visible: control.checkable && control.checked
                 source: Theme.icon("check")
-                iconSize: 13
+                iconSize: Theme.iconSm
+                color: Theme.accent
             }
         }
 
         SvgIcon {
             visible: control.icon.source.toString().length > 0
             source: control.icon.source
-            iconSize: 14
-            opacity: control.enabled ? 1 : 0.4
+            iconSize: Theme.iconSm
+            color: control.enabled ? (control.highlighted ? Theme.accent : Theme.textSecondary) : Theme.textDisabled
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: Theme.animFast
+                }
+            }
         }
 
         Text {
@@ -46,15 +53,16 @@ T.MenuItem {
     }
 
     background: Rectangle {
+        radius: Theme.cornerControl - 1
+        anchors.fill: parent
+        anchors.leftMargin: 4
+        anchors.rightMargin: 4
         color: control.highlighted || control.hovered ? Theme.selection : "transparent"
-        border.width: control.activeFocus ? 1 : 0
-        border.color: Theme.selectionBorder
 
-        Rectangle {
-            visible: control.highlighted || control.hovered
-            width: 2
-            height: parent.height
-            color: Theme.selectionBorder
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.animFast
+            }
         }
     }
 }

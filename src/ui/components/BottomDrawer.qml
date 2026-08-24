@@ -16,7 +16,14 @@ Panel {
         expanded = true;
     }
 
-    implicitHeight: expanded ? 210 : 32
+    implicitHeight: expanded ? 212 : 34
+
+    Behavior on implicitHeight {
+        NumberAnimation {
+            duration: Theme.animMove
+            easing.type: Easing.InOutCubic
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -24,20 +31,27 @@ Panel {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 32
+            Layout.preferredHeight: 34
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
 
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 4
-                spacing: 0
+                spacing: 2
 
                 IconButton {
-                    iconSource: root.expanded ? Theme.icon("chevron-down") : Theme.icon("chevron-right")
+                    iconSource: Theme.icon("chevron-down")
                     toolTip: root.expanded ? "Collapse" : "Expand"
-                    buttonSize: 27
+                    buttonSize: 25
+                    rotation: root.expanded ? 0 : -90
+
+                    Behavior on rotation {
+                        NumberAnimation {
+                            duration: Theme.animMove
+                            easing.type: Easing.OutCubic
+                        }
+                    }
+
                     onClicked: root.expanded = !root.expanded
                 }
 
@@ -69,7 +83,7 @@ Panel {
                     color: Theme.textMuted
                     font.family: Theme.monoFont
                     font.pixelSize: 8
-                    Layout.rightMargin: 6
+                    Layout.rightMargin: 8
                 }
             }
         }

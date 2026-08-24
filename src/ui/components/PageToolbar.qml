@@ -12,34 +12,27 @@ Rectangle {
 
     implicitHeight: Theme.toolbarHeight
     color: Theme.chrome
-    border.width: 1
-    border.color: Theme.borderSoft
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 8
-        spacing: 9
+        anchors.leftMargin: 14
+        anchors.rightMargin: 10
+        spacing: 10
 
         SvgIcon {
             visible: root.iconSource.toString().length > 0
             source: root.iconSource
-            iconSize: 16
+            iconSize: Theme.iconMd
+            color: Theme.accent
         }
 
         Text {
             text: root.title
             color: Theme.text
             font.family: Theme.uiFont
-            font.pixelSize: 12
+            font.pixelSize: 13
             font.weight: Font.DemiBold
-        }
-
-        Rectangle {
-            visible: root.subtitle.length > 0
-            Layout.preferredWidth: 1
-            Layout.preferredHeight: 18
-            color: Theme.border
+            font.letterSpacing: 0.2
         }
 
         Text {
@@ -50,9 +43,12 @@ Rectangle {
             font.pixelSize: 10
             elide: Text.ElideRight
             Layout.maximumWidth: 560
+            Layout.leftMargin: root.subtitle.length > 0 ? 2 : 0
         }
 
-        Item { Layout.fillWidth: true }
+        Item {
+            Layout.fillWidth: true
+        }
 
         RowLayout {
             id: actionRow

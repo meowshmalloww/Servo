@@ -24,9 +24,9 @@ Item {
         RowLayout {
             visible: root.searchable
             Layout.fillWidth: true
-            Layout.leftMargin: 7
-            Layout.rightMargin: 7
-            Layout.topMargin: 7
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            Layout.topMargin: 8
             Layout.bottomMargin: 6
             spacing: 5
 
@@ -51,32 +51,61 @@ Item {
             model: root.model
             currentIndex: root.currentIndex
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            spacing: 1
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
+            }
 
-            delegate: Rectangle {
+            delegate: Item {
                 id: rowDelegate
                 required property int index
                 required property var display
 
                 width: list.width
-                height: Theme.rowHeight
-                color: rowDelegate.index === root.currentIndex
-                       ? Theme.selection
-                       : (rowArea.containsMouse ? Theme.panelHover : "transparent")
-                border.width: rowDelegate.index === root.currentIndex ? 1 : 0
-                border.color: Theme.selectionBorder
+                height: Theme.rowHeight + 2
+
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    radius: Theme.cornerControl - 1
+                    color: rowDelegate.index === root.currentIndex ? Theme.selection : (rowArea.containsMouse ? Theme.panelHover : "transparent")
+
+                    Behavior on color {
+                        ColorAnimation {
+                            duration: Theme.animFast
+                            easing.type: Easing.OutCubic
+                        }
+                    }
+                }
+
+                Rectangle {
+                    visible: rowDelegate.index === root.currentIndex
+                    anchors.left: parent.left
+                    anchors.leftMargin: 3
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 3
+                    height: 14
+                    radius: 1.5
+                    color: Theme.accent
+                }
 
                 Text {
                     anchors.left: parent.left
-                    anchors.leftMargin: 10
+                    anchors.leftMargin: 14
                     anchors.right: parent.right
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
                     text: rowDelegate.display === undefined ? "" : String(rowDelegate.display)
-                    color: Theme.textSecondary
+                    color: rowDelegate.index === root.currentIndex ? Theme.text : Theme.textSecondary
                     font.family: Theme.uiFont
                     font.pixelSize: 11
                     elide: Text.ElideRight
+
+                    Behavior on color {
+                        ColorAnimation {
+                            duration: Theme.animFast
+                        }
+                    }
                 }
 
                 MouseArea {
@@ -85,8 +114,8 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                        root.currentIndex = rowDelegate.index
-                        root.activated(rowDelegate.index)
+                        root.currentIndex = rowDelegate.index;
+                        root.activated(rowDelegate.index);
                     }
                 }
             }

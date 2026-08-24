@@ -23,7 +23,9 @@ qt_add_qml_module(appServo
         Theme.qml
         Session.qml
 
+        components/AiChatInput.qml
         components/BottomDrawer.qml
+        components/BusyBars.qml
         components/DataTable.qml
         components/EmptyState.qml
         components/EditorMenu.qml
@@ -32,6 +34,7 @@ qt_add_qml_module(appServo
         components/EntityList.qml
         components/IconButton.qml
         components/LinePlot.qml
+        components/LoadingState.qml
         components/MediaSourceDelegate.qml
         components/MetricReadout.qml
         components/PageToolbar.qml
@@ -52,6 +55,7 @@ qt_add_qml_module(appServo
         components/TopTab.qml
         components/ViewportSurface.qml
 
+        workspaces/AiWorkspace.qml
         workspaces/CapabilitiesWorkspace.qml
         workspaces/DiagnoseWorkspace.qml
         workspaces/PrepareWorkspace.qml
@@ -61,6 +65,8 @@ qt_add_qml_module(appServo
         workspaces/WorldsWorkspace.qml
 
     SOURCES
+        chat/AiChatController.cpp
+        chat/AiChatController.h
         media/MediaSourceModel.cpp
         media/MediaSourceModel.h
         reconstruction/ReconstructionController.cpp
@@ -78,6 +84,7 @@ qt_add_qml_module(appServo
 
     RESOURCES
         assets/servo-logo.png
+        icons/assistant.svg
         icons/app.svg
         icons/back.svg
         icons/build.svg
@@ -104,6 +111,7 @@ qt_add_qml_module(appServo
         icons/inspector.svg
         icons/maximize.svg
         icons/minimize.svg
+        icons/moon.svg
         icons/more.svg
         icons/orbit.svg
         icons/open.svg
@@ -121,6 +129,7 @@ qt_add_qml_module(appServo
         icons/settings.svg
         icons/stop.svg
         icons/storage.svg
+        icons/sun.svg
         icons/table.svg
         icons/terminal.svg
         icons/train.svg
@@ -131,6 +140,7 @@ qt_add_qml_module(appServo
 )
 
 target_include_directories(appServo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/chat
     ${CMAKE_CURRENT_SOURCE_DIR}/media
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
     ${CMAKE_CURRENT_SOURCE_DIR}/rendering
@@ -163,6 +173,7 @@ target_link_libraries(appServo
     PRIVATE
         Qt6::Concurrent
         Qt6::GuiPrivate
+        Qt6::Network
         Qt6::Quick
         Qt6::Quick3D
         Qt6::QuickControls2

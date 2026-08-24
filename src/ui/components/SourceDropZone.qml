@@ -11,17 +11,22 @@ Rectangle {
 
     property bool acceptingDrop: dropArea.containsDrag
 
-    implicitHeight: 176
+    implicitHeight: 172
+    radius: Theme.cornerCard + 2
     color: acceptingDrop ? Theme.selection : Theme.field
-    border.width: acceptingDrop ? 2 : 1
-    border.color: acceptingDrop ? Theme.selectionBorder : Theme.borderStrong
-    radius: Theme.cornerControl
+
+    Behavior on color {
+        ColorAnimation {
+            duration: Theme.animBase
+            easing.type: Easing.OutCubic
+        }
+    }
 
     DropArea {
         id: dropArea
         anchors.fill: parent
 
-        onDropped: function(drop) {
+        onDropped: function (drop) {
             if (!drop.hasUrls)
                 return;
             root.urlsDropped(drop.urls);
@@ -31,26 +36,64 @@ Rectangle {
 
     ColumnLayout {
         anchors.centerIn: parent
-        width: Math.min(parent.width - 40, 560)
-        spacing: 8
+        width: Math.min(parent.width - 48, 560)
+        spacing: 10
 
-        SvgIcon {
-            source: Theme.icon("open")
-            iconSize: 30
+        Item {
+            id: tileWrap
             Layout.alignment: Qt.AlignHCenter
-            opacity: root.acceptingDrop ? 1 : 0.78
+            Layout.preferredWidth: 46
+            Layout.preferredHeight: 46
+
+            Rectangle {
+                anchors.fill: parent
+                radius: Theme.cornerCard
+                color: root.acceptingDrop ? Theme.accent : Theme.panelRaised
+
+                Behavior on color {
+                    ColorAnimation {
+                        duration: Theme.animBase
+                    }
+                }
+            }
+
+            SvgIcon {
+                id: tileIcon
+                anchors.centerIn: parent
+                source: Theme.icon("open")
+                iconSize: 19
+                color: root.acceptingDrop ? Theme.accentText : Theme.textSecondary
+                scale: root.acceptingDrop ? 1.12 : 1.0
+
+                Behavior on color {
+                    ColorAnimation {
+                        duration: Theme.animBase
+                    }
+                }
+
+                Behavior on scale {
+                    NumberAnimation {
+                        duration: Theme.animMove
+                        easing.type: Easing.OutBack
+                    }
+                }
+            }
         }
 
         Text {
             Layout.fillWidth: true
-            text: root.acceptingDrop
-                  ? "Release to add these sources"
-                  : "Drop images, videos, or folders here"
-            color: Theme.text
+            text: root.acceptingDrop ? "Release to add these sources" : "Drop images, videos, or folders here"
+            color: root.acceptingDrop ? Theme.text : Theme.textSecondary
             font.family: Theme.uiFont
-            font.pixelSize: 15
+            font.pixelSize: 14
             font.weight: Font.DemiBold
             horizontalAlignment: Text.AlignHCenter
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: Theme.animBase
+                }
+            }
         }
 
         Text {
@@ -65,6 +108,7 @@ Rectangle {
 
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: 2
             spacing: 7
 
             TextButton {

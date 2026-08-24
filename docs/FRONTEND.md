@@ -6,7 +6,13 @@ Servo's desktop frontend is a Qt 6.11/QML workbench. It provides the production 
 
 `Main.qml` owns the menu bar, compact workspace selector, project context, measured performance readouts, settings, global debug drawer, shortcuts, and status strip. Each workflow is loaded as an isolated workspace under `src/ui/workspaces`.
 
-The workspaces are Create World, Worlds, Runs, Diagnose, Train, Verify, and Capabilities. They share one global navigation control rather than duplicating a top navigation bar and left activity rail.
+The workspaces are Create World, Worlds, Runs, Diagnose, Train, Verify, Capabilities, and Assistant. They share one global navigation control rather than duplicating a top navigation bar and left activity rail.
+
+## Assistant
+
+`AiChatController` is a native `QAbstractListModel` and asynchronous Qt Network client for Gemini's Interactions API. It accepts text and up to six local images, preserves provider conversation state through `previous_interaction_id`, and exposes only actual provider responses. Set `GOOGLE_API_KEY` or `GEMINI_API_KEY` before starting Servo; without a key the composer stays disabled and explains why. No simulated assistant output is used.
+
+The QML composer owns responsive text entry, attachment previews, model and effort selection, cancellation, and keyboard submission. Network state, payload construction, response parsing, and error handling remain in C++.
 
 ## Create World
 
@@ -28,7 +34,7 @@ The model imposes no artificial file-size, duration, resolution, or FPS cap. Thi
 - Near-black viewport, graphite chrome, and one-pixel pane boundaries.
 - Small radii only on controls and transient popups; docking surfaces remain square.
 - Blue-gray is reserved for focus and selection. Green, amber, and red are semantic states only.
-- Static SVG icons; no emoji, decorative dots, glow effects, or ambient animation.
+- Static SVG icons; no emoji, glow effects, or ambient animation. Small pixel-grid motion is reserved for active work and can be disabled in Settings.
 - All hover, focus, selected, and disabled states preserve text contrast.
 
 ## World viewport

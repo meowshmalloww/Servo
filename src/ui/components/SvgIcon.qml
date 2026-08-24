@@ -1,17 +1,42 @@
 import QtQuick
+import QtQuick.Effects
+import "."
 
-Image {
+Item {
     id: root
 
-    property int iconSize: 16
+    property int iconSize: Theme.iconMd
+    property url source
+    property color color: Theme.iconDefault
+    property bool tinted: source.toString().indexOf("/icons/") >= 0
 
-    width: iconSize
-    height: iconSize
-    sourceSize.width: iconSize
-    sourceSize.height: iconSize
-    fillMode: Image.PreserveAspectFit
-    asynchronous: false
-    cache: true
-    smooth: true
-    mipmap: false
+    implicitWidth: iconSize
+    implicitHeight: iconSize
+
+    Image {
+        id: glyph
+        anchors.centerIn: parent
+        width: root.iconSize
+        height: root.iconSize
+        sourceSize.width: Math.ceil(root.iconSize * 2)
+        sourceSize.height: Math.ceil(root.iconSize * 2)
+        fillMode: Image.PreserveAspectFit
+        asynchronous: false
+        cache: true
+        smooth: true
+        mipmap: false
+        visible: false
+        source: root.source
+    }
+
+    MultiEffect {
+        anchors.fill: glyph
+        source: glyph
+        autoPaddingEnabled: false
+        brightness: 0.0
+        contrast: 0.0
+        saturation: 0.0
+        colorization: root.tinted ? 1.0 : 0.0
+        colorizationColor: root.color
+    }
 }

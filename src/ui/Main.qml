@@ -19,8 +19,10 @@ ApplicationWindow {
     title: Session.projectOpen ? "Servo - " + Session.projectName : "Servo"
     color: Theme.window
 
-    readonly property var workspaceNames: ["Create World", "Worlds", "Runs", "Diagnose", "Train", "Verify", "Capabilities"]
-    readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/DiagnoseWorkspace.qml", "workspaces/TrainWorkspace.qml", "workspaces/VerifyWorkspace.qml", "workspaces/CapabilitiesWorkspace.qml"]
+    readonly property var workspaceNames: ["Create World", "Worlds", "Runs", "Diagnose", "Train", "Verify", "Capabilities", "Assistant"]
+    readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/DiagnoseWorkspace.qml", "workspaces/TrainWorkspace.qml", "workspaces/VerifyWorkspace.qml", "workspaces/CapabilitiesWorkspace.qml", "workspaces/AiWorkspace.qml"]
+
+    readonly property var workspaceIcons: ["build", "world", "run", "diagnose", "train", "verify", "capability", "assistant"]
 
     function showDebugTab(index) {
         debugDrawer.showTab(index);
@@ -46,12 +48,15 @@ ApplicationWindow {
         property bool showPerformanceMetrics: true
         property bool debugExpanded: false
         property int debugTab: 0
+        property bool darkTheme: true
+        property bool motionEnabled: true
     }
 
     Component.onCompleted: {
-        Session.workspaceIndex = Math.max(0, Math.min(6, appSettings.selectedWorkspace));
+        Theme.dark = appSettings.darkTheme;
+        Theme.motionEnabled = appSettings.motionEnabled;
+        Session.workspaceIndex = Math.max(0, Math.min(window.workspaceNames.length - 1, appSettings.selectedWorkspace));
         Session.showPerformanceMetrics = appSettings.showPerformanceMetrics;
-        workspaceSelector.currentIndex = Session.workspaceIndex;
         debugDrawer.currentTab = Math.max(0, Math.min(2, appSettings.debugTab));
         debugDrawer.expanded = appSettings.debugExpanded;
         Session.worldModel = WorldLibraryModel;
@@ -59,10 +64,23 @@ ApplicationWindow {
     }
 
     Connections {
+        target: Theme
+        function onDarkChanged() {
+            appSettings.darkTheme = Theme.dark;
+        }
+        function onMotionEnabledChanged() {
+            appSettings.motionEnabled = Theme.motionEnabled;
+        }
+    }
+
+    function toggleTheme() {
+        Theme.dark = !Theme.dark;
+    }
+
+    Connections {
         target: Session
         function onWorkspaceIndexChanged() {
             appSettings.selectedWorkspace = Session.workspaceIndex;
-            workspaceSelector.currentIndex = Session.workspaceIndex;
             Session.viewportFocusMode = false;
         }
         function onShowPerformanceMetricsChanged() {
@@ -138,6 +156,10 @@ ApplicationWindow {
         sequence: "Ctrl+7"
         onActivated: Session.workspaceIndex = 6
     }
+    Shortcut {
+        sequence: "Ctrl+8"
+        onActivated: Session.workspaceIndex = 7
+    }
 
     menuBar: MenuBar {
         id: mainMenu
@@ -145,8 +167,6 @@ ApplicationWindow {
 
         background: Rectangle {
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
         }
 
         delegate: MenuBarItem {
@@ -157,17 +177,30 @@ ApplicationWindow {
 
             contentItem: Text {
                 text: menuItem.text
-                color: menuItem.enabled ? Theme.textSecondary : Theme.textDisabled
+                color: menuItem.enabled ? (menuItem.highlighted ? Theme.accent : Theme.textSecondary) : Theme.textDisabled
                 font.family: Theme.uiFont
                 font.pixelSize: 10
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
+
+                Behavior on color {
+                    ColorAnimation {
+                        duration: Theme.animFast
+                    }
+                }
             }
 
             background: Rectangle {
+                radius: Theme.cornerControl
+                anchors.fill: parent
+                anchors.margins: 3
                 color: menuItem.highlighted ? Theme.panelHover : "transparent"
-                border.width: menuItem.highlighted ? 1 : 0
-                border.color: Theme.borderStrong
+
+                Behavior on color {
+                    ColorAnimation {
+                        duration: Theme.animFast
+                    }
+                }
             }
         }
 
@@ -273,207 +306,310 @@ ApplicationWindow {
         }
     }
 
-    ColumnLayout {
+    RowLayout {
         anchors.fill: parent
         spacing: 0
 
         Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Theme.topBarHeight
+            id: activityRail
+            Layout.fillHeight: true
+            Layout.preferredWidth: Theme.railWidth
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
 
-            RowLayout {
+            ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 9
-                anchors.rightMargin: 7
-                spacing: 7
+                anchors.topMargin: 8
+                spacing: 3
 
-                SvgIcon {
-                    source: Theme.icon("app")
-                    iconSize: 25
-                }
-
-                Text {
-                    text: "SERVO"
-                    color: Theme.text
-                    font.family: Theme.uiFont
-                    font.pixelSize: 14
-                    font.weight: Font.Bold
-                    font.letterSpacing: 0.9
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: 22
-                    color: Theme.border
-                    Layout.leftMargin: 2
-                    Layout.rightMargin: 2
-                }
-
-                SelectField {
-                    id: workspaceSelector
-                    Layout.preferredWidth: 142
-                    Layout.preferredHeight: 28
-                    Layout.fillWidth: false
+                Repeater {
                     model: window.workspaceNames
-                    currentIndex: 0
-                    onActivated: Session.workspaceIndex = currentIndex
-                }
 
-                SvgIcon {
-                    source: Theme.icon("chevron-right")
-                    iconSize: 11
-                    opacity: 0.55
-                }
+                    delegate: Item {
+                        id: railItem
+                        required property int index
+                        required property string modelData
 
-                Text {
-                    Layout.maximumWidth: 270
-                    text: Session.projectOpen ? Session.projectName : "No project"
-                    color: Session.projectOpen ? Theme.textSecondary : Theme.textMuted
-                    font.family: Theme.uiFont
-                    font.pixelSize: 10
-                    elide: Text.ElideMiddle
-                }
+                        readonly property bool active: Session.workspaceIndex === railItem.index
 
-                TextButton {
-                    visible: !Session.projectOpen
-                    text: "Open Project"
-                    iconSource: Theme.icon("open")
-                    compact: true
-                    onClicked: projectDialog.open()
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 40
+
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: 5
+                            radius: Theme.cornerCard - 2
+                            color: railItem.active ? Theme.selection : (railHover.containsMouse ? Theme.panelRaised : "transparent")
+
+                            Behavior on color {
+                                ColorAnimation {
+                                    duration: Theme.animFast
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: railItem.active ? 3 : 0
+                            height: 16
+                            radius: 1.5
+                            color: Theme.accent
+
+                            Behavior on width {
+                                NumberAnimation {
+                                    duration: Theme.animMove
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                        }
+
+                        SvgIcon {
+                            anchors.centerIn: parent
+                            source: Theme.icon(window.workspaceIcons[railItem.index])
+                            iconSize: Theme.iconXl
+                            color: railItem.active ? Theme.accent : (railHover.containsMouse ? Theme.text : Theme.textMuted)
+                            scale: railHover.pressed ? 0.9 : 1.0
+
+                            Behavior on color {
+                                ColorAnimation {
+                                    duration: Theme.animFast
+                                }
+                            }
+
+                            Behavior on scale {
+                                NumberAnimation {
+                                    duration: Theme.animFast
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            id: railHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: Session.workspaceIndex = railItem.index
+                        }
+
+                        ToolTip {
+                            visible: railHover.containsMouse
+                            text: railItem.modelData + "  ·  Ctrl+" + (railItem.index + 1)
+                            delay: 650
+                        }
+                    }
                 }
 
                 Item {
-                    Layout.fillWidth: true
-                }
-
-                RowLayout {
-                    visible: Session.showPerformanceMetrics
-                    spacing: 9
-
-                    MetricReadout {
-                        label: "FPS"
-                        value: RuntimeMetrics.presentationRateText
-                        toolTip: "Frames actually presented by Servo. The active monitor can refresh at "
-                                 + RuntimeMetrics.displayRefreshText
-                                 + "; that refresh rate is a ceiling, not render performance."
-                    }
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.preferredHeight: 16
-                        color: Theme.borderSoft
-                    }
-                    MetricReadout {
-                        label: "CPU"
-                        value: RuntimeMetrics.cpuPercent < 0 ? "--" : Number(RuntimeMetrics.cpuPercent).toFixed(1) + "%"
-                        toolTip: "Current Servo process CPU utilization"
-                    }
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.preferredHeight: 16
-                        color: Theme.borderSoft
-                    }
-                    MetricReadout {
-                        label: "RAM"
-                        value: RuntimeMetrics.residentMemoryText
-                        toolTip: "Current Servo process working set"
-                    }
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.preferredHeight: 16
-                        color: Theme.borderSoft
-                    }
-                    MetricReadout {
-                        label: "RHI"
-                        value: RuntimeMetrics.graphicsApi
-                        toolTip: RuntimeMetrics.graphicsDevice + " (" + RuntimeMetrics.graphicsDeviceType + ")"
-                    }
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: 22
-                    color: Theme.border
-                    Layout.leftMargin: 3
-                }
-
-                IconButton {
-                    iconSource: Theme.icon("settings")
-                    toolTip: "Settings"
-                    buttonSize: 29
-                    onClicked: settingsDialog.open()
+                    Layout.fillHeight: true
                 }
             }
         }
 
-        Loader {
-            id: workspaceLoader
+        ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            asynchronous: false
-            source: window.workspaceFiles[Session.workspaceIndex]
-        }
+            spacing: 0
 
-        BottomDrawer {
-            id: debugDrawer
-            Layout.fillWidth: true
-            Layout.preferredHeight: implicitHeight
-            tabs: ["Problems", "Output", "Terminal"]
-        }
+            Rectangle {
+                id: topBar
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.topBarHeight
+                color: Theme.chrome
 
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Theme.statusHeight
-            color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 7
+                    spacing: 7
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 8
-                spacing: 5
+                    SvgIcon {
+                        source: Theme.icon("app")
+                        iconSize: 24
+                        tinted: false
+                    }
 
-                SvgIcon {
-                    source: Session.projectOpen ? Theme.icon("project") : Theme.icon("info")
-                    iconSize: 12
+                    Text {
+                        text: "SERVO"
+                        color: Theme.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                        font.weight: Font.Bold
+                        font.letterSpacing: 0.9
+                    }
+
+                    Text {
+                        Layout.leftMargin: 6
+                        Layout.maximumWidth: 270
+                        text: Session.projectOpen ? Session.projectName : "No project"
+                        color: Session.projectOpen ? Theme.textSecondary : Theme.textMuted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 11
+                        elide: Text.ElideMiddle
+                    }
+
+                    TextButton {
+                        visible: !Session.projectOpen
+                        text: "Open Project"
+                        iconSource: Theme.icon("open")
+                        compact: true
+                        onClicked: projectDialog.open()
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    RowLayout {
+                        visible: Session.showPerformanceMetrics
+                        spacing: 9
+
+                        MetricReadout {
+                            label: "FPS"
+                            value: RuntimeMetrics.presentationRateText
+                            toolTip: "Frames actually presented by Servo. The active monitor can refresh at "
+                                     + RuntimeMetrics.displayRefreshText
+                                     + "; that refresh rate is a ceiling, not render performance."
+                        }
+                        MetricReadout {
+                            label: "CPU"
+                            value: RuntimeMetrics.cpuPercent < 0 ? "--" : Number(RuntimeMetrics.cpuPercent).toFixed(1) + "%"
+                            toolTip: "Current Servo process CPU utilization"
+                        }
+                        MetricReadout {
+                            label: "RAM"
+                            value: RuntimeMetrics.residentMemoryText
+                            toolTip: "Current Servo process working set"
+                        }
+                        MetricReadout {
+                            label: "RHI"
+                            value: RuntimeMetrics.graphicsApi
+                            toolTip: RuntimeMetrics.graphicsDevice + " (" + RuntimeMetrics.graphicsDeviceType + ")"
+                        }
+                    }
+
+                    IconButton {
+                        iconSource: Theme.icon(Theme.dark ? "sun" : "moon")
+                        toolTip: Theme.dark ? "Switch to light theme" : "Switch to dark theme"
+                        buttonSize: 27
+                        onClicked: window.toggleTheme()
+                    }
+
+                    IconButton {
+                        iconSource: Theme.icon("settings")
+                        toolTip: "Settings"
+                        buttonSize: 27
+                        rotation: settingsHover.hovered ? 45 : 0
+
+                        Behavior on rotation {
+                            NumberAnimation {
+                                duration: Theme.animMove * 2
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+
+                        HoverHandler {
+                            id: settingsHover
+                        }
+
+                        onClicked: settingsDialog.open()
+                    }
                 }
+            }
 
-                Text {
-                    text: Session.projectOpen ? Session.projectUrl.toString().replace("file:///", "") : "No project loaded"
-                    color: Theme.textMuted
-                    font.family: Theme.monoFont
-                    font.pixelSize: 8
-                    elide: Text.ElideMiddle
-                    Layout.maximumWidth: 440
+            Item {
+                id: workspaceHost
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+
+                Loader {
+                    id: workspaceLoader
+                    anchors.fill: parent
+                    asynchronous: false
+                    source: window.workspaceFiles[Session.workspaceIndex]
+
+                    property real appear: 1
+
+                    opacity: appear
+                    transform: Translate {
+                        y: (1 - workspaceLoader.appear) * 12
+                    }
+
+                    onSourceChanged: {
+                        workspaceLoader.appear = 0;
+                    }
+
+                    onLoaded: {
+                        appearAnimation.restart();
+                    }
+
+                    NumberAnimation {
+                        id: appearAnimation
+                        target: workspaceLoader
+                        property: "appear"
+                        from: 0
+                        to: 1
+                        duration: Theme.animSlow
+                        easing.type: Easing.OutCubic
+                    }
                 }
+            }
 
-                Item {
-                    Layout.fillWidth: true
-                }
+            BottomDrawer {
+                id: debugDrawer
+                Layout.fillWidth: true
+                Layout.preferredHeight: implicitHeight
+                tabs: ["Problems", "Output", "Terminal"]
+            }
 
-                Text {
-                    text: RuntimeMetrics.vulkanReady
-                          ? "Vulkan · " + RuntimeMetrics.graphicsDevice
-                          : "Vulkan initializing"
-                    color: Theme.textMuted
-                    font.family: Theme.uiFont
-                    font.pixelSize: 8
-                }
+            Rectangle {
+                id: statusBar
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.statusHeight
+                color: Theme.chrome
 
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: 12
-                    color: Theme.borderSoft
-                }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    spacing: 6
 
-                Text {
-                    text: "Local frontend"
-                    color: Theme.textMuted
-                    font.family: Theme.uiFont
-                    font.pixelSize: 8
+                    SvgIcon {
+                        source: Session.projectOpen ? Theme.icon("project") : Theme.icon("info")
+                        iconSize: Theme.iconXs
+                        color: Theme.textDisabled
+                    }
+
+                    Text {
+                        text: Session.projectOpen ? Session.projectUrl.toString().replace("file:///", "") : "No project loaded"
+                        color: Theme.textMuted
+                        font.family: Theme.monoFont
+                        font.pixelSize: 9
+                        elide: Text.ElideMiddle
+                        Layout.maximumWidth: 440
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    Text {
+                        text: RuntimeMetrics.vulkanReady ? "Vulkan · " + RuntimeMetrics.graphicsDevice : "Vulkan initializing"
+                        color: Theme.textMuted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 9
+                    }
+
+                    Text {
+                        text: "Local frontend"
+                        color: Theme.textMuted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 9
+                        Layout.leftMargin: 6
+                    }
                 }
             }
         }
@@ -497,18 +633,47 @@ ApplicationWindow {
 
     SettingsDialog {
         id: settingsDialog
-        anchors.centerIn: Overlay.overlay
+        parent: Overlay.overlay
+        anchors.centerIn: parent
     }
 
     Popup {
         id: aboutDialog
-        width: 430
+        parent: Overlay.overlay
+        popupType: Popup.Item
+        width: Math.min(430, parent.width - 32)
         height: 238
-        anchors.centerIn: Overlay.overlay
+        anchors.centerIn: parent
         modal: true
         focus: true
         padding: 0
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        enter: Transition {
+            NumberAnimation {
+                property: "opacity"
+                from: 0
+                to: 1
+                duration: Theme.animBase
+                easing.type: Easing.OutCubic
+            }
+            NumberAnimation {
+                property: "scale"
+                from: 0.94
+                to: 1
+                duration: Theme.animSlow
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        exit: Transition {
+            NumberAnimation {
+                property: "opacity"
+                to: 0
+                duration: Theme.animFast
+                easing.type: Easing.InCubic
+            }
+        }
 
         background: Rectangle {
             radius: Theme.cornerPopup
@@ -536,7 +701,7 @@ ApplicationWindow {
 
                 SvgIcon {
                     source: Theme.appLogo
-                    iconSize: 64
+                    iconSize: 56
                     Layout.alignment: Qt.AlignTop
                 }
 
@@ -549,7 +714,7 @@ ApplicationWindow {
                         text: "SERVO"
                         color: Theme.text
                         font.family: Theme.uiFont
-                        font.pixelSize: 20
+                        font.pixelSize: 19
                         font.weight: Font.Bold
                         font.letterSpacing: 1
                     }
@@ -578,14 +743,12 @@ ApplicationWindow {
                     }
                     TextButton {
                         text: "Close"
+                        tone: "primary"
                         Layout.alignment: Qt.AlignRight
                         onClicked: aboutDialog.close()
                     }
                 }
             }
         }
-
-        enter: Transition {}
-        exit: Transition {}
     }
 }

@@ -1,4 +1,4 @@
-pragma ComponentBehavior: Bound
+﻿pragma ComponentBehavior: Bound
 
 import QtCore
 import QtQuick
@@ -30,6 +30,10 @@ Item {
     property bool moveUp: false
     property bool moveDown: false
     property int visualizationMode: 0
+    readonly property bool exploreReady: root.exploreMode
+                                        && gaussianView.ready
+                                        && !gaussianView.loading
+                                        && gaussianView.errorString.length === 0
 
     onSelectedPlyPathChanged: {
         if (root.selectedPlyPath.length === 0)
@@ -121,7 +125,7 @@ Item {
     }
 
     FrameAnimation {
-        running: root.exploreMode && gaussianView.ready
+        running: root.exploreReady
                  && (root.moveForward || root.moveBackward
                      || root.moveLeft || root.moveRight
                      || root.moveUp || root.moveDown)
@@ -208,6 +212,7 @@ Item {
             TextButton {
                 text: "Create world"
                 iconSource: Theme.icon("plus")
+                tone: "primary"
                 onClicked: Session.workspaceIndex = 0
             }
 
@@ -223,10 +228,14 @@ Item {
             visible: WorldLibraryModel.lastError.length > 0 || root.noticeText.length > 0
             Layout.fillWidth: true
             Layout.preferredHeight: visible ? 38 : 0
-            color: WorldLibraryModel.lastError.length > 0 ? "#332123" : "#213024"
-            border.width: 1
-            border.color: WorldLibraryModel.lastError.length > 0
-                          ? Theme.error : Theme.success
+            color: WorldLibraryModel.lastError.length > 0
+                   ? Theme.tintError : Theme.tintSuccess
+
+            Behavior on color {
+                ColorAnimation {
+                    duration: Theme.animBase
+                }
+            }
 
             RowLayout {
                 anchors.fill: parent
@@ -237,7 +246,9 @@ Item {
                 SvgIcon {
                     source: Theme.icon(WorldLibraryModel.lastError.length > 0
                                        ? "error" : "check")
-                    iconSize: 14
+                    iconSize: Theme.iconSm
+                    color: WorldLibraryModel.lastError.length > 0
+                           ? Theme.error : Theme.success
                 }
                 Text {
                     Layout.fillWidth: true
@@ -251,7 +262,7 @@ Item {
                 }
                 IconButton {
                     iconSource: Theme.icon("close")
-                    buttonSize: 26
+                    buttonSize: 24
                     toolTip: "Dismiss"
                     onClicked: {
                         WorldLibraryModel.clearLastError();
@@ -336,7 +347,7 @@ Item {
                         reuseItems: true
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                        delegate: Rectangle {
+                        delegate: Item {
                             id: worldDelegate
 
                             required property int index
@@ -351,28 +362,54 @@ Item {
                             required property url previewUrl
                             required property bool published
 
+                            readonly property bool isSelected:
+                                worldDelegate.worldId === WorldLibraryModel.selectedWorldId
+
                             width: worldList.width
-                            height: 98
-                            color: worldDelegate.worldId === WorldLibraryModel.selectedWorldId
-                                   ? Theme.selection
-                                   : (worldArea.containsMouse ? Theme.panelHover
-                                                              : Theme.panel)
-                            border.width: 1
-                            border.color: worldDelegate.worldId
-                                          === WorldLibraryModel.selectedWorldId
-                                          ? Theme.selectionBorder : Theme.borderSoft
+                            height: 96
+
+                            Rectangle {
+                                anchors.fill: parent
+                                anchors.margins: 3
+                                radius: Theme.cornerCard - 2
+                                color: worldDelegate.isSelected ? Theme.selection : (worldArea.containsMouse ? Theme.panelRaised : "transparent")
+
+                                Behavior on color {
+                                    ColorAnimation {
+                                        duration: Theme.animFast
+                                        easing.type: Easing.OutCubic
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                visible: worldDelegate.isSelected
+                                anchors.left: parent.left
+                                anchors.leftMargin: 5
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 3
+                                height: 40
+                                radius: 1.5
+                                color: Theme.accent
+
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.animBase
+                                    }
+                                }
+                            }
 
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.margins: 8
-                                spacing: 9
+                                anchors.margins: 12
+                                spacing: 10
 
                                 Rectangle {
-                                    Layout.preferredWidth: 84
-                                    Layout.fillHeight: true
+                                    Layout.preferredWidth: 68
+                                    Layout.preferredHeight: 68
+                                    Layout.alignment: Qt.AlignVCenter
                                     color: Theme.viewport
-                                    border.width: 1
-                                    border.color: Theme.border
+                                    radius: Theme.cornerTile
                                     clip: true
 
                                     Image {
@@ -389,8 +426,8 @@ Item {
                                         anchors.centerIn: parent
                                         visible: worldDelegate.previewUrl.toString().length === 0
                                         source: Theme.icon("world")
-                                        iconSize: 24
-                                        opacity: 0.55
+                                        iconSize: 20
+                                        color: Theme.textDisabled
                                     }
                                 }
 
@@ -435,18 +472,20 @@ Item {
                                                 + worldDelegate.sizeText
                                         color: Theme.textSecondary
                                         font.family: Theme.monoFont
-                                        font.pixelSize: 8
+                                        font.pixelSize: 9
                                         elide: Text.ElideRight
                                     }
 
-                                    Item { Layout.fillHeight: true }
+                                    Item {
+                                        Layout.fillHeight: true
+                                    }
 
                                     Text {
                                         Layout.fillWidth: true
                                         text: worldDelegate.createdText
                                         color: Theme.textDisabled
                                         font.family: Theme.uiFont
-                                        font.pixelSize: 8
+                                        font.pixelSize: 9
                                         elide: Text.ElideRight
                                     }
                                 }
@@ -487,18 +526,17 @@ Item {
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 34
-                        color: Theme.chrome
-                        border.width: 1
-                        border.color: Theme.borderSoft
+                        color: "transparent"
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 9
-                            anchors.rightMargin: 9
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 10
                             spacing: 7
                             SvgIcon {
                                 source: Theme.icon("storage")
-                                iconSize: 13
+                                iconSize: Theme.iconSm
+                                color: Theme.textDisabled
                             }
                             Text {
                                 text: WorldLibraryModel.totalBytesText + " used by completed jobs"
@@ -506,12 +544,15 @@ Item {
                                 font.family: Theme.uiFont
                                 font.pixelSize: 9
                             }
-                            Item { Layout.fillWidth: true }
-                            BusyIndicator {
+                            Item {
+                                Layout.fillWidth: true
+                            }
+                            LoadingState {
                                 visible: WorldLibraryModel.busy
-                                running: visible
-                                implicitWidth: 15
-                                implicitHeight: 15
+                                running: WorldLibraryModel.busy
+                                showElapsed: false
+                                label: "Refreshing"
+                                variant: "Drive"
                             }
                         }
                     }
@@ -532,28 +573,22 @@ Item {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 34
                         color: Theme.chrome
-                        border.width: 1
-                        border.color: Theme.borderSoft
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 8
-                            anchors.rightMargin: 6
-                            spacing: 8
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 8
+                            spacing: 10
 
-                            StatusBadge {
-                                visible: root.hasSelection
-                                text: "Selected"
-                                tone: "info"
-                            }
                             Text {
                                 Layout.fillWidth: true
                                 text: root.hasSelection
                                       ? String(root.selectedWorld.displayName)
                                       : "No world selected"
-                                color: Theme.textSecondary
+                                color: root.hasSelection ? Theme.text : Theme.textMuted
                                 font.family: Theme.uiFont
-                                font.pixelSize: 10
+                                font.pixelSize: 11
+                                font.weight: Font.DemiBold
                                 elide: Text.ElideRight
                             }
                             TextButton {
@@ -561,6 +596,7 @@ Item {
                                 compact: true
                                 text: root.exploreMode ? "Validation" : "Explore"
                                 iconSource: Theme.icon(root.exploreMode ? "image" : "play")
+                                tone: root.selectedPlyPath.length > 0 && !root.exploreMode ? "primary" : "default"
                                 enabled: root.selectedPlyPath.length > 0
                                 onClicked: root.toggleExplore()
                             }
@@ -578,18 +614,18 @@ Item {
                                                     String(root.selectedWorld.worldId));
                                 }
                             }
-                            IconButton {
-                                iconSource: Theme.icon(Session.viewportFocusMode
-                                                      ? "minimize" : "maximize")
-                                toolTip: Session.viewportFocusMode
-                                         ? "Restore library and inspector"
-                                         : "Focus preview"
-                                selected: Session.viewportFocusMode
-                                buttonSize: 25
-                                onClicked: Session.viewportFocusMode = !Session.viewportFocusMode
+                                    IconButton {
+                                        iconSource: Theme.icon(Session.viewportFocusMode
+                                                              ? "minimize" : "maximize")
+                                        toolTip: Session.viewportFocusMode
+                                                 ? "Restore library and inspector"
+                                                 : "Focus preview"
+                                        selected: Session.viewportFocusMode
+                                        buttonSize: 24
+                                        onClicked: Session.viewportFocusMode = !Session.viewportFocusMode
+                                    }
                             }
                         }
-                    }
 
                     Item {
                         Layout.fillWidth: true
@@ -728,34 +764,36 @@ Item {
                                 z: 2
                                 anchors.centerIn: parent
                                 width: Math.min(440, parent.width - 48)
-                                height: gaussianView.errorString.length > 0 ? 142 : 112
+                                height: Math.max(112, Math.min(190, overlayStatus.implicitHeight + 66))
                                 visible: root.exploreMode
                                          && (gaussianView.loading
                                              || gaussianView.errorString.length > 0)
-                                color: "#e5191c1e"
-                                border.width: 1
-                                border.color: gaussianView.errorString.length > 0
-                                              ? Theme.error : Theme.borderStrong
+                                color: Theme.overlayHud
                                 radius: Theme.cornerPopup
 
                                 ColumnLayout {
                                     anchors.fill: parent
                                     anchors.margins: 14
                                     spacing: 8
-                                    BusyIndicator {
+
+                                    LoadingState {
                                         Layout.alignment: Qt.AlignHCenter
                                         visible: gaussianView.loading
-                                        running: visible
-                                        implicitWidth: 24
-                                        implicitHeight: 24
+                                        running: gaussianView.loading
+                                        label: "Loading world"
+                                        variant: "Drive"
                                     }
+
                                     SvgIcon {
                                         Layout.alignment: Qt.AlignHCenter
                                         visible: gaussianView.errorString.length > 0
                                         source: Theme.icon("error")
-                                        iconSize: 20
+                                        iconSize: Theme.iconXl
+                                        color: Theme.error
                                     }
+
                                     Text {
+                                        id: overlayStatus
                                         Layout.fillWidth: true
                                         text: gaussianView.errorString.length > 0
                                               ? gaussianView.errorString
@@ -766,14 +804,37 @@ Item {
                                         font.pixelSize: 10
                                         horizontalAlignment: Text.AlignHCenter
                                         wrapMode: Text.WordWrap
+                                        maximumLineCount: 5
+                                        elide: Text.ElideRight
                                     }
-                                    ProgressBar {
+
+                                    Rectangle {
+                                        id: loadTrack
                                         Layout.fillWidth: true
                                         visible: gaussianView.loading
-                                        indeterminate: true
-                                        from: 0
-                                        to: 1
-                                        value: gaussianView.loadProgress
+                                        Layout.preferredHeight: 3
+                                        radius: 1.5
+                                        color: Theme.panelHover
+                                        clip: true
+
+                                        Rectangle {
+                                            id: loadRunner
+                                            width: parent.width * 0.32
+                                            height: parent.height
+                                            radius: 1.5
+                                            color: Theme.accent
+
+                                            SequentialAnimation on x {
+                                                running: gaussianView.loading && Theme.motionEnabled
+                                                loops: Animation.Infinite
+                                                NumberAnimation {
+                                                    from: -loadRunner.width
+                                                    to: loadTrack.width
+                                                    duration: 1150
+                                                    easing.type: Easing.InOutQuad
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -785,10 +846,8 @@ Item {
                                 anchors.bottom: parent.bottom
                                 anchors.margins: 12
                                 height: 72
-                                visible: root.exploreMode && gaussianView.ready
-                                color: "#e5191c1e"
-                                border.width: 1
-                                border.color: Theme.borderStrong
+                                visible: root.exploreReady
+                                color: Theme.overlayHud
                                 radius: Theme.cornerPopup
 
                                 RowLayout {
@@ -877,10 +936,8 @@ Item {
                                 anchors.leftMargin: 12
                                 width: Math.min(760, parent.width - 24)
                                 height: 72
-                                visible: root.exploreMode && gaussianView.ready
-                                color: "#e5191c1e"
-                                border.width: 1
-                                border.color: Theme.borderStrong
+                                visible: root.exploreReady
+                                color: Theme.overlayHud
                                 radius: Theme.cornerPopup
 
                                 ColumnLayout {
@@ -938,15 +995,15 @@ Item {
                                                 gaussianView.forceActiveFocus();
                                             }
                                         }
-                                        Item { Layout.fillWidth: true }
+                                        Item {
+                                            Layout.fillWidth: true
+                                        }
                                         Rectangle {
                                             visible: diagnosticPalette.width > 650
                                             implicitWidth: 128
-                                            implicitHeight: 24
-                                            color: "#3b292b"
-                                            border.width: 1
-                                            border.color: Theme.warning
-                                            radius: Theme.cornerControl
+                                            implicitHeight: 22
+                                            color: Theme.tintWarning
+                                            radius: 8
                                             Text {
                                                 anchors.centerIn: parent
                                                 text: "NOT COLLISION READY"
@@ -954,6 +1011,7 @@ Item {
                                                 font.family: Theme.uiFont
                                                 font.pixelSize: 8
                                                 font.weight: Font.DemiBold
+                                                font.letterSpacing: 0.5
                                             }
                                         }
                                     }
@@ -977,12 +1035,10 @@ Item {
                                 anchors.leftMargin: 12
                                 width: Math.min(520, parent.width - 24)
                                 height: 42
-                                visible: root.exploreMode && gaussianView.ready
+                                visible: root.exploreReady
                                          && root.hasSelection
                                          && String(root.selectedWorld.qualityTone) === "warning"
-                                color: "#e5262116"
-                                border.width: 1
-                                border.color: Theme.warning
+                                color: Theme.overlayWarn
                                 radius: Theme.cornerPopup
 
                                 RowLayout {
@@ -992,7 +1048,8 @@ Item {
                                     spacing: 8
                                     SvgIcon {
                                         source: Theme.icon("warning")
-                                        iconSize: 15
+                                        iconSize: Theme.iconMd
+                                        color: Theme.warning
                                     }
                                     Text {
                                         Layout.fillWidth: true
@@ -1015,9 +1072,7 @@ Item {
                                 anchors.margins: 12
                                 height: 52
                                 visible: root.hasSelection && !root.exploreMode
-                                color: "#e5191c1e"
-                                border.width: 1
-                                border.color: Theme.borderStrong
+                                color: Theme.overlayHud
                                 radius: Theme.cornerPopup
 
                                 RowLayout {
@@ -1027,7 +1082,8 @@ Item {
                                     spacing: 9
                                     SvgIcon {
                                         source: Theme.icon("info")
-                                        iconSize: 15
+                                        iconSize: Theme.iconMd
+                                        color: Theme.info
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true
@@ -1297,6 +1353,32 @@ Item {
         modal: true
         closePolicy: Popup.CloseOnEscape
 
+        enter: Transition {
+            NumberAnimation {
+                property: "opacity"
+                from: 0
+                to: 1
+                duration: Theme.animBase
+                easing.type: Easing.OutCubic
+            }
+            NumberAnimation {
+                property: "scale"
+                from: 0.94
+                to: 1
+                duration: Theme.animSlow
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        exit: Transition {
+            NumberAnimation {
+                property: "opacity"
+                to: 0
+                duration: Theme.animFast
+                easing.type: Easing.InCubic
+            }
+        }
+
         background: Rectangle {
             color: Theme.panel
             border.width: 1
@@ -1307,8 +1389,7 @@ Item {
         header: Rectangle {
             implicitHeight: 42
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
+            radius: Theme.cornerPopup
             Text {
                 anchors.left: parent.left
                 anchors.leftMargin: 13
@@ -1347,13 +1428,14 @@ Item {
         footer: Rectangle {
             implicitHeight: 48
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
+            radius: Theme.cornerPopup
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 9
                 spacing: 7
-                Item { Layout.fillWidth: true }
+                Item {
+                    Layout.fillWidth: true
+                }
                 TextButton {
                     text: "Cancel"
                     onClicked: renameDialog.close()
@@ -1385,18 +1467,43 @@ Item {
         modal: true
         closePolicy: Popup.CloseOnEscape
 
+        enter: Transition {
+            NumberAnimation {
+                property: "opacity"
+                from: 0
+                to: 1
+                duration: Theme.animBase
+                easing.type: Easing.OutCubic
+            }
+            NumberAnimation {
+                property: "scale"
+                from: 0.94
+                to: 1
+                duration: Theme.animSlow
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        exit: Transition {
+            NumberAnimation {
+                property: "opacity"
+                to: 0
+                duration: Theme.animFast
+                easing.type: Easing.InCubic
+            }
+        }
+
         background: Rectangle {
             color: Theme.panel
             border.width: 1
-            border.color: Theme.error
+            border.color: Theme.borderStrong
             radius: Theme.cornerPopup
         }
 
         header: Rectangle {
             implicitHeight: 42
-            color: "#332123"
-            border.width: 1
-            border.color: Theme.error
+            color: Theme.tintError
+            radius: Theme.cornerPopup
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 12
@@ -1404,7 +1511,8 @@ Item {
                 spacing: 8
                 SvgIcon {
                     source: Theme.icon("warning")
-                    iconSize: 16
+                    iconSize: Theme.iconMd
+                    color: Theme.error
                 }
                 Text {
                     text: "Permanently delete world?"
@@ -1442,13 +1550,14 @@ Item {
         footer: Rectangle {
             implicitHeight: 48
             color: Theme.chrome
-            border.width: 1
-            border.color: Theme.borderSoft
+            radius: Theme.cornerPopup
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 9
                 spacing: 7
-                Item { Layout.fillWidth: true }
+                Item {
+                    Layout.fillWidth: true
+                }
                 TextButton {
                     text: "Cancel"
                     onClicked: deleteDialog.close()

@@ -6,10 +6,10 @@ Menu {
     id: control
 
     implicitWidth: 226
-    topPadding: 4
-    bottomPadding: 4
-    leftPadding: 1
-    rightPadding: 1
+    topPadding: 5
+    bottomPadding: 5
+    leftPadding: 4
+    rightPadding: 4
     overlap: 1
 
     delegate: EditorMenuItem {}
@@ -29,6 +29,29 @@ Menu {
         radius: Theme.cornerPopup
     }
 
-    enter: Transition {}
-    exit: Transition {}
+    enter: Transition {
+        NumberAnimation {
+            property: "opacity"
+            from: 0
+            to: 1
+            duration: Theme.animFast
+            easing.type: Easing.OutCubic
+        }
+        NumberAnimation {
+            property: "scale"
+            from: 0.96
+            to: 1
+            duration: Theme.animBase
+            easing.type: Easing.OutCubic
+        }
+    }
+
+    exit: Transition {
+        NumberAnimation {
+            property: "opacity"
+            to: 0
+            duration: Theme.animFast
+            easing.type: Easing.InCubic
+        }
+    }
 }

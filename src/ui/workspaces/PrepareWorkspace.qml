@@ -67,23 +67,20 @@ Item {
             iconSource: Theme.icon("build")
             Layout.fillWidth: true
 
-            Text {
+            LoadingState {
                 visible: MediaSourceModel.busy
-                text: MediaSourceModel.activityText
-                color: Theme.info
-                font.family: Theme.uiFont
-                font.pixelSize: 10
+                running: MediaSourceModel.busy
+                label: MediaSourceModel.activityText
+                variant: "Drive"
             }
 
-            Text {
+            LoadingState {
                 visible: ReconstructionController.state === "running"
                          || ReconstructionController.state === "cancelling"
-                text: ReconstructionController.message
-                color: Theme.info
-                font.family: Theme.uiFont
-                font.pixelSize: 10
-                elide: Text.ElideRight
-                Layout.maximumWidth: 280
+                running: ReconstructionController.state === "running"
+                         || ReconstructionController.state === "cancelling"
+                label: ReconstructionController.message
+                variant: "Dots"
             }
 
             TextButton {
@@ -103,12 +100,11 @@ Item {
         }
 
         Rectangle {
+            id: mediaErrorBanner
             visible: MediaSourceModel.lastError.length > 0
             Layout.fillWidth: true
-            Layout.preferredHeight: visible ? 36 : 0
-            color: "#332426"
-            border.width: 1
-            border.color: Theme.error
+            Layout.preferredHeight: mediaErrorBanner.visible ? 36 : 0
+            color: Theme.tintError
 
             RowLayout {
                 anchors.fill: parent
@@ -118,7 +114,8 @@ Item {
 
                 SvgIcon {
                     source: Theme.icon("error")
-                    iconSize: 14
+                    iconSize: Theme.iconSm
+                    color: Theme.error
                 }
 
                 Text {
@@ -133,7 +130,7 @@ Item {
                 IconButton {
                     iconSource: Theme.icon("close")
                     toolTip: "Dismiss"
-                    buttonSize: 25
+                    buttonSize: 24
                     onClicked: MediaSourceModel.clearLastError()
                 }
             }
@@ -186,25 +183,17 @@ Item {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 42
                         color: Theme.panelRaised
-                        border.width: 1
-                        border.color: Theme.borderSoft
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 10
-                            spacing: 13
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 14
 
                             MetricReadout {
                                 label: "SOURCES"
                                 value: MediaSourceModel.count
                                 toolTip: "Unique source paths registered in the local catalog"
-                            }
-
-                            Rectangle {
-                                Layout.preferredWidth: 1
-                                Layout.preferredHeight: 18
-                                color: Theme.border
                             }
 
                             MetricReadout {
@@ -213,22 +202,10 @@ Item {
                                 toolTip: "Sources with successfully parsed image or video metadata"
                             }
 
-                            Rectangle {
-                                Layout.preferredWidth: 1
-                                Layout.preferredHeight: 18
-                                color: Theme.border
-                            }
-
                             MetricReadout {
                                 label: "ERRORS"
                                 value: MediaSourceModel.errorCount
                                 toolTip: "Missing, corrupt, unsupported, or unreadable sources"
-                            }
-
-                            Rectangle {
-                                Layout.preferredWidth: 1
-                                Layout.preferredHeight: 18
-                                color: Theme.border
                             }
 
                             MetricReadout {
@@ -237,14 +214,16 @@ Item {
                                 toolTip: "Aggregate original source bytes. Registration does not copy the files."
                             }
 
-                            Item { Layout.fillWidth: true }
+                            Item {
+                                Layout.fillWidth: true
+                            }
 
-                            Text {
+                            LoadingState {
                                 visible: MediaSourceModel.busy
-                                text: MediaSourceModel.activityText
-                                color: Theme.info
-                                font.family: Theme.uiFont
-                                font.pixelSize: 9
+                                running: MediaSourceModel.busy
+                                label: MediaSourceModel.activityText
+                                variant: "Orbit"
+                                showElapsed: false
                             }
                         }
                     }
@@ -566,20 +545,23 @@ Item {
                                                 required property var modelData
                                                 required property int index
                                                 readonly property string phaseTone: root.stageTone(index)
+                                                                readonly property bool isActive:
+                                                    phaseChip.phaseTone === "info"
+                                                    && ReconstructionController.state !== "complete"
                                                 Layout.fillWidth: true
                                                 Layout.preferredHeight: 25
-                                                color: phaseTone === "success" ? "#263529"
-                                                     : (phaseTone === "info" ? Theme.selection
-                                                        : (phaseTone === "warning" ? "#3a3022"
-                                                           : (phaseTone === "error" ? "#382628"
+                                                radius: Theme.cornerControl - 1
+                                                color: phaseChip.phaseTone === "success" ? Theme.tintSuccess
+                                                     : (phaseChip.phaseTone === "info" ? Theme.selection
+                                                        : (phaseChip.phaseTone === "warning" ? Theme.tintWarning
+                                                           : (phaseChip.phaseTone === "error" ? Theme.tintError
                                                               : Theme.field)))
-                                                border.width: 1
-                                                border.color: phaseTone === "success" ? Theme.success
-                                                              : (phaseTone === "info" ? Theme.selectionBorder
-                                                                 : (phaseTone === "warning" ? Theme.warning
-                                                                    : (phaseTone === "error" ? Theme.error
-                                                                       : Theme.borderSoft)))
-                                                radius: Theme.cornerControl
+
+                                                Behavior on color {
+                                                    ColorAnimation {
+                                                        duration: Theme.animBase
+                                                    }
+                                                }
 
                                                 RowLayout {
                                                     anchors.fill: parent
@@ -588,14 +570,34 @@ Item {
                                                     spacing: 5
 
                                                     Rectangle {
-                                                        Layout.preferredWidth: 6
-                                                        Layout.preferredHeight: 6
-                                                        radius: 3
+                                                        id: phaseIndicator
+                                                        Layout.preferredWidth: 7
+                                                        Layout.preferredHeight: 7
+                                                        radius: 2
                                                         color: phaseChip.phaseTone === "success" ? Theme.success
-                                                             : (phaseChip.phaseTone === "info" ? Theme.info
+                                                             : (phaseChip.phaseTone === "info" ? Theme.accent
                                                                 : (phaseChip.phaseTone === "warning" ? Theme.warning
                                                                    : (phaseChip.phaseTone === "error" ? Theme.error
                                                                       : Theme.textDisabled)))
+
+                                                        SequentialAnimation on opacity {
+                                                            running: phaseChip.isActive
+                                                                    && phaseIndicator.visible
+                                                                    && Theme.motionEnabled
+                                                            loops: Animation.Infinite
+                                                            NumberAnimation {
+                                                                from: 1
+                                                                to: 0.35
+                                                                duration: 560
+                                                                easing.type: Easing.InOutQuad
+                                                            }
+                                                            NumberAnimation {
+                                                                from: 0.35
+                                                                to: 1
+                                                                duration: 560
+                                                                easing.type: Easing.InOutQuad
+                                                            }
+                                                        }
                                                     }
 
                                                     Text {
@@ -607,6 +609,13 @@ Item {
                                                         font.pixelSize: 8
                                                         elide: Text.ElideRight
                                                     }
+
+                                                    SvgIcon {
+                                                        visible: phaseChip.phaseTone === "success"
+                                                        source: Theme.icon("check")
+                                                        iconSize: Theme.iconXs
+                                                        color: Theme.success
+                                                    }
                                                 }
                                             }
                                         }
@@ -614,18 +623,31 @@ Item {
 
                                     Rectangle {
                                         Layout.fillWidth: true
-                                        Layout.preferredHeight: 6
+                                        Layout.preferredHeight: 5
+                                        radius: 2.5
                                         color: Theme.field
-                                        border.width: 1
-                                        border.color: Theme.border
 
                                         Rectangle {
                                             visible: ReconstructionController.progress >= 0
+                                            radius: 2.5
                                             width: parent.width * Math.max(0, Math.min(1,
                                                    ReconstructionController.progress))
                                             height: parent.height
                                             color: ReconstructionController.state === "failed"
                                                    ? Theme.error : Theme.accent
+
+                                            Behavior on width {
+                                                NumberAnimation {
+                                                    duration: Theme.animMove
+                                                    easing.type: Easing.OutCubic
+                                                }
+                                            }
+
+                                            Behavior on color {
+                                                ColorAnimation {
+                                                    duration: Theme.animBase
+                                                }
+                                            }
                                         }
                                     }
 
@@ -654,8 +676,7 @@ Item {
                                         Layout.fillWidth: true
                                         Layout.preferredHeight: visible ? 92 : 0
                                         color: Theme.field
-                                        border.width: 1
-                                        border.color: Theme.borderSoft
+                                        radius: Theme.cornerControl
 
                                         ScrollView {
                                             anchors.fill: parent
@@ -701,12 +722,6 @@ Item {
 
                             Item { Layout.preferredHeight: 4 }
                         }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        color: Theme.borderSoft
                     }
 
                     RowLayout {

@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Layouts
+import "."
 
 Rectangle {
     id: root
@@ -6,38 +8,66 @@ Rectangle {
     property string text: ""
     property string tone: "neutral"
 
-    implicitWidth: label.implicitWidth + 12
-    implicitHeight: 20
-    radius: Theme.cornerControl
-    color: {
-        if (tone === "success") return "#263529"
-        if (tone === "warning") return "#3a3022"
-        if (tone === "error") return "#382628"
-        if (tone === "info") return Theme.selection
-        return Theme.panelRaised
-    }
-    border.width: 1
-    border.color: {
-        if (tone === "success") return Theme.success
-        if (tone === "warning") return Theme.warning
-        if (tone === "error") return Theme.error
-        if (tone === "info") return Theme.selectionBorder
-        return Theme.border
+    readonly property color toneColor: {
+        if (root.tone === "success")
+            return Theme.success;
+        if (root.tone === "warning")
+            return Theme.warning;
+        if (root.tone === "error")
+            return Theme.error;
+        if (root.tone === "info")
+            return Theme.info;
+        return Theme.textMuted;
     }
 
-    Text {
-        id: label
-        anchors.centerIn: parent
-        text: root.text.toUpperCase()
-        color: {
-            if (root.tone === "success") return Theme.success
-            if (root.tone === "warning") return Theme.warning
-            if (root.tone === "error") return Theme.error
-            if (root.tone === "info") return Theme.info
-            return Theme.textMuted
+    implicitWidth: row.implicitWidth + 14
+    implicitHeight: 20
+    radius: height / 2 - 3
+    color: {
+        if (root.tone === "success")
+            return Theme.tintSuccess;
+        if (root.tone === "warning")
+            return Theme.tintWarning;
+        if (root.tone === "error")
+            return Theme.tintError;
+        if (root.tone === "info")
+            return Theme.tintInfo;
+        return Theme.panelRaised;
+    }
+
+    Behavior on color {
+        ColorAnimation {
+            duration: Theme.animBase
         }
-        font.family: Theme.uiFont
-        font.pixelSize: 9
-        font.weight: Font.DemiBold
+    }
+
+    RowLayout {
+        id: row
+        anchors.centerIn: parent
+        spacing: 5
+
+        SvgIcon {
+            visible: root.tone !== "neutral"
+            source: {
+                if (root.tone === "success")
+                    return Theme.icon("check");
+                if (root.tone === "warning")
+                    return Theme.icon("warning");
+                if (root.tone === "error")
+                    return Theme.icon("error");
+                return Theme.icon("info");
+            }
+            iconSize: Theme.iconXs
+            color: root.toneColor
+        }
+
+        Text {
+            text: root.text.toUpperCase()
+            color: root.toneColor
+            font.family: Theme.uiFont
+            font.pixelSize: 9
+            font.weight: Font.DemiBold
+            font.letterSpacing: 0.4
+        }
     }
 }

@@ -7,30 +7,20 @@ Item {
 
     readonly property bool verticalDivider: width < height
 
-    implicitWidth: 9
-    implicitHeight: 9
+    implicitWidth: 8
+    implicitHeight: 8
 
     Rectangle {
         anchors.centerIn: parent
-        width: root.verticalDivider ? 1 : parent.width
-        height: root.verticalDivider ? parent.height : 1
-        color: hover.hovered ? Theme.selectionBorder : Theme.borderSoft
-    }
+        width: root.verticalDivider ? 2 : 22
+        height: root.verticalDivider ? 22 : 2
+        radius: 1
+        color: hover.hovered ? Theme.accent : "transparent"
 
-    Rectangle {
-        anchors.centerIn: parent
-        width: root.verticalDivider ? 9 : 28
-        height: root.verticalDivider ? 28 : 9
-        radius: 2
-        color: hover.hovered ? Theme.panelRaised : Theme.chrome
-        border.width: 1
-        border.color: hover.hovered ? Theme.selectionBorder : Theme.border
-
-        SvgIcon {
-            anchors.centerIn: parent
-            source: Theme.icon(root.verticalDivider ? "resize-horizontal" : "resize-vertical")
-            iconSize: 12
-            opacity: hover.hovered ? 1 : 0.55
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.animFast
+            }
         }
     }
 

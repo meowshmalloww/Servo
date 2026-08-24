@@ -18,17 +18,34 @@ Item {
     ColumnLayout {
         id: content
         anchors.centerIn: parent
-        width: Math.min(360, Math.max(220, parent.width - 36))
-        spacing: 8
+        width: Math.min(380, Math.max(240, parent.width - 40))
+        spacing: 10
 
-        SvgIcon {
-            source: root.iconSource
-            iconSize: 28
-            opacity: 0.65
+        Item {
+            id: tileWrap
             Layout.alignment: Qt.AlignHCenter
+            Layout.preferredWidth: 42
+            Layout.preferredHeight: 42
+
+            Rectangle {
+                id: tile
+                anchors.fill: parent
+                radius: Theme.cornerCard + 2
+                color: Theme.selection
+                opacity: 0.55
+            }
+
+            SvgIcon {
+                anchors.centerIn: parent
+                source: root.iconSource
+                iconSize: Theme.iconXl
+                color: Theme.accentDim
+                opacity: 0.95
+            }
         }
 
         Text {
+            visible: root.title.length > 0
             text: root.title
             color: Theme.textSecondary
             font.family: Theme.uiFont
@@ -46,7 +63,7 @@ Item {
             font.pixelSize: 10
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
-            lineHeight: 1.2
+            lineHeight: 1.25
             Layout.fillWidth: true
         }
 

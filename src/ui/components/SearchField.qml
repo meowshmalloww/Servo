@@ -9,8 +9,8 @@ T.TextField {
 
     implicitHeight: Theme.controlHeight
     implicitWidth: 180
-    leftPadding: 32
-    rightPadding: 32
+    leftPadding: 30
+    rightPadding: 30
     selectByMouse: true
     placeholderText: hint
     color: Theme.text
@@ -25,8 +25,14 @@ T.TextField {
         anchors.leftMargin: 9
         anchors.verticalCenter: parent.verticalCenter
         source: Theme.icon("search")
-        iconSize: 14
-        opacity: 0.75
+        iconSize: Theme.iconSm
+        color: control.activeFocus ? Theme.textSecondary : Theme.textMuted
+
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.animFast
+            }
+        }
     }
 
     IconButton {
@@ -36,14 +42,21 @@ T.TextField {
         anchors.verticalCenter: parent.verticalCenter
         iconSource: Theme.icon("close")
         toolTip: "Clear search"
-        buttonSize: 26
+        buttonSize: 24
         onClicked: control.clear()
     }
 
     background: Rectangle {
         radius: Theme.cornerControl
-        color: control.hovered ? Theme.fieldHover : Theme.field
-        border.width: 1
-        border.color: control.activeFocus ? Theme.selectionBorder : Theme.border
+        color: control.activeFocus || control.hovered ? Theme.fieldHover : Theme.field
+        border.width: control.activeFocus ? 1 : 0
+        border.color: Theme.selectionBorder
+
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 }

@@ -27,41 +27,46 @@ Rectangle {
     signal removeRequested(int row)
 
     function statusTone() {
-        if (probeStatus === "ready") return "success";
-        if (probeStatus === "error" || probeStatus === "missing") return "error";
+        if (probeStatus === "ready")
+            return "success";
+        if (probeStatus === "error" || probeStatus === "missing")
+            return "error";
         return "info";
     }
 
     function technicalSummary() {
         const values = [];
-        if (dimensionsText !== "—") values.push(dimensionsText);
+        if (dimensionsText !== "—")
+            values.push(dimensionsText);
         if (mediaKind === "video" && framesPerSecondText !== "—")
             values.push(framesPerSecondText);
         if (mediaKind === "video" && durationText !== "—")
             values.push(durationText);
-        if (codecName.length > 0) values.push(codecName.toUpperCase());
-        if (pixelFormat.length > 0) values.push(pixelFormat);
-        if (rotationDegrees !== 0) values.push(rotationDegrees + "° rotation");
+        if (codecName.length > 0)
+            values.push(codecName.toUpperCase());
+        if (pixelFormat.length > 0)
+            values.push(pixelFormat);
+        if (rotationDegrees !== 0)
+            values.push(rotationDegrees + "° rotation");
         return values.length > 0 ? values.join("  ·  ") : "Waiting for source metadata";
     }
 
-    implicitHeight: probeError.length > 0 ? 106 : 82
-    color: rowMouse.containsMouse ? Theme.panelHover : "transparent"
-    border.width: 0
+    implicitHeight: probeError.length > 0 ? 104 : 80
+    radius: Theme.cornerCard - 3
+    color: rowMouse.containsMouse ? Theme.panelRaised : "transparent"
+
+    Behavior on color {
+        ColorAnimation {
+            duration: Theme.animFast
+            easing.type: Easing.OutCubic
+        }
+    }
 
     MouseArea {
         id: rowMouse
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.NoButton
-    }
-
-    Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        height: 1
-        color: Theme.borderSoft
     }
 
     RowLayout {
@@ -77,15 +82,13 @@ Rectangle {
             Layout.preferredHeight: 34
             Layout.alignment: Qt.AlignTop
             color: Theme.field
-            border.width: 1
-            border.color: Theme.border
-            radius: Theme.cornerControl
+            radius: Theme.cornerTile
 
             SvgIcon {
                 anchors.centerIn: parent
                 source: Theme.icon(root.mediaKind === "video" ? "camera" : "file")
-                iconSize: 17
-                opacity: 0.85
+                iconSize: 15
+                color: Theme.textMuted
             }
         }
 
@@ -112,7 +115,7 @@ Rectangle {
                     text: root.sizeText
                     color: Theme.textMuted
                     font.family: Theme.monoFont
-                    font.pixelSize: 8
+                    font.pixelSize: 9
                 }
 
                 StatusBadge {
@@ -126,7 +129,7 @@ Rectangle {
                 text: root.technicalSummary()
                 color: Theme.textSecondary
                 font.family: Theme.monoFont
-                font.pixelSize: 8
+                font.pixelSize: 9
                 elide: Text.ElideRight
             }
 
@@ -135,7 +138,7 @@ Rectangle {
                 text: root.sourcePath
                 color: Theme.textMuted
                 font.family: Theme.monoFont
-                font.pixelSize: 8
+                font.pixelSize: 9
                 elide: Text.ElideMiddle
             }
 
@@ -152,20 +155,20 @@ Rectangle {
 
         ColumnLayout {
             Layout.alignment: Qt.AlignTop
-            spacing: 4
+            spacing: 2
 
             IconButton {
                 visible: root.probeStatus === "error" || root.probeStatus === "missing"
                 iconSource: Theme.icon("refresh")
                 toolTip: "Retry metadata probe"
-                buttonSize: 25
+                buttonSize: 24
                 onClicked: root.retryRequested(root.index)
             }
 
             IconButton {
                 iconSource: Theme.icon("close")
                 toolTip: "Remove reference (source file is not deleted)"
-                buttonSize: 25
+                buttonSize: 24
                 onClicked: root.removeRequested(root.index)
             }
         }

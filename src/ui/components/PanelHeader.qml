@@ -13,20 +13,19 @@ Rectangle {
     signal actionTriggered()
 
     implicitHeight: Theme.panelHeaderHeight
-    color: Theme.chrome
-    border.width: 1
-    border.color: Theme.borderSoft
+    color: "transparent"
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 10
-        anchors.rightMargin: 5
-        spacing: 7
+        anchors.leftMargin: 12
+        anchors.rightMargin: 6
+        spacing: 8
 
         SvgIcon {
             visible: root.iconSource.toString().length > 0
             source: root.iconSource
-            iconSize: 14
+            iconSize: Theme.iconSm
+            color: Theme.accentDim
         }
 
         Text {
@@ -35,9 +34,12 @@ Rectangle {
             font.family: Theme.uiFont
             font.pixelSize: 11
             font.weight: Font.DemiBold
+            font.letterSpacing: 0.3
         }
 
-        Item { Layout.fillWidth: true }
+        Item {
+            Layout.fillWidth: true
+        }
 
         Text {
             visible: root.subtitle.length > 0
@@ -46,14 +48,14 @@ Rectangle {
             font.family: Theme.uiFont
             font.pixelSize: 10
             elide: Text.ElideRight
-            Layout.maximumWidth: 180
+            Layout.maximumWidth: 220
         }
 
         IconButton {
             visible: root.actionIcon.toString().length > 0
             iconSource: root.actionIcon
             toolTip: root.actionToolTip
-            buttonSize: 25
+            buttonSize: 24
             onClicked: root.actionTriggered()
         }
     }
