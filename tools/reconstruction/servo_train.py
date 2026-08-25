@@ -43,7 +43,7 @@ STATIC_CONFIDENCE_METHOD = (
     "DIS-bidirectional-flow-plus-COLMAP-epipolar-raw-evidence-v2"
 )
 SEMANTIC_PHOTOMETRIC_METHOD = (
-    "servo-oneformer-rigid-static-retention-flow-preserved-nonrigid-v3"
+    "servo-oneformer-rigid-static-temporal-floor-preserved-nonrigid-v4"
 )
 VALIDATION_STRIDE = 8
 VALIDATION_OFFSET = 4
@@ -3826,7 +3826,7 @@ def fuse_semantic_photometric_confidence(
     temporal_confidence: Any,
     semantic: Any,
     *,
-    rigid_static_confidence: float = 1.0,
+    rigid_static_confidence_floor: float = 0.25,
     vegetation_confidence_floor: float = 0.0,
     water_confidence_floor: float = 0.0,
     hard_exclusion: Any | None = None,
@@ -3837,7 +3837,8 @@ def fuse_semantic_photometric_confidence(
     but it also occurs on low-texture asphalt, image borders, thin structures,
     and disocclusions.  Treating a zero flow weight as a hard exclusion created
     permanent holes in rigid road and foreground geometry.  Stable semantic
-    classes therefore retain their observed RGB at full weight.  Vegetation and
+    classes therefore retain their measured temporal confidence with a small
+    floor, rather than replacing every sample with full confidence. Vegetation and
     water retain their raw temporal evidence rather than receiving an artificial
     floor: their motion and occlusion are genuinely ambiguous in a single drive.
     Unknown, sky, and actor classes remain exactly zero (fail closed).  A
@@ -3863,7 +3864,7 @@ def fuse_semantic_photometric_confidence(
             "[camera,height,width,1] tensors."
         )
     for name, value in (
-        ("rigid static confidence", rigid_static_confidence),
+        ("rigid static confidence floor", rigid_static_confidence_floor),
         ("vegetation confidence floor", vegetation_confidence_floor),
         ("water confidence floor", water_confidence_floor),
     ):
@@ -3883,7 +3884,10 @@ def fuse_semantic_photometric_confidence(
     fused = torch.zeros_like(temporal_confidence)
     fused = torch.where(
         rigid_static,
-        torch.full_like(fused, float(rigid_static_confidence)),
+        torch.maximum(
+            temporal_confidence,
+            torch.full_like(fused, float(rigid_static_confidence_floor)),
+        ),
         fused,
     )
     fused = torch.where(
@@ -4837,8 +4841,8 @@ def train(config_path: Path) -> int:
         config.get("semanticPhotometricMaskMethod", "")
     )
     try:
-        semantic_rigid_static_confidence = float(
-            config["semanticRigidStaticConfidence"]
+        semantic_rigid_static_confidence_floor = float(
+            config["semanticRigidStaticConfidenceFloor"]
         )
         semantic_vegetation_confidence_floor = float(
             config["semanticVegetationConfidenceFloor"]
@@ -4856,7 +4860,10 @@ def train(config_path: Path) -> int:
         or config.get("semanticPhotometricMask") is not True
         or semantic_photometric_method != SEMANTIC_PHOTOMETRIC_METHOD
         or not math.isclose(
-            semantic_rigid_static_confidence, 1.0, rel_tol=0.0, abs_tol=1e-12
+            semantic_rigid_static_confidence_floor,
+            0.25,
+            rel_tol=0.0,
+            abs_tol=1e-12,
         )
         or not math.isclose(
             semantic_vegetation_confidence_floor,
@@ -6203,7 +6210,7 @@ def train(config_path: Path) -> int:
             confidence = fuse_semantic_photometric_confidence(
                 confidence,
                 semantic_prior,
-                rigid_static_confidence=semantic_rigid_static_confidence,
+                rigid_static_confidence_floor=semantic_rigid_static_confidence_floor,
                 vegetation_confidence_floor=semantic_vegetation_confidence_floor,
                 water_confidence_floor=semantic_water_confidence_floor,
                 hard_exclusion=video_capture_bottom_exclusion_mask(
@@ -7190,7 +7197,9 @@ def train(config_path: Path) -> int:
             ),
             "semanticRigidStaticLabels": [*range(1, 16), 24, 25],
             "semanticExcludedLabels": [0, 17, 18, 19, 20, 21, 22],
-            "semanticRigidStaticConfidence": semantic_rigid_static_confidence,
+            "semanticRigidStaticConfidenceFloor": (
+                semantic_rigid_static_confidence_floor
+            ),
             "semanticVegetationConfidenceFloor": (
                 semantic_vegetation_confidence_floor
             ),

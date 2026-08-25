@@ -50,7 +50,7 @@ STATIC_CONFIDENCE_METHOD = (
     "DIS-bidirectional-flow-plus-COLMAP-epipolar-raw-evidence-v2"
 )
 SEMANTIC_PHOTOMETRIC_METHOD = (
-    "servo-oneformer-rigid-static-retention-flow-preserved-nonrigid-v3"
+    "servo-oneformer-rigid-static-temporal-floor-preserved-nonrigid-v4"
 )
 MAIN_SAMPLING_POLICY = "deterministic-weighted-shuffled-epochs/v1"
 SCREEN_SPACE_REFINEMENT_POLICY = "gsplat-default-normalized-radius/v1"
@@ -5281,7 +5281,7 @@ def train_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "staticConfidenceMethod": STATIC_CONFIDENCE_METHOD,
         "semanticPhotometricMask": True,
         "semanticPhotometricMaskMethod": SEMANTIC_PHOTOMETRIC_METHOD,
-        "semanticRigidStaticConfidence": 1.0,
+        "semanticRigidStaticConfidenceFloor": 0.25,
         "semanticVegetationConfidenceFloor": 0.0,
         "semanticWaterConfidenceFloor": 0.0,
         # A base mean-alpha term covers all observed semantic sky. A stronger
@@ -6240,8 +6240,8 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         configured_sky_tail_erosion_radius = int(
             training_config["semanticSkyOpacityTailErosionRadius"]
         )
-        configured_rigid_static_confidence = float(
-            training_config["semanticRigidStaticConfidence"]
+        configured_rigid_static_confidence_floor = float(
+            training_config["semanticRigidStaticConfidenceFloor"]
         )
         configured_vegetation_confidence_floor = float(
             training_config["semanticVegetationConfidenceFloor"]
@@ -6269,7 +6269,7 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "semanticSkyOpacityTailWeight",
         "semanticSkyOpacityTailBceEpsilon",
         "recentSemanticSkyOpacityLoss",
-        "semanticRigidStaticConfidence",
+        "semanticRigidStaticConfidenceFloor",
         "semanticVegetationConfidenceFloor",
         "semanticWaterConfidenceFloor",
     ):
@@ -6364,8 +6364,8 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         )
         != configured_sky_tail_erosion_radius
         or not math.isclose(
-            float(geometry_regularization["semanticRigidStaticConfidence"]),
-            configured_rigid_static_confidence,
+            float(geometry_regularization["semanticRigidStaticConfidenceFloor"]),
+            configured_rigid_static_confidence_floor,
             rel_tol=0.0,
             abs_tol=1e-12,
         )
@@ -6382,7 +6382,10 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
             abs_tol=1e-12,
         )
         or not math.isclose(
-            configured_rigid_static_confidence, 1.0, rel_tol=0.0, abs_tol=1e-12
+            configured_rigid_static_confidence_floor,
+            0.25,
+            rel_tol=0.0,
+            abs_tol=1e-12,
         )
         or not math.isclose(
             configured_vegetation_confidence_floor,
@@ -6852,7 +6855,7 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "geometryPriorsMetricsSha256",
         "semanticPhotometricMask",
         "semanticPhotometricMaskMethod",
-        "semanticRigidStaticConfidence",
+        "semanticRigidStaticConfidenceFloor",
         "semanticVegetationConfidenceFloor",
         "semanticWaterConfidenceFloor",
         "semanticSkyOpacityWeight",

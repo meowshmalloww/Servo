@@ -467,8 +467,8 @@ class SemanticSkyOpacityLossTests(unittest.TestCase):
 
 
 class SemanticPhotometricConfidenceTests(unittest.TestCase):
-    def test_rigid_static_pixels_retain_observed_rgb_when_flow_fails(self) -> None:
-        """A flow failure is not evidence that static asphalt ceased to exist."""
+    def test_rigid_static_pixels_keep_temporal_evidence_with_floor(self) -> None:
+        """A flow failure keeps support without making blurry evidence certain."""
         temporal = torch.tensor(
             [[[[0.0], [0.10], [0.40], [0.00], [0.90], [0.70], [0.60], [0.50]]]],
             dtype=torch.float32,
@@ -483,14 +483,14 @@ class SemanticPhotometricConfidenceTests(unittest.TestCase):
         )
 
         expected = torch.tensor(
-            [[[[1.0], [0.10], [0.40], [0.00], [0.90], [0.0], [0.0], [0.0]]]],
+            [[[[0.25], [0.10], [0.40], [0.00], [0.90], [0.0], [0.0], [0.0]]]],
             dtype=torch.float32,
         )
         torch.testing.assert_close(fused, expected)
 
     def test_preserves_nonrigid_flow_gradients_above_the_safety_floor(self) -> None:
         temporal = torch.tensor(
-            [[[[0.0], [0.60], [0.30]]]], dtype=torch.float32, requires_grad=True
+            [[[[0.60], [0.60], [0.30]]]], dtype=torch.float32, requires_grad=True
         )
         semantic = torch.tensor(
             [[[[1], [16], [23]]]], dtype=torch.int64
@@ -501,10 +501,10 @@ class SemanticPhotometricConfidenceTests(unittest.TestCase):
         )
         fused.sum().backward()
 
-        # Road remains a full observed-RGB target independent of ambiguous
-        # optical flow; non-rigid classes retain only their measured flow weight.
+        # Rigid and non-rigid classes preserve measured confidence gradients
+        # whenever the evidence is above their configured safety floor.
         torch.testing.assert_close(
-            temporal.grad, torch.tensor([[[[0.0], [1.0], [1.0]]]])
+            temporal.grad, torch.tensor([[[[1.0], [1.0], [1.0]]]])
         )
 
     def test_video_capture_exclusion_cannot_be_reenabled_as_road(self) -> None:
