@@ -145,6 +145,31 @@ class SurfelParameterPolicyTests(unittest.TestCase):
         self.assertEqual(int(len(cleaned_surfel["means"])), count)
         self.assertEqual(int(len(cleaned_3dgs["means"])), count - count // 2)
 
+
+class GeometryRenderRequirementTests(unittest.TestCase):
+    def test_sky_only_dual_objective_requests_geometry_alpha(self) -> None:
+        requirements = servo_train.geometry_render_requirements(
+            semantic_sky_opacity_weight=0.1
+        )
+        self.assertFalse(requirements["depth"])
+        self.assertTrue(requirements["geometryAlpha"])
+        self.assertTrue(requirements["geometryRender"])
+
+    def test_surfel_only_objective_requests_auxiliary_render(self) -> None:
+        requirements = servo_train.geometry_render_requirements(
+            surfel_depth_distortion_weight=0.01
+        )
+        self.assertFalse(requirements["depth"])
+        self.assertTrue(requirements["surfelAux"])
+        self.assertTrue(requirements["geometryRender"])
+
+    def test_driving_variance_requests_expected_depth(self) -> None:
+        requirements = servo_train.geometry_render_requirements(
+            driving_surface_variance_weight=0.03
+        )
+        self.assertTrue(requirements["depth"])
+        self.assertTrue(requirements["geometryAlpha"])
+
     def test_scale_regularization_stays_finite_for_planar_splats(self) -> None:
         scales = torch.tensor(
             [[math.log(0.5), math.log(0.25), math.log(1e-6)]]

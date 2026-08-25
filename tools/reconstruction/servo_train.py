@@ -343,6 +343,57 @@ def atomic_json(path: Path, value: Any) -> None:
             temporary.unlink()
 
 
+def validate_experiment_configuration_hash(config: Mapping[str, Any]) -> None:
+    """Validate an optional content hash used by direct diagnostic runs."""
+
+    expected = config.get("experimentConfigurationHash")
+    if expected is None:
+        return
+    if not isinstance(expected, str) or not expected.startswith("sha256:"):
+        raise TrainingError("experimentConfigurationHash is malformed.")
+    payload = dict(config)
+    payload.pop("experimentConfigurationHash", None)
+    actual = "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+    if actual != expected:
+        raise TrainingError(
+            "The diagnostic experiment configuration hash does not match its content."
+        )
+
+
+def prepare_training_output(output: Path, config: Mapping[str, Any]) -> None:
+    """Create a fresh output or permit only an identity-matched resume."""
+
+    config_path = output / "training-config.json"
+    if output.exists() and not output.is_dir():
+        raise TrainingError("The configured training output is not a directory.")
+    if output.exists() and any(output.iterdir()):
+        if not config_path.is_file():
+            raise TrainingError(
+                "Refusing to train into a nonempty output without a matching "
+                "training-config.json receipt."
+            )
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise TrainingError(
+                "The existing training output has an unreadable configuration receipt."
+            ) from error
+        identity_fields = (
+            "configurationHash",
+            "experimentConfigurationHash",
+            "pipelineCodeHash",
+            "trainingInputHash",
+            "output",
+        )
+        if any(existing.get(field) != config.get(field) for field in identity_fields):
+            raise TrainingError(
+                "Refusing to reuse a nonempty output whose experiment identity "
+                "does not match this configuration."
+            )
+    output.mkdir(parents=True, exist_ok=True)
+    atomic_json(config_path, config)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -517,6 +568,131 @@ def build_training_sampling_plan(
         sparse_anchor_counts=sparse_anchor_counts,
         median_sparse_anchors=median_sparse_anchors,
     )
+
+
+def parse_frame_oversampling_config(
+    config: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Parse the sealed diagnostic treatment before dataset construction."""
+
+    if not isinstance(config.get("frameOversampling"), Mapping):
+        return None
+    raw = dict(config["frameOversampling"])
+    try:
+        multiplier = int(raw["multiplier"])
+        frames = [str(name) for name in raw["frames"]]
+    except (KeyError, TypeError, ValueError) as error:
+        raise TrainingError(
+            "The frame-oversampling configuration is incomplete."
+        ) from error
+    return {
+        "schema": str(raw.get("schema", "")),
+        "method": str(raw.get("method", "")),
+        "multiplier": multiplier,
+        "frames": frames,
+    }
+
+
+def apply_frame_oversampling(
+    config: Mapping[str, Any],
+    dataset: Any,
+    receipt: dict[str, Any] | None,
+) -> tuple[dict[int, int] | None, dict[str, Any] | None]:
+    """Validate named cameras and apply their weights to the live dataset."""
+
+    if receipt is None:
+        return None, None
+    record_names = {
+        record.name: index for index, record in enumerate(dataset.records)
+    }
+    if not supported_frame_oversampling_contract(
+        config,
+        schema=receipt["schema"],
+        method=receipt["method"],
+        multiplier=receipt["multiplier"],
+        frames=receipt["frames"],
+        record_names=record_names,
+    ):
+        raise TrainingError(
+            "The frame-oversampling contract is sealed to non-publishable "
+            "diagnostics with 2-8x weight and explicitly named registered "
+            "offender frames."
+        )
+    trainable_names = {
+        dataset.records[index].name for index in dataset.train_indices
+    }
+    oversampled_train_indices = {
+        record_names[name]
+        for name in receipt["frames"]
+        if name in trainable_names
+    }
+    if not oversampled_train_indices:
+        raise TrainingError(
+            "Frame oversampling listed no trainable camera; every listed "
+            "frame was excluded as held-out validation evidence."
+        )
+    multipliers = {
+        index: int(receipt["multiplier"])
+        for index in oversampled_train_indices
+    }
+    dataset.training_sampling_plan = build_training_sampling_plan(
+        dataset.records,
+        dataset.train_indices,
+        dataset.sequence_groups,
+        frame_multipliers=multipliers,
+    )
+    receipt["trainableFrames"] = sorted(
+        dataset.records[index].name for index in oversampled_train_indices
+    )
+    receipt["heldOutFrames"] = sorted(
+        name for name in receipt["frames"] if name not in trainable_names
+    )
+    return multipliers, receipt
+
+
+def geometry_render_requirements(
+    *,
+    sparse_depth_weight: float = 0.0,
+    depth_layer_variance_weight: float = 0.0,
+    driving_surface_variance_weight: float = 0.0,
+    dense_relative_depth_weight: float = 0.0,
+    road_surface_depth_weight: float = 0.0,
+    surface_alignment_weight: float = 0.0,
+    road_planarity_weight: float = 0.0,
+    cross_view_depth_weight: float = 0.0,
+    semantic_sky_opacity_weight: float = 0.0,
+    surfel_depth_distortion_weight: float = 0.0,
+    surfel_normal_consistency_weight: float = 0.0,
+) -> dict[str, bool]:
+    """Declare renderer outputs from objective needs in one auditable place."""
+
+    needs_depth = any(
+        weight > 0.0
+        for weight in (
+            sparse_depth_weight,
+            depth_layer_variance_weight,
+            driving_surface_variance_weight,
+            dense_relative_depth_weight,
+            road_surface_depth_weight,
+            surface_alignment_weight,
+            road_planarity_weight,
+            cross_view_depth_weight,
+        )
+    )
+    needs_surfel_aux = any(
+        weight > 0.0
+        for weight in (
+            surfel_depth_distortion_weight,
+            surfel_normal_consistency_weight,
+        )
+    )
+    needs_geometry_alpha = needs_depth or semantic_sky_opacity_weight > 0.0
+    return {
+        "depth": needs_depth,
+        "geometryAlpha": needs_geometry_alpha,
+        "surfelAux": needs_surfel_aux,
+        "geometryRender": needs_geometry_alpha or needs_surfel_aux,
+    }
 
 
 def freeze_density_growth_at_target(strategy: Any) -> None:
@@ -1615,6 +1791,9 @@ def checkpoint_payload(
         "pipelineRevision": config.get("pipelineRevision"),
         "step": step,
         "configurationHash": config["configurationHash"],
+        "experimentConfigurationHash": config.get(
+            "experimentConfigurationHash"
+        ),
         "trainingInputHash": config["trainingInputHash"],
         "normalization": dataset.normalization,
         "splats": {name: value.detach().cpu() for name, value in parameters.items()},
@@ -1718,6 +1897,12 @@ def save_checkpoint(
             raise TrainingError("Checkpoint verification failed.")
         if verification.get("configurationHash") != config["configurationHash"]:
             raise TrainingError("Checkpoint configuration hash changed during save.")
+        if verification.get("experimentConfigurationHash") != config.get(
+            "experimentConfigurationHash"
+        ):
+            raise TrainingError(
+                "Checkpoint experiment configuration hash changed during save."
+            )
         if verification.get("trainingInputHash") != config["trainingInputHash"]:
             raise TrainingError("Checkpoint training-input hash changed during save.")
         os.replace(temporary, path)
@@ -1732,6 +1917,9 @@ def save_checkpoint(
         "sha256": digest,
         "bytes": path.stat().st_size,
         "configurationHash": config["configurationHash"],
+        "experimentConfigurationHash": config.get(
+            "experimentConfigurationHash"
+        ),
         "trainingInputHash": config["trainingInputHash"],
     }
     atomic_json(path.with_suffix(".json"), checkpoint_receipt)
@@ -1817,6 +2005,15 @@ def load_checkpoint(checkpoint_dir: Path, config: dict[str, Any]) -> dict[str, A
                 "The training inputs changed; archived old checkpoints.",
             )
             return None
+        if pointer_value.get("experimentConfigurationHash") != config.get(
+            "experimentConfigurationHash"
+        ):
+            archive_checkpoints(
+                checkpoint_dir,
+                "incompatible",
+                "experiment_configuration_changed",
+            )
+            return None
         receipts[str(pointer_value.get("path", ""))] = pointer_value
     for receipt_path in checkpoint_dir.glob("checkpoint-*.json"):
         try:
@@ -1840,6 +2037,8 @@ def load_checkpoint(checkpoint_dir: Path, config: dict[str, Any]) -> dict[str, A
     for receipt in candidates:
         if (
             receipt.get("configurationHash") != config["configurationHash"]
+            or receipt.get("experimentConfigurationHash")
+            != config.get("experimentConfigurationHash")
             or receipt.get("trainingInputHash") != config["trainingInputHash"]
         ):
             continue
@@ -1872,6 +2071,8 @@ def load_checkpoint(checkpoint_dir: Path, config: dict[str, Any]) -> dict[str, A
             or checkpoint.get("trainerVersion") != TRAINER_VERSION
             or checkpoint.get("pipelineRevision") != config.get("pipelineRevision")
             or checkpoint.get("configurationHash") != config["configurationHash"]
+            or checkpoint.get("experimentConfigurationHash")
+            != config.get("experimentConfigurationHash")
             or checkpoint.get("trainingInputHash") != config["trainingInputHash"]
         ):
             failures.append(f"{name} uses an incompatible schema or runtime")
@@ -2281,6 +2482,10 @@ def build_certified_sky_contributor_ledger(
             "Any observed non-sky contribution vetoes qualification."
         ),
     }
+    atomic_json(output / "certified-sky-contributor-ledger.json", ledger)
+    emit("contributor_attribution_completed", **ledger)
+    torch.cuda.empty_cache()
+    return qualified, ledger
 
 
 def gaussian_opacities(parameters: Any, geometry_only: bool = False) -> Any:
@@ -2298,10 +2503,6 @@ def gaussian_opacities(parameters: Any, geometry_only: bool = False) -> Any:
     if geometry_only or "appearanceOpacityGates" not in parameters:
         return geometry
     return geometry * torch.sigmoid(parameters["appearanceOpacityGates"])
-    atomic_json(output / "certified-sky-contributor-ledger.json", ledger)
-    emit("contributor_attribution_completed", **ledger)
-    torch.cuda.empty_cache()
-    return qualified, ledger
 
 
 def composite_raster_background(
@@ -3993,6 +4194,15 @@ def train(config_path: Path) -> int:
         value = config.get(field)
         if not isinstance(value, str) or not value.startswith("sha256:"):
             raise TrainingError(f"Training configuration is missing a valid {field}.")
+    validate_experiment_configuration_hash(config)
+    seed_value = config.get("seed", 42)
+    if (
+        isinstance(seed_value, bool)
+        or not isinstance(seed_value, int)
+        or not 0 <= seed_value <= 0xFFFFFFFF
+    ):
+        raise TrainingError("seed must be an unsigned 32-bit integer.")
+    seed = int(seed_value)
     if not torch.cuda.is_available():
         raise TrainingError("PyTorch cannot access an NVIDIA CUDA device.")
     max_vram_gib = float(config.get("maxVramGiB", 0.0))
@@ -4007,10 +4217,9 @@ def train(config_path: Path) -> int:
     allocator_fraction = min(max_vram_gib / total_vram_gib, 0.95)
     torch.cuda.set_per_process_memory_fraction(allocator_fraction, device=0)
     output = Path(config["output"])
-    output.mkdir(parents=True, exist_ok=True)
-    atomic_json(output / "training-config.json", config)
+    prepare_training_output(output, config)
     cancel_path = Path(config["cancelPath"])
-    set_determinism(42)
+    set_determinism(seed)
     geometry_root = (
         Path(config["geometryRoot"])
         if isinstance(config.get("geometryRoot"), str)
@@ -4095,8 +4304,7 @@ def train(config_path: Path) -> int:
                 geometry_root,
                 config.get("certifiedSkyEvidence"),
             )
-    frame_oversampling_receipt: dict[str, Any] | None = None
-    oversampled_frame_multipliers: dict[int, int] | None = None
+    frame_oversampling_receipt = parse_frame_oversampling_config(config)
     dataset = ColmapDataset(
         Path(config["data"]),
         int(config["dataFactor"]),
@@ -4113,53 +4321,10 @@ def train(config_path: Path) -> int:
             or contributor_sky_cleanup_enabled
         ),
     )
-    if frame_oversampling_receipt is not None:
-        record_names = {
-            record.name: index for index, record in enumerate(dataset.records)
-        }
-        if not supported_frame_oversampling_contract(
-            config,
-            schema=frame_oversampling_receipt["schema"],
-            method=frame_oversampling_receipt["method"],
-            multiplier=frame_oversampling_receipt["multiplier"],
-            frames=frame_oversampling_receipt["frames"],
-            record_names=record_names,
-        ):
-            raise TrainingError(
-                "The frame-oversampling contract is sealed to non-publishable "
-                "diagnostics with 2-8x weight and explicitly named registered "
-                "offender frames."
-            )
-        trainable_names = {dataset.records[index].name for index in dataset.train_indices}
-        oversampled_train_indices = {
-            record_names[name]
-            for name in frame_oversampling_receipt["frames"]
-            if name in trainable_names
-        }
-        if not oversampled_train_indices:
-            raise TrainingError(
-                "Frame oversampling listed no trainable camera; every listed "
-                "frame was excluded as held-out validation evidence."
-            )
-        oversampled_frame_multipliers = {
-            index: int(frame_oversampling_receipt["multiplier"])
-            for index in oversampled_train_indices
-        }
-        dataset.training_sampling_plan = build_training_sampling_plan(
-            dataset.records,
-            dataset.train_indices,
-            dataset.sequence_groups,
-            frame_multipliers=oversampled_frame_multipliers,
-        )
-        frame_oversampling_receipt["trainableFrames"] = sorted(
-            dataset.records[index].name
-            for index in oversampled_train_indices
-        )
-        frame_oversampling_receipt["heldOutFrames"] = sorted(
-            name
-            for name in frame_oversampling_receipt["frames"]
-            if name not in trainable_names
-        )
+    (
+        oversampled_frame_multipliers,
+        frame_oversampling_receipt,
+    ) = apply_frame_oversampling(config, dataset, frame_oversampling_receipt)
     device = "cuda:0"
     background_values = config.get("backgroundColorSrgb", [0.0, 0.0, 0.0])
     if (
@@ -4383,23 +4548,6 @@ def train(config_path: Path) -> int:
             "normalConsistencyWeight": surfel_normal_consistency_weight,
             "normalConsistencyStart": surfel_normal_consistency_start,
         }
-    if isinstance(config.get("frameOversampling"), Mapping):
-        raw_oversampling = dict(config["frameOversampling"])
-        try:
-            oversampling_multiplier = int(raw_oversampling["multiplier"])
-            oversampling_frames = [str(name) for name in raw_oversampling["frames"]]
-        except (KeyError, TypeError, ValueError) as error:
-            raise TrainingError(
-                "The frame-oversampling configuration is incomplete."
-            ) from error
-        # Dataset records are needed to validate frame names; resolve them
-        # after ColmapDataset loads, so defer final validation there.
-        frame_oversampling_receipt = {
-            "schema": str(raw_oversampling.get("schema", "")),
-            "method": str(raw_oversampling.get("method", "")),
-            "multiplier": oversampling_multiplier,
-            "frames": oversampling_frames,
-        }
     if max_steps <= 0 or checkpoint_every <= 0:
         raise TrainingError("Training and checkpoint step counts must be positive.")
     if rasterization_mode not in {"classic", "antialiased"}:
@@ -4527,9 +4675,12 @@ def train(config_path: Path) -> int:
             road_surface_depth_weight,
             surface_alignment_weight,
             road_planarity_weight,
+            driving_surface_variance_weight,
             semantic_sky_opacity_weight,
             contributor_sky_cleanup_weight,
             cross_view_depth_weight,
+            surfel_depth_distortion_weight,
+            surfel_normal_consistency_weight,
         )
     ):
         raise TrainingError(
@@ -4591,6 +4742,22 @@ def train(config_path: Path) -> int:
             "The COLMAP model has too few reliable image-space depth anchors "
             "for geometry-regularized Gaussian fitting."
         )
+    render_requirements = geometry_render_requirements(
+        sparse_depth_weight=sparse_depth_weight,
+        depth_layer_variance_weight=depth_layer_variance_weight,
+        driving_surface_variance_weight=driving_surface_variance_weight,
+        dense_relative_depth_weight=dense_relative_depth_weight,
+        road_surface_depth_weight=road_surface_depth_weight,
+        surface_alignment_weight=surface_alignment_weight,
+        road_planarity_weight=road_planarity_weight,
+        cross_view_depth_weight=cross_view_depth_weight,
+        semantic_sky_opacity_weight=semantic_sky_opacity_weight,
+        surfel_depth_distortion_weight=surfel_depth_distortion_weight,
+        surfel_normal_consistency_weight=surfel_normal_consistency_weight,
+    )
+    needs_geometry_depth = render_requirements["depth"]
+    needs_geometry_render = render_requirements["geometryRender"]
+    needs_surfel_aux = render_requirements["surfelAux"]
     strategy = DefaultStrategy(
         prune_opa=0.005,
         grow_grad2d=0.0002 if surfel_ablation is not None else grow_grad2d,
@@ -5337,19 +5504,14 @@ def train(config_path: Path) -> int:
                 height,
                 background_color,
             )
-            geometry_regularization_enabled = (
-                sparse_depth_weight > 0.0
-                or depth_layer_variance_weight > 0.0
-                or dense_relative_depth_weight > 0.0
-                or road_surface_depth_weight > 0.0
-                or surface_alignment_weight > 0.0
-                or road_planarity_weight > 0.0
-                or cross_view_depth_weight > 0.0
-            )
             appearance_render_mode = (
                 "RGB"
                 if dual_opacity_enabled
-                else ("RGB+ED" if geometry_regularization_enabled else "RGB")
+                else (
+                    "RGB+ED"
+                    if needs_geometry_depth or needs_surfel_aux
+                    else "RGB"
+                )
             )
             rendered_depth, appearance_alpha, information = rasterize(
                 parameters,
@@ -5369,16 +5531,17 @@ def train(config_path: Path) -> int:
             rendered = rendered_depth[..., :3]
             expected_depth = (
                 rendered_depth[..., 3:4]
-                if geometry_regularization_enabled and not dual_opacity_enabled
+                if needs_geometry_depth and not dual_opacity_enabled
                 else None
             )
             alpha = appearance_alpha
-            if dual_opacity_enabled and geometry_regularization_enabled:
+            geometry_information = information
+            if dual_opacity_enabled and needs_geometry_render:
                 # Render geometry evidence through the base opacity.  RGB and
                 # the densification gradient continue to use the appearance
                 # product above, preventing road/sign detail from being
                 # sacrificed to a geometry-only objective.
-                geometry_depth, alpha, _ = rasterize(
+                geometry_depth, alpha, geometry_information = rasterize(
                     parameters,
                     camera,
                     calibration,
@@ -5389,11 +5552,14 @@ def train(config_path: Path) -> int:
                     False,
                     rasterization_mode,
                     eps2d,
-                    render_mode="ED",
+                    render_mode=(
+                        "ED" if needs_geometry_depth or needs_surfel_aux else "RGB"
+                    ),
                     surfel_ablation=surfel_ablation,
                     geometry_opacity=True,
                 )
-                expected_depth = geometry_depth[..., :1]
+                if needs_geometry_depth:
+                    expected_depth = geometry_depth[..., :1]
             training_render = apply_appearance(rendered, appearance, index)
             strategy.step_pre_backward(
                 params=parameters,
@@ -5420,10 +5586,9 @@ def train(config_path: Path) -> int:
             if (
                 surfel_ablation is not None
                 and surfel_depth_distortion_weight > 0.0
-                and information.get("surfelDistortion") is not None
-                and geometry_regularization_enabled
+                and geometry_information.get("surfelDistortion") is not None
             ):
-                depth_distortion_loss = information[
+                depth_distortion_loss = geometry_information[
                     "surfelDistortion"
                 ].mean()
                 loss = loss + surfel_depth_distortion_weight * (
@@ -5437,14 +5602,14 @@ def train(config_path: Path) -> int:
                 surfel_ablation is not None
                 and surfel_normal_consistency_weight > 0.0
                 and step >= surfel_normal_consistency_start
-                and information.get("surfelNormal") is not None
-                and information.get("surfelDepthNormal") is not None
+                and geometry_information.get("surfelNormal") is not None
+                and geometry_information.get("surfelDepthNormal") is not None
             ):
                 normal_mask = alpha[..., 0].detach() > 0.5
                 if bool(normal_mask.any()):
                     cosine = (
-                        information["surfelNormal"]
-                        * information["surfelDepthNormal"]
+                        geometry_information["surfelNormal"]
+                        * geometry_information["surfelDepthNormal"]
                     ).sum(dim=-1)
                     normal_consistency_loss = torch.clamp_min(
                         1.0 - cosine[normal_mask], 0.0
@@ -5547,7 +5712,10 @@ def train(config_path: Path) -> int:
                         cross_view_loss.detach().item()
                     )
             if (
-                depth_layer_variance_weight > 0.0
+                (
+                    depth_layer_variance_weight > 0.0
+                    or driving_surface_variance_weight > 0.0
+                )
                 and expected_depth is not None
                 and step >= depth_layer_variance_start
                 and step % depth_layer_variance_every == 0
@@ -5575,7 +5743,8 @@ def train(config_path: Path) -> int:
                 variance_loss = depth_layer_variance_loss(
                     expected_depth, second_moment, alpha
                 )
-                loss = loss + depth_layer_variance_weight * variance_loss
+                if depth_layer_variance_weight > 0.0:
+                    loss = loss + depth_layer_variance_weight * variance_loss
                 if (
                     driving_surface_variance_weight > 0.0
                     and semantic_prior is not None
@@ -6124,7 +6293,11 @@ def train(config_path: Path) -> int:
         "pipelineRevision": config.get("pipelineRevision"),
         "jobId": config.get("jobId"),
         "profile": config.get("profile"),
+        "seed": seed,
         "configurationHash": config["configurationHash"],
+        "experimentConfigurationHash": config.get(
+            "experimentConfigurationHash"
+        ),
         "pipelineCodeHash": config["pipelineCodeHash"],
         "trainingInputHash": config["trainingInputHash"],
         "representationType": (

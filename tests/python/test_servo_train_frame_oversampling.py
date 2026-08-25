@@ -132,6 +132,38 @@ class FrameOversamplingContractTests(unittest.TestCase):
 
 
 class FrameOversamplingPlanTests(unittest.TestCase):
+    def test_config_is_parsed_and_applied_to_live_dataset(self) -> None:
+        class Dataset:
+            records = _records()
+            train_indices = [0, 1, 2, 3, 4, 5]
+            sequence_groups = [list(range(8))]
+            training_sampling_plan = servo_train.build_training_sampling_plan(
+                records, train_indices, sequence_groups
+            )
+
+        config = _diagnostic_config()
+        config["frameOversampling"] = {
+            "schema": servo_train.FRAME_OVERSAMPLING_SCHEMA,
+            "method": servo_train.FRAME_OVERSAMPLING_METHOD,
+            "multiplier": 3,
+            "frames": [
+                "video-000/00000002.png",
+                "video-000/00000006.png",
+            ],
+        }
+        dataset = Dataset()
+        baseline = dataset.training_sampling_plan.weights.copy()
+
+        receipt = servo_train.parse_frame_oversampling_config(config)
+        multipliers, receipt = servo_train.apply_frame_oversampling(
+            config, dataset, receipt
+        )
+
+        self.assertEqual(multipliers, {2: 3})
+        self.assertEqual(dataset.training_sampling_plan.weights[2], baseline[2] * 3)
+        self.assertEqual(receipt["trainableFrames"], ["video-000/00000002.png"])
+        self.assertEqual(receipt["heldOutFrames"], ["video-000/00000006.png"])
+
     def test_multipliers_scale_only_listed_training_frames(self) -> None:
         records = _records()
         train_indices = [0, 1, 2, 3, 4, 5]

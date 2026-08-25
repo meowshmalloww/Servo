@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,6 +73,50 @@ class DualOpacityTests(unittest.TestCase):
             servo_train.parameters_from_state(
                 state, device="cpu", dual_opacity=True
             )
+
+
+class DiagnosticExperimentIdentityTests(unittest.TestCase):
+    def config(self, output: Path) -> dict:
+        value = {
+            "configurationHash": "sha256:" + "1" * 64,
+            "pipelineCodeHash": "sha256:" + "2" * 64,
+            "trainingInputHash": "sha256:" + "3" * 64,
+            "output": str(output),
+            "seed": 42,
+        }
+        value["experimentConfigurationHash"] = "sha256:" + hashlib.sha256(
+            servo_train.canonical_json(value)
+        ).hexdigest()
+        return value
+
+    def test_fresh_output_and_identity_matched_resume_are_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "run"
+            config = self.config(output)
+            servo_train.validate_experiment_configuration_hash(config)
+            servo_train.prepare_training_output(output, config)
+            servo_train.prepare_training_output(output, config)
+            written = json.loads(
+                (output / "training-config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(written, config)
+
+    def test_nonempty_unbound_output_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "run"
+            output.mkdir()
+            (output / "foreign.txt").write_text("owned", encoding="utf-8")
+            with self.assertRaisesRegex(servo_train.TrainingError, "nonempty"):
+                servo_train.prepare_training_output(output, self.config(output))
+
+    def test_changed_config_fails_content_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = self.config(Path(temporary) / "run")
+            config["seed"] = 43
+            with self.assertRaisesRegex(
+                servo_train.TrainingError, "does not match"
+            ):
+                servo_train.validate_experiment_configuration_hash(config)
 
 
 class CrossViewGeometryTests(unittest.TestCase):

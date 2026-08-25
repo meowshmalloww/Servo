@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import torch
 
@@ -74,6 +77,88 @@ class SemanticSkyOpacityLossTests(unittest.TestCase):
                 diagnostic, **settings
             )
         )
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
+    def test_contributor_ledger_returns_and_commits_receipt(self) -> None:
+        from tools.reconstruction.servo_gsplat_runtime import (
+            prepare_gsplat_runtime,
+        )
+
+        prepare_gsplat_runtime()
+        import gsplat.cuda._wrapper as wrapper
+
+        class Dataset:
+            def __len__(self) -> int:
+                return 1
+
+            def load(self, _index):
+                pixels = torch.zeros((8, 8, 3), dtype=torch.float32)
+                camera = torch.eye(4, dtype=torch.float32)
+                calibration = torch.tensor(
+                    [[8.0, 0.0, 4.0], [0.0, 8.0, 4.0], [0.0, 0.0, 1.0]]
+                )
+                return pixels, camera, calibration, None
+
+            def load_certified_sky_evidence(self, _index):
+                return torch.ones((8, 8), dtype=torch.int64)
+
+        empty = torch.empty(0, device="cuda:0", dtype=torch.int64)
+        information = {
+            "means2d": torch.empty((0, 2), device="cuda:0"),
+            "conics": torch.empty((0, 3), device="cuda:0"),
+            "opacities": torch.empty(0, device="cuda:0"),
+            "tile_size": 16,
+            "isect_offsets": torch.zeros((1, 1), device="cuda:0", dtype=torch.int32),
+            "flatten_ids": torch.empty(0, device="cuda:0", dtype=torch.int32),
+            "gaussian_ids": torch.empty(0, device="cuda:0", dtype=torch.int64),
+        }
+        parameters = {
+            "means": torch.zeros((2, 3), device="cuda:0"),
+        }
+        hashes = {
+            "configurationHash": "sha256:" + "1" * 64,
+            "trainingInputHash": "sha256:" + "2" * 64,
+            "pipelineCodeHash": "sha256:" + "3" * 64,
+        }
+        descriptor = {"manifestSha256": "sha256:" + "4" * 64}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            with (
+                mock.patch.object(
+                    wrapper,
+                    "rasterize_to_indices_in_range",
+                    return_value=(empty, empty, empty),
+                ),
+                mock.patch.object(
+                    servo_train,
+                    "rasterize",
+                    return_value=(None, None, information),
+                ),
+                mock.patch.object(servo_train, "emit") as emitted,
+            ):
+                qualified, ledger = servo_train.build_certified_sky_contributor_ledger(
+                    parameters,
+                    Dataset(),
+                    "cuda:0",
+                    sh_degree=3,
+                    packed=True,
+                    rasterization_mode="antialiased",
+                    eps2d=0.3,
+                    audit_factor=1,
+                    minimum_weight=0.01,
+                    minimum_views=2,
+                    minimum_view_gap=1,
+                    cancel_path=output / "cancel.request",
+                    descriptor=descriptor,
+                    config=hashes,
+                    output=output,
+                )
+            self.assertEqual(qualified.tolist(), [False, False])
+            self.assertEqual(ledger["qualifiedGaussians"], 0)
+            receipt = output / "certified-sky-contributor-ledger.json"
+            self.assertTrue(receipt.is_file())
+            self.assertEqual(json.loads(receipt.read_text())["schema"], ledger["schema"])
+            emitted.assert_any_call("contributor_attribution_completed", **ledger)
 
     def test_gradient_descends_only_observed_sky_alpha(self) -> None:
         alpha = torch.tensor(
