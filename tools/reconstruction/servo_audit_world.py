@@ -657,7 +657,12 @@ def navigation_stress_poses(
         raise AuditError("Navigation stress cannot derive a positive camera baseline.")
     baseline = float(np.median(positive))
     count = min(max(2, anchor_count), len(cameras))
-    anchors = sorted(set(np.linspace(0, len(cameras) - 1, count).round().astype(int)))
+    anchors = [
+        int(value)
+        for value in sorted(
+            set(np.linspace(0, len(cameras) - 1, count).round().astype(int))
+        )
+    ]
 
     def rotation(yaw_degrees: float = 0.0, pitch_degrees: float = 0.0) -> np.ndarray:
         yaw = math.radians(yaw_degrees)

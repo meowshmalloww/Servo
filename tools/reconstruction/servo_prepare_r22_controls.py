@@ -53,7 +53,11 @@ def source_commit() -> str:
     return completed.stdout.strip()
 
 
-def build(seed: int, series: str = "r22-a-control") -> Path:
+def build(
+    seed: int,
+    series: str = "r22-a-control",
+    treatment: str = "control",
+) -> Path:
     if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", series) is None:
         raise RuntimeError("The experiment series must be a lowercase safe slug.")
     experiment_id = f"yosemite-{series}-seed{seed}-1500"
@@ -71,7 +75,7 @@ def build(seed: int, series: str = "r22-a-control") -> Path:
     config.update(
         {
             "jobId": experiment_id,
-            "profile": f"fidelity-12gb-r22-a-control-seed{seed}-1500",
+            "profile": f"fidelity-12gb-{series}-seed{seed}-1500",
             "output": str(output),
             "cancelPath": str(output.parent / "cancel.request"),
             "maxSteps": 1_500,
@@ -90,6 +94,16 @@ def build(seed: int, series: str = "r22-a-control") -> Path:
             "pipelineCodeHash": current_pipeline_hash,
         }
     )
+    if treatment == "surfel":
+        config["surfelAblation"] = {
+            "schema": "servo.diagnostic-surfel-ablation/v1",
+            "method": "gsplat-1.5.3-rasterization-2dgs-surfel-v1",
+            "depthDistortionWeight": 0.001,
+            "normalConsistencyWeight": 0.01,
+            "normalConsistencyStart": 600,
+        }
+    elif treatment != "control":
+        raise RuntimeError(f"Unsupported R22 treatment: {treatment}")
     config["diagnosticProvenance"] = {
         "schema": "servo.diagnostic-training-provenance/v1",
         "nonPublishable": True,
@@ -98,7 +112,11 @@ def build(seed: int, series: str = "r22-a-control") -> Path:
         "parentConfigurationHash": parent_configuration_hash,
         "sourceCommit": source_commit(),
         "reconstructionWorkingTreeHash": current_pipeline_hash,
-        "purpose": "Matched 1500-step R17-policy short-run control.",
+        "purpose": (
+            "Matched 1500-step gsplat 2DGS/surfel geometry diagnostic."
+            if treatment == "surfel"
+            else "Matched 1500-step R17-policy short-run control."
+        ),
         "claimLimit": (
             "Short-run variance and treatment comparison only; not a "
             "publishable world or collision/autonomy result."
@@ -117,11 +135,16 @@ def main() -> int:
     )
     parser.add_argument("--series", default="r22-a-control")
     parser.add_argument("--seeds", nargs="+", type=int, default=(42, 43))
+    parser.add_argument(
+        "--treatment",
+        choices=("control", "surfel"),
+        default="control",
+    )
     args = parser.parse_args()
     for seed in args.seeds:
         if not 0 <= seed <= 0xFFFFFFFF:
             raise RuntimeError("Seeds must be unsigned 32-bit integers.")
-        print(build(seed, args.series))
+        print(build(seed, args.series, args.treatment))
     return 0
 
 

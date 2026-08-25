@@ -106,6 +106,16 @@ class DrivingAuditTest(unittest.TestCase):
             cameras, anchor_count=3
         )
         self.assertEqual(anchors, [0, 2, 4])
+        self.assertTrue(all(type(anchor) is int for anchor in anchors))
+        json.dumps(
+            {
+                "anchors": anchors,
+                "cases": [
+                    {key: value for key, value in case.items() if key != "c2w"}
+                    for case in cases
+                ],
+            }
+        )
         self.assertAlmostEqual(baseline, 0.1)
         self.assertEqual(len(cases), 30)
         lateral = next(case for case in cases if case["case"] == "lateral-right-2x")
