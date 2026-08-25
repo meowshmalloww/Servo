@@ -120,13 +120,13 @@ def build_config(
 ) -> dict[str, Any]:
     if treatment not in {"footprint-control", "region-aware"}:
         raise RuntimeError(f"Unsupported R30 treatment: {treatment}")
-    if steps not in {750, 1_500}:
+    if steps not in {900, 1_500}:
         raise RuntimeError(
-            "R30 steps must be 750 or 1500; this 373-camera dataset cannot "
-            "satisfy Servo's final-fit coverage contract in 300 total steps."
+            "R30 steps must be 900 or 1500; this dataset requires a complete "
+            "513-slot main epoch and a 373-camera final-fit pass."
         )
     config = json.loads(base.read_text(encoding="utf-8"))
-    final_fit_steps = min(int(config.get("finalFitSteps", 500)), steps // 2 - 1)
+    final_fit_steps = 373 if steps == 900 else int(config.get("finalFitSteps", 500))
     parent_configuration_hash = config["configurationHash"]
     experiment_id = f"r30-{'a0' if treatment == 'footprint-control' else 'a1'}-{treatment}-seed{seed}-{steps:04d}"
     current_pipeline_hash = pipeline_hash()
@@ -210,7 +210,7 @@ def main() -> int:
         choices=("footprint-control", "region-aware"),
         required=True,
     )
-    parser.add_argument("--steps", type=int, default=750)
+    parser.add_argument("--steps", type=int, default=900)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--config-output", type=Path, required=True)

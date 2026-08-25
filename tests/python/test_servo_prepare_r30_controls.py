@@ -29,21 +29,21 @@ class PrepareR30ControlsTests(unittest.TestCase):
             control = prepare.build_config(
                 base=base,
                 treatment="footprint-control",
-                steps=750,
+                steps=900,
                 seed=42,
                 output=root / "control",
             )
             region = prepare.build_config(
                 base=base,
                 treatment="region-aware",
-                steps=750,
+                steps=900,
                 seed=42,
                 output=root / "region",
             )
         self.assertNotIn("regionAwareDensification", control)
         self.assertIn("regionAwareDensification", region)
-        self.assertEqual(control["finalFitSteps"], 374)
-        self.assertEqual(control["refineScale2dStopIter"], 376)
+        self.assertEqual(control["finalFitSteps"], 373)
+        self.assertEqual(control["refineScale2dStopIter"], 527)
         for start_key in (
             "denseGeometryStart",
             "depthLayerVarianceStart",
@@ -76,7 +76,7 @@ class PrepareR30ControlsTests(unittest.TestCase):
 
     def test_rejects_unreviewed_budget(self) -> None:
         base = REPOSITORY / "tmp" / "r28-current-confidence-v4-control-1500-config.json"
-        with self.assertRaisesRegex(RuntimeError, "750 or 1500"):
+        with self.assertRaisesRegex(RuntimeError, "900 or 1500"):
             prepare.build_config(
                 base=base,
                 treatment="region-aware",
@@ -87,7 +87,7 @@ class PrepareR30ControlsTests(unittest.TestCase):
 
     def test_rejects_impossible_300_step_camera_coverage(self) -> None:
         base = REPOSITORY / "tmp" / "r28-current-confidence-v4-control-1500-config.json"
-        with self.assertRaisesRegex(RuntimeError, "373-camera dataset"):
+        with self.assertRaisesRegex(RuntimeError, "513-slot main epoch"):
             prepare.build_config(
                 base=base,
                 treatment="footprint-control",
