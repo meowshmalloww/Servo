@@ -118,6 +118,21 @@ COVERAGE_DENSIFICATION_SCHEMA = "servo.diagnostic-coverage-densification/v1"
 COVERAGE_DENSIFICATION_METHOD = "gsplat-1.5.3-tile-footprint-depth-scaled-v1"
 COVERAGE_DENSIFICATION_FOOTPRINT_SOURCE = "tiles-per-gaussian"
 COVERAGE_DENSIFICATION_DEPTH_SOURCE = "camera-space-z"
+REGION_DENSIFICATION_SCHEMA = (
+    "servo.diagnostic-region-aware-densification/v1"
+)
+REGION_DENSIFICATION_METHOD = (
+    "gsplat-1.5.3-absgrad-tile-footprint-semantic-detail-v1"
+)
+REGION_DENSIFICATION_CLASS_NAMES = (
+    "excluded",
+    "vegetation-water",
+    "rigid-static",
+    "road",
+    "boundary",
+    "road-marking",
+    "sign",
+)
 
 
 class TrainingError(RuntimeError):
@@ -212,6 +227,211 @@ def supported_coverage_densification_contract(
     )
 
 
+def supported_region_densification_contract(
+    config: Mapping[str, Any], treatment: Mapping[str, Any]
+) -> bool:
+    """Seal observed-detail topology allocation to one bounded R30 A/B."""
+
+    expected_weights = {
+        "unknown": 0.0,
+        "sky": 0.0,
+        "dynamic": 0.0,
+        "vegetation": 0.5,
+        "water": 0.5,
+        "rigidStatic": 1.0,
+        "road": 1.15,
+        "boundary": 1.75,
+        "roadMarking": 2.5,
+        "sign": 3.0,
+    }
+    try:
+        weights = treatment["semanticWeights"]
+        numeric = {
+            "maximumFootprintFraction": 0.02,
+            "depthScaleFraction": 0.37,
+            "depthPower": 2.0,
+            "minimumStaticConfidence": 0.50,
+            "minimumStaticFootprintFraction": 0.50,
+            "minimumObservedViewsForBoost": 3.0,
+            "edgeBase": 0.50,
+            "edgeScale": 0.08,
+            "edgeMaximum": 1.50,
+            "residualBase": 0.50,
+            "residualScale": 0.15,
+            "residualMaximum": 1.50,
+            "priorityMinimum": 0.75,
+            "priorityMaximum": 3.0,
+        }
+        numeric_valid = all(
+            math.isclose(
+                float(treatment[key]), expected, rel_tol=0.0, abs_tol=1e-12
+            )
+            for key, expected in numeric.items()
+        )
+        weights_valid = isinstance(weights, Mapping) and all(
+            math.isclose(
+                float(weights[key]), expected, rel_tol=0.0, abs_tol=1e-12
+            )
+            for key, expected in expected_weights.items()
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        is_nonpublishable_diagnostic_config(config)
+        and treatment.get("schema") == REGION_DENSIFICATION_SCHEMA
+        and treatment.get("method") == REGION_DENSIFICATION_METHOD
+        and numeric_valid
+        and weights_valid
+        and treatment.get("lossesChanged") is False
+        and treatment.get("opacityPolicyChanged") is False
+        and treatment.get("pruningPolicyChanged") is False
+        and treatment.get("generatedViewsUsed") is False
+    )
+
+
+def build_region_density_priority(
+    rendered_rgb: Any,
+    target_rgb: Any,
+    semantic: Any,
+    confidence: Any,
+) -> tuple[Any, Any, Any]:
+    """Build detached observed-detail priority without changing the RGB loss."""
+
+    import torch
+
+    if (
+        rendered_rgb.ndim != 4
+        or rendered_rgb.shape != target_rgb.shape
+        or rendered_rgb.shape[-1] != 3
+        or semantic.shape != (*rendered_rgb.shape[:3], 1)
+        or confidence.shape != semantic.shape
+    ):
+        raise TrainingError(
+            "Region densification requires matching BHWC RGB, semantic, and confidence."
+        )
+    with torch.no_grad():
+        labels = semantic[..., 0].to(dtype=torch.int64)
+        class_ids = torch.zeros_like(labels, dtype=torch.int64)
+        weights = torch.zeros_like(labels, dtype=rendered_rgb.dtype)
+
+        rigid = ((labels >= 1) & (labels <= 15)) | (labels == 24) | (labels == 25)
+        weights[rigid] = 1.0
+        class_ids[rigid] = 2
+        road = (labels == 1) | (labels == 5) | (labels == 25)
+        weights[road] = 1.15
+        class_ids[road] = 3
+        boundary = (labels == 3) | (labels == 4) | (labels == 10)
+        weights[boundary] = 1.75
+        class_ids[boundary] = 4
+        marking = labels == 2
+        weights[marking] = 2.5
+        class_ids[marking] = 5
+        sign = (labels >= 12) & (labels <= 15)
+        weights[sign] = 3.0
+        class_ids[sign] = 6
+        vegetation_water = (labels == 16) | (labels == 23)
+        weights[vegetation_water] = 0.5
+        class_ids[vegetation_water] = 1
+
+        trusted = confidence[..., 0].clamp(0.0, 1.0)
+        static = (trusted >= 0.50) & (class_ids > 0)
+        weights = torch.where(static, weights, torch.zeros_like(weights))
+
+        target = target_rgb.detach()
+        luminance = (
+            0.2126 * target[..., 0]
+            + 0.7152 * target[..., 1]
+            + 0.0722 * target[..., 2]
+        )
+        horizontal = torch.zeros_like(luminance)
+        vertical = torch.zeros_like(luminance)
+        horizontal[..., :-1] = luminance[..., 1:] - luminance[..., :-1]
+        vertical[:, :-1, :] = luminance[:, 1:, :] - luminance[:, :-1, :]
+        edge = torch.sqrt(horizontal.square() + vertical.square() + 1e-12)
+        edge = (0.5 + edge / 0.08).clamp(0.5, 1.5)
+        residual = (rendered_rgb.detach() - target).abs().mean(dim=-1)
+        residual = (0.5 + residual / 0.15).clamp(0.5, 1.5)
+        priority = weights * trusted * torch.sqrt(edge * residual)
+        priority = priority.clamp(0.0, 4.5)
+        return priority[..., None], static.to(priority.dtype)[..., None], class_ids[..., None]
+
+
+def sample_region_priority_for_gaussians(
+    priority: Any,
+    static: Any,
+    classes: Any,
+    info: Mapping[str, Any],
+) -> tuple[Any, Any, Any]:
+    """Sample adaptive 1/3/7/15-pixel footprint evidence at packed means."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    required = ("means2d", "radii", "camera_ids", "gaussian_ids", "width", "height")
+    missing = [key for key in required if key not in info]
+    if missing:
+        raise TrainingError(
+            "Region densification raster metadata is incomplete: " + ", ".join(missing)
+        )
+    if priority.shape != static.shape or priority.shape != classes.shape:
+        raise TrainingError("Region densification maps must have matching BHWC shapes.")
+    if priority.ndim != 4 or priority.shape[-1] != 1:
+        raise TrainingError("Region densification maps must use BHWC scalar layout.")
+    means2d = info["means2d"]
+    radii = info["radii"].max(dim=-1).values
+    camera_ids = info["camera_ids"].to(dtype=torch.long)
+    count = int(info["gaussian_ids"].numel())
+    if means2d.shape != (count, 2) or radii.shape != (count,) or camera_ids.shape != (count,):
+        raise TrainingError("Region densification requires aligned packed observations.")
+    if priority.shape[0] != int(info["n_cameras"]):
+        raise TrainingError("Region densification camera maps do not match raster metadata.")
+
+    priority_nchw = priority.permute(0, 3, 1, 2)
+    static_nchw = static.permute(0, 3, 1, 2)
+    pooled: list[tuple[Any, Any, Any]] = []
+    for kernel in (1, 3, 7, 15):
+        padding = kernel // 2
+        average = functional.avg_pool2d(
+            priority_nchw, kernel, stride=1, padding=padding
+        )
+        maximum = functional.max_pool2d(
+            priority_nchw, kernel, stride=1, padding=padding
+        )
+        valid_fraction = functional.avg_pool2d(
+            static_nchw, kernel, stride=1, padding=padding
+        )
+        pooled.append((average, maximum, valid_fraction))
+
+    x = means2d[:, 0].round().long().clamp(0, int(info["width"]) - 1)
+    y = means2d[:, 1].round().long().clamp(0, int(info["height"]) - 1)
+    level = torch.zeros_like(x)
+    level = torch.where(radii > 2.0, torch.ones_like(level), level)
+    level = torch.where(radii > 4.0, torch.full_like(level, 2), level)
+    level = torch.where(radii > 8.0, torch.full_like(level, 3), level)
+
+    sampled_priority = torch.zeros(count, device=priority.device, dtype=priority.dtype)
+    sampled_static = torch.zeros_like(sampled_priority)
+    for index, (average, maximum, valid_fraction) in enumerate(pooled):
+        selected = level == index
+        if bool(selected.any()):
+            camera = camera_ids[selected]
+            row = y[selected]
+            column = x[selected]
+            sampled_priority[selected] = (
+                0.75 * average[camera, 0, row, column]
+                + 0.25 * maximum[camera, 0, row, column]
+            )
+            sampled_static[selected] = valid_fraction[camera, 0, row, column]
+    sampled_classes = classes[camera_ids, y, x, 0].to(dtype=torch.long)
+    excluded_center = sampled_classes == 0
+    sampled_priority = torch.where(
+        excluded_center,
+        sampled_priority.clamp(max=1.0),
+        sampled_priority,
+    )
+    return sampled_priority, sampled_static, sampled_classes
+
+
 def update_coverage_densification_state(
     params: Mapping[str, Any],
     state: dict[str, Any],
@@ -224,6 +444,10 @@ def update_coverage_densification_state(
     footprint_power: float,
     depth_scale_fraction: float,
     depth_power: float,
+    region_priority: Any | None = None,
+    region_static_fraction: Any | None = None,
+    region_classes: Any | None = None,
+    frame_index: int | None = None,
 ) -> None:
     """Accumulate clean-room footprint/depth-aware gsplat growth statistics.
 
@@ -379,6 +603,99 @@ def update_coverage_densification_state(
     diagnostics["cappedObservations"] += int(
         (footprints > maximum_footprint).sum().item()
     )
+    supplied_region_values = (
+        region_priority,
+        region_static_fraction,
+        region_classes,
+        frame_index,
+    )
+    if all(value is None for value in supplied_region_values):
+        return
+    if any(value is None for value in supplied_region_values):
+        raise TrainingError("Region densification observation evidence is incomplete.")
+    assert region_priority is not None
+    assert region_static_fraction is not None
+    assert region_classes is not None
+    assert frame_index is not None
+    if (
+        region_priority.shape != (observation_count,)
+        or region_static_fraction.shape != (observation_count,)
+        or region_classes.shape != (observation_count,)
+        or not torch.isfinite(region_priority).all()
+        or not torch.isfinite(region_static_fraction).all()
+        or (region_priority < 0.0).any()
+        or (region_static_fraction < 0.0).any()
+        or (region_static_fraction > 1.0).any()
+        or (region_classes < 0).any()
+        or (region_classes >= len(REGION_DENSIFICATION_CLASS_NAMES)).any()
+    ):
+        raise TrainingError("Region densification rejected malformed observations.")
+
+    region_keys = (
+        "regionPrioritySum",
+        "regionPriorityWeight",
+        "regionView0",
+        "regionView1",
+        "regionView2",
+        "regionPeakPriority",
+        "regionPeakClass",
+    )
+    if (
+        diagnostics.get("regionPrioritySum") is None
+        or len(diagnostics["regionPrioritySum"]) != gaussian_count
+    ):
+        diagnostics["regionPrioritySum"] = torch.zeros(
+            gaussian_count, device=gradients.device
+        )
+        diagnostics["regionPriorityWeight"] = torch.zeros(
+            gaussian_count, device=gradients.device
+        )
+        for key in ("regionView0", "regionView1", "regionView2"):
+            diagnostics[key] = torch.full(
+                (gaussian_count,), -1, dtype=torch.int64, device=gradients.device
+            )
+        diagnostics["regionPeakPriority"] = torch.full(
+            (gaussian_count,), -1.0, device=gradients.device
+        )
+        diagnostics["regionPeakClass"] = torch.zeros(
+            gaussian_count, dtype=torch.int64, device=gradients.device
+        )
+    if any(diagnostics.get(key) is None for key in region_keys):
+        raise TrainingError("Region densification state initialization failed.")
+
+    valid_fraction = torch.where(
+        region_static_fraction >= 0.50,
+        region_static_fraction.clamp(0.0, 1.0),
+        torch.zeros_like(region_static_fraction),
+    )
+    region_weights = weighted_observations * valid_fraction
+    diagnostics["regionPrioritySum"].index_add_(
+        0, gaussian_ids, region_priority * region_weights
+    )
+    diagnostics["regionPriorityWeight"].index_add_(
+        0, gaussian_ids, region_weights
+    )
+    eligible = region_weights > 0.0
+    frame_value = torch.full_like(gaussian_ids, int(frame_index), dtype=torch.int64)
+    for key in ("regionView0", "regionView1", "regionView2"):
+        slots = diagnostics[key][gaussian_ids]
+        already_seen = torch.zeros_like(eligible)
+        for compare_key in ("regionView0", "regionView1", "regionView2"):
+            already_seen |= diagnostics[compare_key][gaussian_ids] == frame_value
+        fill = eligible & ~already_seen & (slots < 0)
+        diagnostics[key][gaussian_ids[fill]] = frame_value[fill]
+
+    previous_peak = diagnostics["regionPeakPriority"][gaussian_ids]
+    replace_peak = eligible & (region_priority > previous_peak)
+    diagnostics["regionPeakPriority"][gaussian_ids[replace_peak]] = region_priority[
+        replace_peak
+    ]
+    diagnostics["regionPeakClass"][gaussian_ids[replace_peak]] = region_classes[
+        replace_peak
+    ]
+    diagnostics["regionObservations"] = int(
+        diagnostics.get("regionObservations", 0)
+    ) + observation_count
 
 
 def supported_semantic_sky_opacity_contract(
@@ -4971,6 +5288,125 @@ def train(config_path: Path) -> int:
             )
             return result
 
+    class RegionAwareFootprintDepthDefaultStrategy(FootprintDepthDefaultStrategy):
+        """Allocate topology to repeatedly observed unresolved rigid detail."""
+
+        _region_observation: tuple[Any, Any, Any, int] | None = None
+
+        def set_region_observation(
+            self,
+            priority: Any,
+            static_fraction: Any,
+            classes: Any,
+            frame_index: int,
+        ) -> None:
+            self._region_observation = (
+                priority,
+                static_fraction,
+                classes,
+                int(frame_index),
+            )
+
+        @torch.no_grad()
+        def _update_state(
+            self,
+            params: Any,
+            state: Any,
+            info: Any,
+            packed: bool = False,
+        ) -> None:
+            if not packed or self._region_observation is None:
+                raise TrainingError(
+                    "Region-aware densification requires one sealed packed observation."
+                )
+            priority, static_fraction, classes, frame_index = self._region_observation
+            self._region_observation = None
+            update_coverage_densification_state(
+                params,
+                state,
+                info,
+                key_for_gradient=self.key_for_gradient,
+                absgrad=self.absgrad,
+                scene_scale=float(state["scene_scale"]),
+                maximum_footprint_fraction=0.02,
+                footprint_power=1.0,
+                depth_scale_fraction=0.37,
+                depth_power=2.0,
+                region_priority=priority,
+                region_static_fraction=static_fraction,
+                region_classes=classes,
+                frame_index=frame_index,
+            )
+
+        @torch.no_grad()
+        def _grow_gs(
+            self,
+            params: Any,
+            optimizers: Any,
+            state: Any,
+            step: int,
+        ) -> tuple[int, int]:
+            diagnostics = state["coverageDensificationDiagnostics"]
+            required = (
+                "regionPrioritySum",
+                "regionPriorityWeight",
+                "regionView0",
+                "regionView1",
+                "regionView2",
+                "regionPeakClass",
+            )
+            if any(diagnostics.get(key) is None for key in required):
+                raise TrainingError(
+                    "Region-aware densification did not accumulate complete evidence."
+                )
+            base_score = state["grad2d"] / state["count"].clamp_min(1.0)
+            priority = diagnostics["regionPrioritySum"] / diagnostics[
+                "regionPriorityWeight"
+            ].clamp_min(1e-6)
+            observed_views = sum(
+                (diagnostics[key] >= 0).to(dtype=torch.int32)
+                for key in ("regionView0", "regionView1", "regionView2")
+            )
+            priority = torch.where(
+                observed_views >= 3,
+                priority.clamp(0.75, 3.0),
+                torch.ones_like(priority),
+            )
+            treatment_score = base_score * priority
+            base_candidates = base_score > self.grow_grad2d
+            treatment_candidates = treatment_score > self.grow_grad2d
+            added = treatment_candidates & ~base_candidates
+            peak_class = diagnostics["regionPeakClass"]
+            added_by_class = {
+                name: int((added & (peak_class == index)).sum().item())
+                for index, name in enumerate(REGION_DENSIFICATION_CLASS_NAMES)
+            }
+            excluded_added = added_by_class["excluded"]
+            emit(
+                "region_densification_decision",
+                step=step,
+                method=REGION_DENSIFICATION_METHOD,
+                observations=int(diagnostics.get("regionObservations", 0)),
+                minimumObservedViews=3,
+                baseCandidates=int(base_candidates.sum().item()),
+                treatmentCandidates=int(treatment_candidates.sum().item()),
+                addedCandidates=int(added.sum().item()),
+                addedCandidatesByRegion=added_by_class,
+                excludedBoostedCandidates=excluded_added,
+                priorityMean=float(priority.mean().item()),
+                priorityMaximum=float(priority.max().item()),
+            )
+            if excluded_added:
+                raise TrainingError(
+                    "Region-aware densification attempted to boost excluded evidence."
+                )
+            state["grad2d"] = treatment_score * state["count"]
+            result = super()._grow_gs(params, optimizers, state, step)
+            for key in required + ("regionPeakPriority",):
+                diagnostics[key] = None
+            diagnostics["regionObservations"] = 0
+            return result
+
     with config_path.open("r", encoding="utf-8") as stream:
         config = json.load(stream)
     if config.get("schema") != CONFIG_SCHEMA:
@@ -5170,6 +5606,16 @@ def train(config_path: Path) -> int:
             raise TrainingError(
                 "Coverage-aware densification is sealed to the R24 "
                 "non-publishable diagnostic contract."
+            )
+    region_densification: dict[str, Any] | None = None
+    if isinstance(config.get("regionAwareDensification"), Mapping):
+        region_densification = dict(config["regionAwareDensification"])
+        if coverage_densification is None or not supported_region_densification_contract(
+            config, region_densification
+        ):
+            raise TrainingError(
+                "Region-aware densification requires the sealed R30 coverage "
+                "control and non-publishable treatment contract."
             )
     max_steps = int(config["maxSteps"])
     checkpoint_every = int(config["checkpointEvery"])
@@ -5704,7 +6150,9 @@ def train(config_path: Path) -> int:
     needs_geometry_render = render_requirements["geometryRender"]
     needs_surfel_aux = render_requirements["surfelAux"]
     strategy_type = (
-        FootprintDepthDefaultStrategy
+        RegionAwareFootprintDepthDefaultStrategy
+        if region_densification is not None
+        else FootprintDepthDefaultStrategy
         if coverage_densification is not None
         else EffectiveOpacityDefaultStrategy
         if corrected_dual_opacity
@@ -6553,6 +7001,33 @@ def train(config_path: Path) -> int:
                 if dual_opacity_geometry_rgb_weight > 0.0:
                     geometry_color_render = geometry_depth[..., :3]
             training_render = apply_appearance(rendered, appearance, index)
+            if region_densification is not None:
+                if semantic_prior is None:
+                    raise TrainingError(
+                        "Region-aware densification requires observed semantic evidence."
+                    )
+                priority_map, static_map, class_map = build_region_density_priority(
+                    training_render,
+                    pixels,
+                    semantic_prior,
+                    confidence,
+                )
+                (
+                    region_priority,
+                    region_static_fraction,
+                    region_classes,
+                ) = sample_region_priority_for_gaussians(
+                    priority_map,
+                    static_map,
+                    class_map,
+                    information,
+                )
+                strategy.set_region_observation(
+                    region_priority,
+                    region_static_fraction,
+                    region_classes,
+                    index,
+                )
             strategy.step_pre_backward(
                 params=parameters,
                 optimizers=optimizers,
@@ -7382,6 +7857,7 @@ def train(config_path: Path) -> int:
         "mainSampling": main_sampling_receipt,
         "frameOversampling": frame_oversampling_receipt,
         "coverageAwareDensification": coverage_densification,
+        "regionAwareDensification": region_densification,
         "surfelAblation": (
             {
                 **surfel_ablation,
