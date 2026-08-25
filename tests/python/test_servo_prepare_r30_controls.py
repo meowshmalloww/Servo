@@ -29,21 +29,21 @@ class PrepareR30ControlsTests(unittest.TestCase):
             control = prepare.build_config(
                 base=base,
                 treatment="footprint-control",
-                steps=300,
+                steps=750,
                 seed=42,
                 output=root / "control",
             )
             region = prepare.build_config(
                 base=base,
                 treatment="region-aware",
-                steps=300,
+                steps=750,
                 seed=42,
                 output=root / "region",
             )
         self.assertNotIn("regionAwareDensification", control)
         self.assertIn("regionAwareDensification", region)
-        self.assertEqual(control["finalFitSteps"], 50)
-        self.assertEqual(control["refineScale2dStopIter"], 250)
+        self.assertEqual(control["finalFitSteps"], 374)
+        self.assertEqual(control["refineScale2dStopIter"], 376)
         for start_key in (
             "denseGeometryStart",
             "depthLayerVarianceStart",
@@ -76,11 +76,22 @@ class PrepareR30ControlsTests(unittest.TestCase):
 
     def test_rejects_unreviewed_budget(self) -> None:
         base = REPOSITORY / "tmp" / "r28-current-confidence-v4-control-1500-config.json"
-        with self.assertRaisesRegex(RuntimeError, "300, 750, or 1500"):
+        with self.assertRaisesRegex(RuntimeError, "750 or 1500"):
             prepare.build_config(
                 base=base,
                 treatment="region-aware",
                 steps=7_000,
+                seed=42,
+                output=Path("unused"),
+            )
+
+    def test_rejects_impossible_300_step_camera_coverage(self) -> None:
+        base = REPOSITORY / "tmp" / "r28-current-confidence-v4-control-1500-config.json"
+        with self.assertRaisesRegex(RuntimeError, "373-camera dataset"):
+            prepare.build_config(
+                base=base,
+                treatment="footprint-control",
+                steps=300,
                 seed=42,
                 output=Path("unused"),
             )

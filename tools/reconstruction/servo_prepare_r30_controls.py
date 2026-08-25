@@ -120,9 +120,13 @@ def build_config(
 ) -> dict[str, Any]:
     if treatment not in {"footprint-control", "region-aware"}:
         raise RuntimeError(f"Unsupported R30 treatment: {treatment}")
-    if steps not in {300, 750, 1_500}:
-        raise RuntimeError("R30 steps must be one of 300, 750, or 1500.")
+    if steps not in {750, 1_500}:
+        raise RuntimeError(
+            "R30 steps must be 750 or 1500; this 373-camera dataset cannot "
+            "satisfy Servo's final-fit coverage contract in 300 total steps."
+        )
     config = json.loads(base.read_text(encoding="utf-8"))
+    final_fit_steps = min(int(config.get("finalFitSteps", 500)), steps // 2 - 1)
     parent_configuration_hash = config["configurationHash"]
     experiment_id = f"r30-{'a0' if treatment == 'footprint-control' else 'a1'}-{treatment}-seed{seed}-{steps:04d}"
     current_pipeline_hash = pipeline_hash()
@@ -133,17 +137,13 @@ def build_config(
             "output": str(output),
             "cancelPath": str(output.parent / f"{experiment_id}.cancel.request"),
             "maxSteps": steps,
-            # Preserve two 100-step topology decisions in the 300-step probe,
-            # then reserve a small, valid held-out/final-fit phase.
-            "finalFitSteps": 50 if steps == 300 else min(250, steps // 3),
+            "finalFitSteps": final_fit_steps,
             "coarseSteps": min(50, max(1, steps // 6)),
-            "targetGaussians": 300_000 if steps == 300 else 750_000,
-            "maxGaussians": 600_000 if steps == 300 else 1_500_000,
+            "targetGaussians": 750_000,
+            "maxGaussians": 1_500_000,
             "refineStartIter": 100,
             "refineEvery": 100,
-            "refineScale2dStopIter": (
-                steps - (50 if steps == 300 else min(250, steps // 3))
-            ),
+            "refineScale2dStopIter": steps - final_fit_steps,
             "checkpointEvery": 100,
             "maxVramGiB": 11.0,
             "packed": True,
@@ -210,7 +210,7 @@ def main() -> int:
         choices=("footprint-control", "region-aware"),
         required=True,
     )
-    parser.add_argument("--steps", type=int, default=300)
+    parser.add_argument("--steps", type=int, default=750)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--config-output", type=Path, required=True)
