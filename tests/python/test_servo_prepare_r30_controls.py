@@ -54,6 +54,10 @@ class PrepareR30ControlsTests(unittest.TestCase):
             "refineStartIter",
             "refineEvery",
             "refineScale2dStopIter",
+            "denseGeometryStart",
+            "depthLayerVarianceStart",
+            "observedDetailStart",
+            "surfaceAlignmentStart",
             "growGrad2d",
             "seed",
         ):

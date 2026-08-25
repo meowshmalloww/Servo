@@ -153,6 +153,13 @@ def build_config(
             "crossViewDepthConsistencyWeight": 0.0,
             "surfaceAlignmentWeight": 0.0,
             "roadPlanarityWeight": 0.0,
+            # R28's original starts are beyond a 300-step probe. Preserve the
+            # objective weights, but place every required schedule at the same
+            # post-coarse point for both matched arms.
+            "denseGeometryStart": 100,
+            "depthLayerVarianceStart": 100,
+            "observedDetailStart": 100,
+            "surfaceAlignmentStart": 100,
             "seed": seed,
             "pipelineCodeHash": current_pipeline_hash,
             "coverageAwareDensification": coverage_treatment(),
