@@ -42,6 +42,8 @@ class PrepareR30ControlsTests(unittest.TestCase):
             )
         self.assertNotIn("regionAwareDensification", control)
         self.assertIn("regionAwareDensification", region)
+        self.assertEqual(control["finalFitSteps"], 50)
+        self.assertEqual(control["refineScale2dStopIter"], 250)
         self.assertEqual(control["coverageAwareDensification"], region["coverageAwareDensification"])
         for key in (
             "maxSteps",

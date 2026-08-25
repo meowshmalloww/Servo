@@ -133,13 +133,17 @@ def build_config(
             "output": str(output),
             "cancelPath": str(output.parent / f"{experiment_id}.cancel.request"),
             "maxSteps": steps,
-            "finalFitSteps": 0,
+            # Preserve two 100-step topology decisions in the 300-step probe,
+            # then reserve a small, valid held-out/final-fit phase.
+            "finalFitSteps": 50 if steps == 300 else min(250, steps // 3),
             "coarseSteps": min(50, max(1, steps // 6)),
             "targetGaussians": 300_000 if steps == 300 else 750_000,
             "maxGaussians": 600_000 if steps == 300 else 1_500_000,
             "refineStartIter": 100,
             "refineEvery": 100,
-            "refineScale2dStopIter": steps,
+            "refineScale2dStopIter": (
+                steps - (50 if steps == 300 else min(250, steps // 3))
+            ),
             "checkpointEvery": 100,
             "maxVramGiB": 11.0,
             "packed": True,
