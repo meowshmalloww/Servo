@@ -144,6 +144,34 @@ class DrivingAuditTest(unittest.TestCase):
         self.assertAlmostEqual(summary["lowerHalfSupportMinimum"], 0.5)
         self.assertAlmostEqual(summary["depthAmbiguityP95Maximum"], 0.7)
 
+    def test_yaw_sweep_covers_full_rotation_at_multiple_anchors(self) -> None:
+        cameras = []
+        for index in range(5):
+            c2w = np.eye(4, dtype=np.float64)
+            c2w[2, 3] = float(index) * 0.1
+            cameras.append({"c2w": c2w})
+
+        anchors, cases = servo_audit_world.yaw_sweep_poses(
+            cameras, anchor_count=3, step_degrees=45
+        )
+        self.assertEqual(anchors, [0, 2, 4])
+        self.assertEqual(len(cases), 24)
+        self.assertEqual(
+            [case["yawDegrees"] for case in cases if case["anchor"] == 2],
+            [0, 45, 90, 135, 180, 225, 270, 315],
+        )
+        reverse = next(
+            case
+            for case in cases
+            if case["anchor"] == 2 and case["yawDegrees"] == 180
+        )
+        np.testing.assert_allclose(reverse["c2w"][:3, 3], cameras[2]["c2w"][:3, 3])
+        np.testing.assert_allclose(
+            reverse["c2w"][:3, 2], np.asarray([0.0, 0.0, -1.0]), atol=1.0e-12
+        )
+        with self.assertRaises(servo_audit_world.AuditError):
+            servo_audit_world.yaw_sweep_poses(cameras, step_degrees=7)
+
     def test_coverage_envelope_fails_unknown_without_strong_support(self) -> None:
         envelope = servo_audit_world.build_coverage_envelope(
             [

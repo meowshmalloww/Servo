@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 
 
-AUDIT_SCHEMA = "servo.gaussian-path-audit/v4"
+AUDIT_SCHEMA = "servo.gaussian-path-audit/v5"
 DIAGNOSTIC_PROVENANCE_SCHEMA = "servo.diagnostic-training-provenance/v1"
 SKY_DIAGNOSTIC_SCHEMA = "servo.sky-leakage-diagnostic/v1"
 COVERAGE_ENVELOPE_SCHEMA = "servo.observed-coverage-envelope/v1"
@@ -735,6 +735,54 @@ def aggregate_navigation_stress(samples: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def yaw_sweep_poses(
+    cameras: list[dict[str, Any]],
+    *,
+    anchor_count: int = 3,
+    step_degrees: int = 5,
+) -> tuple[list[int], list[dict[str, Any]]]:
+    """Create full local-yaw sweeps that expose unobserved-direction failure.
+
+    These poses deliberately keep the recorded camera position fixed. They
+    measure renderer support and layer stability only; directions behind a
+    forward-only capture have no reference image and remain unknown.
+    """
+
+    if not cameras:
+        raise AuditError("A 360-degree yaw sweep requires at least one camera.")
+    if step_degrees <= 0 or step_degrees > 45 or 360 % step_degrees:
+        raise AuditError(
+            "Yaw-sweep step degrees must evenly divide 360 and be in [1,45]."
+        )
+    count = min(max(1, anchor_count), len(cameras))
+    anchors = [
+        int(value)
+        for value in sorted(
+            set(np.linspace(0, len(cameras) - 1, count).round().astype(int))
+        )
+    ]
+    cases: list[dict[str, Any]] = []
+    for anchor in anchors:
+        base = cameras[anchor]["c2w"]
+        for yaw_degrees in range(0, 360, step_degrees):
+            yaw = math.radians(float(yaw_degrees))
+            cosine, sine = math.cos(yaw), math.sin(yaw)
+            rotation = np.asarray(
+                [[cosine, 0.0, sine], [0.0, 1.0, 0.0], [-sine, 0.0, cosine]],
+                dtype=np.float64,
+            )
+            pose = base.copy()
+            pose[:3, :3] = base[:3, :3] @ rotation
+            cases.append(
+                {
+                    "anchor": anchor,
+                    "yawDegrees": yaw_degrees,
+                    "c2w": pose,
+                }
+            )
+    return anchors, cases
+
+
 def build_coverage_envelope(
     samples: list[dict[str, Any]], *, baseline: float, world_sha256: str
 ) -> dict[str, Any]:
@@ -1198,6 +1246,14 @@ def audit(
         c2w = torch.from_numpy(c2w_np.astype(np.float32))[None].to(device)
         viewmat = torch.linalg.inv(c2w)
         calibration = torch.from_numpy(scaled_calibration.astype(np.float32))[None].to(device)
+        raster_background, environment_coverage = directional_raster_background(
+            directional_environment,
+            c2w,
+            calibration,
+            width,
+            height,
+            background,
+        )
         rgb_depth, alpha, _ = rasterization(
             means=gaussians["means"],
             quats=gaussians["quats"],
@@ -1217,6 +1273,13 @@ def audit(
             near_plane=0.01,
             far_plane=1e4,
             backgrounds=None,
+        )
+        rgb_depth = composite_raster_background(
+            rgb_depth,
+            alpha,
+            raster_background,
+            "RGB+ED",
+            3,
         )
         rotation = viewmat[0, :3, :3]
         translation = viewmat[0, :3, 3]
@@ -1256,6 +1319,11 @@ def audit(
         return {
             "rgb": rgb_depth[0, :, :, :3].clamp(0.0, 1.0).cpu().numpy(),
             "alpha": alpha_np,
+            "_depth": depth,
+            "_relativeStd": relative_std,
+            "_environmentCoverage": float(environment_coverage.mean().item())
+            if environment_coverage is not None
+            else 0.0,
             "support": float(np.mean(alpha_np >= 0.5)),
             "lowerHalfSupport": float(np.mean(alpha_np[height // 2 :, :] >= 0.5)),
             "depthAmbiguityP50": float(np.percentile(ambiguity, 50))
@@ -1555,7 +1623,9 @@ def audit(
                 {
                     key: value
                     for key, value in {**case, **rendered}.items()
-                    if key not in {"c2w", "rgb", "alpha"}
+                    if key != "c2w"
+                    and not key.startswith("_")
+                    and key not in {"rgb", "alpha"}
                 }
             )
         for anchor in anchors:
@@ -1570,6 +1640,76 @@ def audit(
             micro_motion_alpha_deltas.append(
                 float(np.mean(np.abs(left_render["alpha"] - right_render["alpha"])))
             )
+
+    yaw_anchors, yaw_cases = yaw_sweep_poses(cameras)
+    yaw_video_path = output / "yaw-360-audit.mp4"
+    yaw_encoder = create_encoder(ffmpeg, yaw_video_path, width * 3, height, fps)
+    yaw_samples: list[dict[str, Any]] = []
+    try:
+        with torch.inference_mode():
+            for case in yaw_cases:
+                camera = cameras[int(case["anchor"])]
+                rendered = render_stress_pose(case["c2w"], camera["calibration"])
+                yaw_sample = {
+                    "anchor": int(case["anchor"]),
+                    "yawDegrees": int(case["yawDegrees"]),
+                    "support": float(rendered["support"]),
+                    "lowerHalfSupport": float(rendered["lowerHalfSupport"]),
+                    "depthAmbiguityP50": float(rendered["depthAmbiguityP50"]),
+                    "depthAmbiguityP95": float(rendered["depthAmbiguityP95"]),
+                    "environmentCoverage": float(rendered["_environmentCoverage"]),
+                }
+                yaw_samples.append(yaw_sample)
+
+                rgb_bgr = cv2.cvtColor(
+                    (rendered["rgb"] * 255.0 + 0.5).astype(np.uint8),
+                    cv2.COLOR_RGB2BGR,
+                )
+                coverage_bgr = cv2.applyColorMap(
+                    (np.clip(rendered["alpha"], 0.0, 1.0) * 255.0 + 0.5).astype(
+                        np.uint8
+                    ),
+                    cv2.COLORMAP_VIRIDIS,
+                )
+                ambiguity_bgr = colorize_ambiguity(
+                    rendered["_relativeStd"], rendered["alpha"]
+                )
+                label_panel(
+                    rgb_bgr,
+                    f"Appearance | anchor {case['anchor']} | yaw {case['yawDegrees']:03d} deg",
+                )
+                label_panel(
+                    coverage_bgr,
+                    "Finite-splat coverage | background is not geometry",
+                )
+                label_panel(
+                    ambiguity_bgr,
+                    "Depth spread proxy | bright = mixed/floating layers",
+                )
+                cv2.putText(
+                    coverage_bgr,
+                    f"support {rendered['support'] * 100:.1f}% | lower {rendered['lowerHalfSupport'] * 100:.1f}%",
+                    (12, height - 14),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (240, 244, 248),
+                    1,
+                    cv2.LINE_AA,
+                )
+                frame = np.concatenate((rgb_bgr, coverage_bgr, ambiguity_bgr), axis=1)
+                if yaw_encoder.stdin is None:
+                    raise AuditError("FFmpeg 360-yaw encoder stdin is unavailable.")
+                yaw_encoder.stdin.write(frame.tobytes())
+        torch.cuda.synchronize()
+        finish_encoder(yaw_encoder)
+    except Exception:
+        with contextlib.suppress(Exception):
+            yaw_encoder.kill()
+        yaw_temporary = Path(getattr(yaw_encoder, "servo_temporary_path"))
+        with contextlib.suppress(FileNotFoundError):
+            yaw_temporary.unlink()
+        raise
+
     torch.cuda.synchronize()
     stress_elapsed = time.perf_counter() - stress_started
     grouped_stress = {
@@ -1607,6 +1747,42 @@ def audit(
             "metric": False,
         },
         "samples": stress_samples,
+        "yaw360": {
+            "status": "measured-extrapolation-diagnostic-not-ground-truth",
+            "video": yaw_video_path.name,
+            "anchors": yaw_anchors,
+            "stepDegrees": 5,
+            "samples": yaw_samples,
+            "allDirections": aggregate_navigation_stress(yaw_samples),
+            "forwardCone": aggregate_navigation_stress(
+                [
+                    sample
+                    for sample in yaw_samples
+                    if min(sample["yawDegrees"], 360 - sample["yawDegrees"]) <= 45
+                ]
+            ),
+            "sideDirections": aggregate_navigation_stress(
+                [
+                    sample
+                    for sample in yaw_samples
+                    if 45 < min(sample["yawDegrees"], 360 - sample["yawDegrees"])
+                    and abs(sample["yawDegrees"] - 180) > 45
+                ]
+            ),
+            "rearCone": aggregate_navigation_stress(
+                [
+                    sample
+                    for sample in yaw_samples
+                    if abs(sample["yawDegrees"] - 180) <= 45
+                ]
+            ),
+            "meaning": (
+                "A fixed-position full-yaw stress test. Only finite Gaussian alpha counts "
+                "as reconstructed support; an environment background is visual-only. "
+                "Side and rear directions absent from the source video remain unknown."
+            ),
+            "unobservedDirections": "unknown-not-free-space",
+        },
         "elapsedSeconds": stress_elapsed,
         "unobservedSpace": {"validated": False, "policy": "unknown-not-free-space"},
     }
