@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import argparse
+import re
 import subprocess
 from pathlib import Path
 
@@ -51,9 +53,11 @@ def source_commit() -> str:
     return completed.stdout.strip()
 
 
-def build(seed: int) -> Path:
-    experiment_id = f"yosemite-r22-a-control-seed{seed}-1500"
-    destination = ROOT / "tmp" / f"r22-a-control-seed{seed}-1500-config.json"
+def build(seed: int, series: str = "r22-a-control") -> Path:
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", series) is None:
+        raise RuntimeError("The experiment series must be a lowercase safe slug.")
+    experiment_id = f"yosemite-{series}-seed{seed}-1500"
+    destination = ROOT / "tmp" / f"{series}-seed{seed}-1500-config.json"
     output = ROOT / "diagnostics" / experiment_id / "train-1500"
     if destination.exists() or output.exists():
         raise RuntimeError(
@@ -108,8 +112,16 @@ def build(seed: int) -> Path:
 
 
 def main() -> int:
-    for seed in (42, 43):
-        print(build(seed))
+    parser = argparse.ArgumentParser(
+        description="Create provenance-bound matched R22 control configurations."
+    )
+    parser.add_argument("--series", default="r22-a-control")
+    parser.add_argument("--seeds", nargs="+", type=int, default=(42, 43))
+    args = parser.parse_args()
+    for seed in args.seeds:
+        if not 0 <= seed <= 0xFFFFFFFF:
+            raise RuntimeError("Seeds must be unsigned 32-bit integers.")
+        print(build(seed, args.series))
     return 0
 
 
