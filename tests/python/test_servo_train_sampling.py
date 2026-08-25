@@ -43,6 +43,63 @@ def records(count: int) -> list[SimpleNamespace]:
 
 
 class TrainingSamplingTests(unittest.TestCase):
+    def test_capture_health_soft_weights_retain_every_appearance_camera(self) -> None:
+        source_records = records(32)
+        selected = [record.name for index, record in enumerate(source_records) if index % 2 == 0]
+        rejected = [
+            {
+                "image": record.name,
+                "reasons": [
+                    "lower-sharpness-quartile"
+                    if index % 4 == 1
+                    else "redundant-low-baseline"
+                ],
+            }
+            for index, record in enumerate(source_records)
+            if index % 2 == 1
+        ]
+        dataset = SimpleNamespace(
+            records=source_records,
+            train_indices=[index for index in range(32) if index not in {4, 12, 20}],
+            validation_indices={4, 12, 20},
+            sequence_groups=[list(range(32))],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            receipt_path = Path(directory) / "capture-health.json"
+            receipt_path.write_text(
+                json.dumps(
+                    {
+                        "schema": servo_train.CAPTURE_HEALTH_SCHEMA,
+                        "selection": {
+                            "method": servo_train.CAPTURE_HEALTH_SELECTION_METHOD,
+                            "selectedCount": len(selected),
+                            "selectedFrames": selected,
+                            "rejectedFrames": rejected,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = {
+                "diagnosticProvenance": {"nonPublishable": True},
+                "appearanceFrameSelection": {
+                    "schema": servo_train.APPEARANCE_FRAME_SELECTION_SCHEMA,
+                    "method": servo_train.CAPTURE_HEALTH_SELECTION_METHOD,
+                    "policy": servo_train.CAPTURE_HEALTH_SOFT_WEIGHTING_POLICY,
+                    "captureHealthPath": str(receipt_path),
+                    "captureHealthSha256": servo_train.sha256_file(receipt_path),
+                },
+            }
+
+            receipt = servo_train.apply_appearance_frame_selection(config, dataset)
+
+        self.assertEqual(receipt["appearanceFrames"], 32)
+        self.assertEqual(receipt["weightedRejectedFrames"], 16)
+        self.assertEqual(dataset.appearance_indices, list(range(32)))
+        self.assertEqual(dataset.appearance_frame_weights[0], 1.0)
+        self.assertEqual(dataset.appearance_frame_weights[1], 0.35)
+        self.assertEqual(dataset.appearance_frame_weights[3], 0.65)
+
     def test_capture_health_keeps_pose_cameras_but_filters_appearance_fit(self) -> None:
         source_records = records(32)
         selected = [record.name for index, record in enumerate(source_records) if index % 2 == 0]

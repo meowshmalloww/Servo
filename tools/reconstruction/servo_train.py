@@ -49,6 +49,10 @@ CAPTURE_HEALTH_SCHEMA = "servo.capture-health/v1"
 CAPTURE_HEALTH_SELECTION_METHOD = (
     "sharpness-exposure-track-coverage-accumulated-baseline/v1"
 )
+CAPTURE_HEALTH_HARD_SELECTION_POLICY = "selected-frames-only/v1"
+CAPTURE_HEALTH_SOFT_WEIGHTING_POLICY = (
+    "selected-1.0-sharpness-0.35-redundant-0.65-both-0.25/v1"
+)
 SEMANTIC_PHOTOMETRIC_METHOD = (
     "servo-oneformer-rigid-static-temporal-floor-preserved-nonrigid-v4"
 )
@@ -897,6 +901,9 @@ def apply_appearance_frame_selection(
 
     raw = config.get("appearanceFrameSelection")
     dataset.appearance_indices = list(range(len(dataset.records)))
+    dataset.appearance_frame_weights = {
+        index: 1.0 for index in dataset.appearance_indices
+    }
     if raw is None:
         return None
     provenance = config.get("diagnosticProvenance")
@@ -946,6 +953,54 @@ def apply_appearance_frame_selection(
         raise TrainingError(
             "Appearance selection retained too little evidence for a bounded diagnostic."
         )
+    policy = str(raw.get("policy", CAPTURE_HEALTH_HARD_SELECTION_POLICY))
+    if policy == CAPTURE_HEALTH_SOFT_WEIGHTING_POLICY:
+        rejected = selection.get("rejectedFrames")
+        if not isinstance(rejected, list):
+            raise TrainingError("Capture health has no rejected-frame evidence.")
+        rejected_names: set[str] = set()
+        weighted_counts = {"sharpness": 0, "redundant": 0, "both": 0}
+        for item in rejected:
+            if not isinstance(item, Mapping) or not isinstance(item.get("image"), str):
+                raise TrainingError("Capture-health rejection evidence is malformed.")
+            name = str(item["image"])
+            reasons = set(str(reason) for reason in item.get("reasons", []))
+            if name not in record_names or name in rejected_names:
+                raise TrainingError("Capture-health rejected-frame names are invalid.")
+            rejected_names.add(name)
+            sharpness = "lower-sharpness-quartile" in reasons
+            redundant = "redundant-low-baseline" in reasons
+            if sharpness and redundant:
+                weight, bucket = 0.25, "both"
+            elif sharpness:
+                weight, bucket = 0.35, "sharpness"
+            elif redundant:
+                weight, bucket = 0.65, "redundant"
+            else:
+                raise TrainingError("Capture health contains an unsupported rejection reason.")
+            dataset.appearance_frame_weights[record_names[name]] = weight
+            weighted_counts[bucket] += 1
+        if rejected_names & set(selected_names) or (
+            rejected_names | set(selected_names)
+        ) != set(record_names):
+            raise TrainingError("Capture-health selected/rejected frames do not partition cameras.")
+        return {
+            "schema": APPEARANCE_FRAME_SELECTION_SCHEMA,
+            "method": CAPTURE_HEALTH_SELECTION_METHOD,
+            "policy": policy,
+            "captureHealthPath": str(receipt_path),
+            "captureHealthSha256": expected_hash,
+            "registeredFrames": len(dataset.records),
+            "appearanceFrames": len(dataset.records),
+            "trainingFrames": len(dataset.train_indices),
+            "validationFrames": len(dataset.validation_indices),
+            "poseOnlyFrames": 0,
+            "selectedFullWeightFrames": len(selected_indices),
+            "weightedRejectedFrames": len(rejected_names),
+            "weightedRejectedCounts": weighted_counts,
+        }
+    if policy != CAPTURE_HEALTH_HARD_SELECTION_POLICY:
+        raise TrainingError("Appearance frame selection policy is unsupported.")
     selected_set = set(selected_indices)
     selected_validation = set(dataset.validation_indices) & selected_set
     if not selected_validation:
@@ -972,6 +1027,7 @@ def apply_appearance_frame_selection(
     return {
         "schema": APPEARANCE_FRAME_SELECTION_SCHEMA,
         "method": CAPTURE_HEALTH_SELECTION_METHOD,
+        "policy": policy,
         "captureHealthPath": str(receipt_path),
         "captureHealthSha256": expected_hash,
         "registeredFrames": len(dataset.records),
@@ -6337,6 +6393,9 @@ def train(config_path: Path) -> int:
                     device,
                 ),
             )
+        confidence = confidence * float(
+            dataset.appearance_frame_weights.get(index, 1.0)
+        )
         active_degree = min(step // 1000, sh_degree)
         try:
             raster_background, _ = directional_raster_background(
