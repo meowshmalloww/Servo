@@ -151,6 +151,7 @@ def build_config(
             "growGrad2d": 0.0008,
             "dualOpacityEnabled": False,
             "crossViewDepthConsistencyWeight": 0.0,
+            "crossViewDepthConsistencyStart": 100,
             "surfaceAlignmentWeight": 0.0,
             "roadPlanarityWeight": 0.0,
             # R28's original starts are beyond a 300-step probe. Preserve the

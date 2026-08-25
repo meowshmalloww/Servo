@@ -44,6 +44,14 @@ class PrepareR30ControlsTests(unittest.TestCase):
         self.assertIn("regionAwareDensification", region)
         self.assertEqual(control["finalFitSteps"], 50)
         self.assertEqual(control["refineScale2dStopIter"], 250)
+        for start_key in (
+            "denseGeometryStart",
+            "depthLayerVarianceStart",
+            "surfaceAlignmentStart",
+            "crossViewDepthConsistencyStart",
+        ):
+            self.assertGreaterEqual(control[start_key], 0)
+            self.assertLess(control[start_key], control["maxSteps"])
         self.assertEqual(control["coverageAwareDensification"], region["coverageAwareDensification"])
         for key in (
             "maxSteps",
@@ -58,6 +66,7 @@ class PrepareR30ControlsTests(unittest.TestCase):
             "depthLayerVarianceStart",
             "observedDetailStart",
             "surfaceAlignmentStart",
+            "crossViewDepthConsistencyStart",
             "growGrad2d",
             "seed",
         ):
