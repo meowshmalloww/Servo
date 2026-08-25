@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +43,53 @@ def records(count: int) -> list[SimpleNamespace]:
 
 
 class TrainingSamplingTests(unittest.TestCase):
+    def test_capture_health_keeps_pose_cameras_but_filters_appearance_fit(self) -> None:
+        source_records = records(32)
+        selected = [record.name for index, record in enumerate(source_records) if index % 2 == 0]
+        dataset = SimpleNamespace(
+            records=source_records,
+            train_indices=[index for index in range(32) if index not in {4, 12, 20}],
+            validation_indices={4, 12, 20},
+            sequence_groups=[list(range(32))],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            receipt_path = Path(directory) / "capture-health.json"
+            receipt_path.write_text(
+                json.dumps(
+                    {
+                        "schema": servo_train.CAPTURE_HEALTH_SCHEMA,
+                        "selection": {
+                            "method": servo_train.CAPTURE_HEALTH_SELECTION_METHOD,
+                            "selectedCount": len(selected),
+                            "selectedFrames": selected,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = {
+                "diagnosticProvenance": {"nonPublishable": True},
+                "appearanceFrameSelection": {
+                    "schema": servo_train.APPEARANCE_FRAME_SELECTION_SCHEMA,
+                    "method": servo_train.CAPTURE_HEALTH_SELECTION_METHOD,
+                    "captureHealthPath": str(receipt_path),
+                    "captureHealthSha256": servo_train.sha256_file(receipt_path),
+                },
+            }
+
+            receipt = servo_train.apply_appearance_frame_selection(config, dataset)
+
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt["registeredFrames"], 32)
+        self.assertEqual(receipt["appearanceFrames"], 16)
+        self.assertEqual(receipt["poseOnlyFrames"], 16)
+        self.assertEqual(dataset.validation_indices, {4, 12, 20})
+        self.assertEqual(set(dataset.appearance_indices), set(range(0, 32, 2)))
+        self.assertTrue(set(dataset.train_indices).isdisjoint(dataset.validation_indices))
+        self.assertEqual(
+            set(dataset.training_sampling_plan.weights), set(dataset.train_indices)
+        )
+
     def test_target_cap_freezes_growth_without_disabling_screen_space_pruning(self) -> None:
         strategy = SimpleNamespace(
             grow_grad2d=0.0008,

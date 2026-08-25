@@ -42,6 +42,13 @@ OPACITY_RESET_SEMANTICS = "servo-gsplat-1.5.3-fix-v2"
 STATIC_CONFIDENCE_METHOD = (
     "DIS-bidirectional-flow-plus-COLMAP-epipolar-raw-evidence-v2"
 )
+APPEARANCE_FRAME_SELECTION_SCHEMA = (
+    "servo.diagnostic-appearance-frame-selection/v1"
+)
+CAPTURE_HEALTH_SCHEMA = "servo.capture-health/v1"
+CAPTURE_HEALTH_SELECTION_METHOD = (
+    "sharpness-exposure-track-coverage-accumulated-baseline/v1"
+)
 SEMANTIC_PHOTOMETRIC_METHOD = (
     "servo-oneformer-rigid-static-temporal-floor-preserved-nonrigid-v4"
 )
@@ -875,6 +882,104 @@ def apply_frame_oversampling(
         name for name in receipt["frames"] if name not in trainable_names
     )
     return multipliers, receipt
+
+
+def apply_appearance_frame_selection(
+    config: Mapping[str, Any], dataset: Any
+) -> dict[str, Any] | None:
+    """Keep all registered poses while restricting appearance optimization.
+
+    This diagnostic treatment separates camera-path evidence from RGB fitting
+    evidence. The capture-health receipt is hash verified, and both main fit and
+    final fit use only its selected frames. Rejected cameras remain in
+    ``dataset.records`` for path playback and later pose diagnostics.
+    """
+
+    raw = config.get("appearanceFrameSelection")
+    dataset.appearance_indices = list(range(len(dataset.records)))
+    if raw is None:
+        return None
+    provenance = config.get("diagnosticProvenance")
+    if (
+        not isinstance(raw, Mapping)
+        or not isinstance(provenance, Mapping)
+        or provenance.get("nonPublishable") is not True
+        or raw.get("schema") != APPEARANCE_FRAME_SELECTION_SCHEMA
+        or raw.get("method") != CAPTURE_HEALTH_SELECTION_METHOD
+    ):
+        raise TrainingError(
+            "Appearance frame selection is sealed to a non-publishable "
+            "capture-health diagnostic."
+        )
+    path_value = raw.get("captureHealthPath")
+    expected_hash = raw.get("captureHealthSha256")
+    if (
+        not isinstance(path_value, str)
+        or not isinstance(expected_hash, str)
+        or not expected_hash.startswith("sha256:")
+    ):
+        raise TrainingError("Appearance frame selection provenance is incomplete.")
+    receipt_path = Path(path_value)
+    if not receipt_path.is_file() or sha256_file(receipt_path) != expected_hash:
+        raise TrainingError("The capture-health receipt failed hash verification.")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        selection = receipt["selection"]
+        selected_names = [str(name) for name in selection["selectedFrames"]]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise TrainingError("The capture-health receipt is malformed.") from error
+    if (
+        receipt.get("schema") != CAPTURE_HEALTH_SCHEMA
+        or selection.get("method") != CAPTURE_HEALTH_SELECTION_METHOD
+        or int(selection.get("selectedCount", -1)) != len(selected_names)
+        or len(selected_names) != len(set(selected_names))
+    ):
+        raise TrainingError("The capture-health selection contract is invalid.")
+    record_names = {record.name: index for index, record in enumerate(dataset.records)}
+    unknown = sorted(set(selected_names) - set(record_names))
+    if unknown:
+        raise TrainingError(
+            "Capture health selected unregistered frames: " + ", ".join(unknown[:5])
+        )
+    selected_indices = sorted(record_names[name] for name in selected_names)
+    if len(selected_indices) < 16 or len(selected_indices) * 4 < len(dataset.records):
+        raise TrainingError(
+            "Appearance selection retained too little evidence for a bounded diagnostic."
+        )
+    selected_set = set(selected_indices)
+    selected_validation = set(dataset.validation_indices) & selected_set
+    if not selected_validation:
+        raise TrainingError("Appearance selection retained no held-out validation camera.")
+    selected_training = [
+        index for index in selected_indices if index not in selected_validation
+    ]
+    if not selected_training:
+        raise TrainingError("Appearance selection retained no training camera.")
+    selected_groups = [
+        [index for index in group if index in selected_set]
+        for group in dataset.sequence_groups
+    ]
+    selected_groups = [group for group in selected_groups if group]
+    dataset.appearance_indices = selected_indices
+    dataset.validation_indices = selected_validation
+    dataset.train_indices = selected_training
+    dataset.sequence_groups = selected_groups
+    dataset.training_sampling_plan = build_training_sampling_plan(
+        dataset.records,
+        dataset.train_indices,
+        dataset.sequence_groups,
+    )
+    return {
+        "schema": APPEARANCE_FRAME_SELECTION_SCHEMA,
+        "method": CAPTURE_HEALTH_SELECTION_METHOD,
+        "captureHealthPath": str(receipt_path),
+        "captureHealthSha256": expected_hash,
+        "registeredFrames": len(dataset.records),
+        "appearanceFrames": len(selected_indices),
+        "trainingFrames": len(selected_training),
+        "validationFrames": len(selected_validation),
+        "poseOnlyFrames": len(dataset.records) - len(selected_indices),
+    }
 
 
 def geometry_render_requirements(
@@ -4932,6 +5037,9 @@ def train(config_path: Path) -> int:
             or contributor_sky_cleanup_enabled
         ),
     )
+    appearance_frame_selection_receipt = apply_appearance_frame_selection(
+        config, dataset
+    )
     (
         oversampled_frame_multipliers,
         frame_oversampling_receipt,
@@ -5082,6 +5190,15 @@ def train(config_path: Path) -> int:
     cross_view_depth_weight = float(
         config.get("crossViewDepthConsistencyWeight", 0.0)
     )
+    if (
+        appearance_frame_selection_receipt is not None
+        and cross_view_depth_weight > 0.0
+    ):
+        raise TrainingError(
+            "Appearance-frame selection currently requires cross-view depth "
+            "consistency to remain disabled; pair receipts still cover every "
+            "registered pose camera."
+        )
     cross_view_depth_every = int(
         config.get("crossViewDepthConsistencyEvery", 8)
     )
@@ -5790,7 +5907,7 @@ def train(config_path: Path) -> int:
     recovery_policy_path = checkpoint_dir / "recovery-policy.json"
     heldout_metrics_path = output / "heldout-metrics.json"
     heldout_evaluation_step = max_steps - final_fit_steps
-    all_indices = list(range(len(dataset)))
+    all_indices = list(dataset.appearance_indices)
     main_sampler = DeterministicWeightedEpochSampler(
         dataset.training_sampling_plan.epoch_slots,
         config["trainingInputHash"],
@@ -5802,7 +5919,7 @@ def train(config_path: Path) -> int:
         main_fit_visits[main_sampler.index(completed_offset)] += 1
     if final_fit_steps < len(all_indices):
         raise TrainingError(
-            "finalFitSteps must visit every camera at least once."
+            "finalFitSteps must visit every selected appearance camera at least once."
         )
     final_fit_seen: set[int] = set()
     final_fit_epoch = -1
@@ -6931,7 +7048,8 @@ def train(config_path: Path) -> int:
         )
     if len(final_fit_seen) != len(all_indices):
         raise TrainingError(
-            "The deterministic final-fit phase did not visit every camera."
+            "The deterministic final-fit phase did not visit every selected "
+            "appearance camera."
         )
     validate_parameters(parameters)
     if not heldout_metrics_path.is_file():
@@ -7310,14 +7428,16 @@ def train(config_path: Path) -> int:
         "steps": max_steps,
         "heldoutEvaluationStep": heldout_evaluation_step,
         "finalFitSteps": final_fit_steps,
-        "finalFitImages": len(dataset),
+        "finalFitImages": len(all_indices),
         "finalFitUniqueImages": len(final_fit_seen),
-        "finalFitEpochs": final_fit_steps / len(dataset),
+        "finalFitEpochs": final_fit_steps / len(all_indices),
         "worldSha256": world_sha256,
         "finalArtifactValidation": final_artifact_validation,
         "gaussians": len(parameters["means"]),
         "trainingImages": len(dataset.train_indices),
         "validationImages": len(dataset.validation_indices),
+        "registeredPoseImages": len(dataset),
+        "appearanceFrameSelection": appearance_frame_selection_receipt,
         "finalLoss": recent_loss,
         "peakVramGiB": max(
             peak_allocated_before, torch.cuda.max_memory_allocated() / 1024**3
