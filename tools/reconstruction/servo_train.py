@@ -94,6 +94,8 @@ SURFEL_ABLATION_REPRESENTATION = "servo-fidelity-3dgs-surfel-ablation-v1"
 SURFEL_MINIMUM_SCALE = 1e-6
 FRAME_OVERSAMPLING_SCHEMA = "servo.diagnostic-frame-oversampling/v1"
 FRAME_OVERSAMPLING_METHOD = "observed-sky-offender-weighted-sampling-v1"
+CROSS_VIEW_DENSE_MODE = "dense-expected-z-reprojection-v1"
+CROSS_VIEW_SPARSE_TRACK_MODE = "sparse-colmap-shared-track-camera-z-v1"
 
 
 class TrainingError(RuntimeError):
@@ -444,6 +446,7 @@ class ImageRecord:
     height: int
     sparse_pixels: Any
     sparse_depths: Any
+    sparse_point_ids: Any = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -824,6 +827,50 @@ def build_cross_view_pair_plan(
     return pair_by_source, receipt
 
 
+def build_sparse_track_pair_samples(
+    records: Sequence[ImageRecord],
+    pairs: Mapping[int, int],
+) -> dict[int, dict[str, Any]]:
+    """Bind each selected camera pair to the same external COLMAP tracks.
+
+    Unlike dense self-reprojection, both targets come from one triangulated
+    point in the calibrated SfM solve.  The samples therefore cannot make two
+    mutually drifting rendered depth fields supervise one another.
+    """
+
+    import numpy as np
+
+    result: dict[int, dict[str, Any]] = {}
+    for source_index, target_index in pairs.items():
+        source = records[int(source_index)]
+        target = records[int(target_index)]
+        if source.sparse_point_ids is None or target.sparse_point_ids is None:
+            continue
+        source_ids = np.asarray(source.sparse_point_ids, dtype=np.int64).reshape(-1)
+        target_ids = np.asarray(target.sparse_point_ids, dtype=np.int64).reshape(-1)
+        if (
+            len(source_ids) != len(source.sparse_depths)
+            or len(target_ids) != len(target.sparse_depths)
+        ):
+            raise TrainingError("Sparse COLMAP point IDs do not match their observations.")
+        source_lookup = {int(point_id): offset for offset, point_id in enumerate(source_ids)}
+        target_lookup = {int(point_id): offset for offset, point_id in enumerate(target_ids)}
+        shared = sorted(source_lookup.keys() & target_lookup.keys())
+        if not shared:
+            continue
+        source_offsets = np.asarray([source_lookup[point_id] for point_id in shared])
+        target_offsets = np.asarray([target_lookup[point_id] for point_id in shared])
+        result[int(source_index)] = {
+            "targetIndex": int(target_index),
+            "pointIds": np.asarray(shared, dtype=np.int64),
+            "sourcePixels": np.asarray(source.sparse_pixels, dtype=np.float32)[source_offsets],
+            "sourceDepths": np.asarray(source.sparse_depths, dtype=np.float32)[source_offsets],
+            "targetPixels": np.asarray(target.sparse_pixels, dtype=np.float32)[target_offsets],
+            "targetDepths": np.asarray(target.sparse_depths, dtype=np.float32)[target_offsets],
+        }
+    return result
+
+
 def semantic_sparse_point_filter(
     reconstruction: Any,
     point_ids: Any,
@@ -1127,6 +1174,7 @@ class ColmapDataset:
             calibration[1, :] *= scaled_height / height
             sparse_pixels: list[list[float]] = []
             sparse_depths: list[float] = []
+            sparse_point_ids: list[int] = []
             source_image = images_by_name.get(name)
             if source_image is not None:
                 camera_from_world = np.asarray(
@@ -1161,8 +1209,10 @@ class ColmapDataset:
                             ]
                         )
                         sparse_depths.append(depth)
+                        sparse_point_ids.append(point_id)
             sparse_pixels_array = np.asarray(sparse_pixels, dtype=np.float32).reshape(-1, 2)
             sparse_depths_array = np.asarray(sparse_depths, dtype=np.float32)
+            sparse_point_ids_array = np.asarray(sparse_point_ids, dtype=np.int64)
             sparse_observation_counts.append(len(sparse_depths_array))
             self.records.append(
                 ImageRecord(
@@ -1176,6 +1226,7 @@ class ColmapDataset:
                     height=scaled_height,
                     sparse_pixels=sparse_pixels_array,
                     sparse_depths=sparse_depths_array,
+                    sparse_point_ids=sparse_point_ids_array,
                 )
             )
         self.initialization_stats["sparseDepthObservations"] = int(
@@ -1259,6 +1310,23 @@ class ColmapDataset:
             self.train_indices,
             sequence_groups,
             observation_ids,
+        )
+        self.cross_view_sparse_tracks = build_sparse_track_pair_samples(
+            self.records,
+            self.cross_view_pairs,
+        )
+        sparse_pair_counts = [
+            len(samples["pointIds"])
+            for samples in self.cross_view_sparse_tracks.values()
+        ]
+        self.cross_view_pair_receipt["sparseTrackPairCount"] = len(
+            self.cross_view_sparse_tracks
+        )
+        self.cross_view_pair_receipt["medianSparseTracks"] = float(
+            np.median(sparse_pair_counts) if sparse_pair_counts else 0.0
+        )
+        self.cross_view_pair_receipt["minimumSparseTracks"] = int(
+            min(sparse_pair_counts, default=0)
         )
         self.training_sampling_plan = build_training_sampling_plan(
             self.records,
@@ -2934,6 +3002,135 @@ def sparse_depth_consistency_loss(
     )
 
 
+def sparse_track_pair_camera_z_loss(
+    source_depth: Any,
+    source_alpha: Any,
+    target_depth: Any,
+    target_alpha: Any,
+    samples: Mapping[str, Any],
+    source_resolution_factor: int,
+    target_resolution_factor: int,
+    *,
+    minimum_valid_tracks: int = 64,
+    maximum_tracks: int = 4096,
+) -> tuple[Any, int, int]:
+    """Anchor two renders to the same reliable COLMAP track camera-Z values.
+
+    The two rendered fields receive gradients, but neither supervises the
+    other: both are compared with externally triangulated camera-space Z.
+    This deliberately avoids the self-reinforcing expected-depth midpoint
+    failure of dense R21 reprojection.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    zero = source_depth.sum() * 0.0 + target_depth.sum() * 0.0
+    point_ids = torch.as_tensor(samples["pointIds"], device=source_depth.device)
+    available = int(point_ids.numel())
+    if available < minimum_valid_tracks:
+        return zero, 0, available
+    if available > maximum_tracks:
+        selected = torch.linspace(
+            0, available - 1, maximum_tracks, device=source_depth.device
+        ).round().long()
+    else:
+        selected = None
+
+    def sample_view(
+        depth: Any,
+        alpha: Any,
+        pixel_values: Any,
+        target_values: Any,
+        factor: int,
+    ) -> tuple[Any, Any, Any]:
+        pixels = torch.as_tensor(
+            pixel_values, device=depth.device, dtype=torch.float32
+        )
+        targets = torch.as_tensor(
+            target_values, device=depth.device, dtype=torch.float32
+        )
+        if selected is not None:
+            pixels = pixels[selected]
+            targets = targets[selected]
+        pixels = pixels / float(max(1, int(factor)))
+        height, width = depth.shape[1:3]
+        finite = (
+            torch.isfinite(pixels).all(dim=1)
+            & torch.isfinite(targets)
+            & (targets > 1e-5)
+            & (pixels[:, 0] >= 0.0)
+            & (pixels[:, 0] <= width - 1)
+            & (pixels[:, 1] >= 0.0)
+            & (pixels[:, 1] <= height - 1)
+        )
+        grid_x = pixels[:, 0] * (2.0 / max(width - 1, 1)) - 1.0
+        grid_y = pixels[:, 1] * (2.0 / max(height - 1, 1)) - 1.0
+        grid = torch.stack([grid_x, grid_y], dim=-1).view(1, 1, -1, 2)
+        predicted = functional.grid_sample(
+            depth.permute(0, 3, 1, 2),
+            grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        ).reshape(-1)
+        support = functional.grid_sample(
+            alpha.permute(0, 3, 1, 2),
+            grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        ).reshape(-1)
+        valid = (
+            finite
+            & torch.isfinite(predicted)
+            & (predicted > 1e-5)
+            & torch.isfinite(support)
+            & (support >= 0.25)
+        )
+        relative = (predicted - targets) / targets.clamp_min(1e-5)
+        return relative, support, valid
+
+    source_relative, source_support, source_valid = sample_view(
+        source_depth,
+        source_alpha,
+        samples["sourcePixels"],
+        samples["sourceDepths"],
+        source_resolution_factor,
+    )
+    target_relative, target_support, target_valid = sample_view(
+        target_depth,
+        target_alpha,
+        samples["targetPixels"],
+        samples["targetDepths"],
+        target_resolution_factor,
+    )
+    valid = source_valid & target_valid
+    valid_count = int(valid.sum().item())
+    if valid_count < minimum_valid_tracks:
+        return zero, 0, available
+    source_error = functional.smooth_l1_loss(
+        source_relative[valid],
+        torch.zeros_like(source_relative[valid]),
+        beta=0.05,
+        reduction="none",
+    )
+    target_error = functional.smooth_l1_loss(
+        target_relative[valid],
+        torch.zeros_like(target_relative[valid]),
+        beta=0.05,
+        reduction="none",
+    )
+    # The maximum prevents one well-fit view from hiding a badly layered one.
+    paired_error = torch.maximum(source_error, target_error)
+    weights = torch.minimum(source_support[valid], target_support[valid]).detach()
+    return (
+        (paired_error * weights).sum() / weights.sum().clamp_min(1e-6),
+        valid_count,
+        available,
+    )
+
+
 def depth_layer_variance_loss(expected_depth: Any, second_moment: Any, alpha: Any) -> Any:
     """Penalize mixed front/back Gaussian layers along supported camera rays."""
     import torch
@@ -4449,6 +4646,12 @@ def train(config_path: Path) -> int:
     cross_view_depth_start = int(
         config.get("crossViewDepthConsistencyStart", 1_000)
     )
+    cross_view_depth_mode = str(
+        config.get("crossViewDepthMode", CROSS_VIEW_DENSE_MODE)
+    )
+    cross_view_minimum_valid_tracks = int(
+        config.get("crossViewMinimumValidTracksPerStep", 64)
+    )
     surface_alignment_every = int(config.get("surfaceAlignmentEvery", 4))
     surface_alignment_start = int(config.get("surfaceAlignmentStart", 1_000))
     depth_layer_variance_every = int(config.get("depthLayerVarianceEvery", 8))
@@ -4692,16 +4895,39 @@ def train(config_path: Path) -> int:
         or cross_view_depth_every <= 0
         or cross_view_depth_start < 0
         or cross_view_depth_start >= max_steps
+        or cross_view_minimum_valid_tracks < 8
     ):
         raise TrainingError("Cross-view depth consistency settings are invalid.")
-    if cross_view_depth_weight > 0.0 and not dual_opacity_enabled:
-        raise TrainingError(
-            "Cross-view depth consistency requires dual opacity so geometry "
-            "regularization cannot directly erase appearance detail."
-        )
+    if cross_view_depth_mode not in {
+        CROSS_VIEW_DENSE_MODE,
+        CROSS_VIEW_SPARSE_TRACK_MODE,
+    }:
+        raise TrainingError("The cross-view depth mode is unsupported.")
+    if cross_view_depth_weight > 0.0:
+        if cross_view_depth_mode == CROSS_VIEW_DENSE_MODE and not dual_opacity_enabled:
+            raise TrainingError(
+                "Dense self-reprojected cross-view depth requires dual opacity."
+            )
+        if cross_view_depth_mode == CROSS_VIEW_SPARSE_TRACK_MODE and (
+            dual_opacity_enabled
+            or not is_nonpublishable_diagnostic_config(config)
+            or cross_view_depth_weight > 0.01
+        ):
+            raise TrainingError(
+                "Sparse shared-track cross-view depth is sealed to a bounded "
+                "single-opacity non-publishable diagnostic."
+            )
     if cross_view_depth_weight > 0.0 and not dataset.cross_view_pairs:
         raise TrainingError(
             "No calibrated co-visible training pairs satisfy the cross-view contract."
+        )
+    if (
+        cross_view_depth_weight > 0.0
+        and cross_view_depth_mode == CROSS_VIEW_SPARSE_TRACK_MODE
+        and not dataset.cross_view_sparse_tracks
+    ):
+        raise TrainingError(
+            "No selected camera pair has shared reliable COLMAP track samples."
         )
     if (
         semantic_sky_opacity_weight > 0.0
@@ -5689,21 +5915,46 @@ def train(config_path: Path) -> int:
                     eps2d,
                     render_mode="ED",
                     surfel_ablation=surfel_ablation,
-                    geometry_opacity=True,
+                    geometry_opacity=(
+                        cross_view_depth_mode == CROSS_VIEW_DENSE_MODE
+                    ),
                 )
-                cross_view_loss, cross_view_samples = (
-                    cross_view_depth_consistency_loss(
-                        expected_depth,
-                        alpha,
-                        camera,
-                        calibration,
-                        target_geometry_depth[..., :1],
-                        target_geometry_alpha,
-                        target_camera,
-                        target_calibration,
-                        confidence,
+                if cross_view_depth_mode == CROSS_VIEW_SPARSE_TRACK_MODE:
+                    pair_samples = dataset.cross_view_sparse_tracks.get(index)
+                    if pair_samples is None:
+                        cross_view_loss = expected_depth.sum() * 0.0
+                        cross_view_samples = 0
+                    else:
+                        (
+                            cross_view_loss,
+                            cross_view_samples,
+                            _,
+                        ) = sparse_track_pair_camera_z_loss(
+                            expected_depth,
+                            alpha,
+                            target_geometry_depth[..., :1],
+                            target_geometry_alpha,
+                            pair_samples,
+                            active_resolution_factor,
+                            active_resolution_factor,
+                            minimum_valid_tracks=(
+                                cross_view_minimum_valid_tracks
+                            ),
+                        )
+                else:
+                    cross_view_loss, cross_view_samples = (
+                        cross_view_depth_consistency_loss(
+                            expected_depth,
+                            alpha,
+                            camera,
+                            calibration,
+                            target_geometry_depth[..., :1],
+                            target_geometry_alpha,
+                            target_camera,
+                            target_calibration,
+                            confidence,
+                        )
                     )
-                )
                 loss = loss + cross_view_depth_weight * cross_view_loss
                 if cross_view_samples > 0:
                     cross_view_depth_steps += 1
@@ -6394,8 +6645,12 @@ def train(config_path: Path) -> int:
             "sparseDepthSamples": sparse_depth_samples,
             "recentSparseDepthLoss": recent_sparse_depth_loss,
             "crossViewDepthConsistencyWeight": cross_view_depth_weight,
+            "crossViewDepthMode": cross_view_depth_mode,
             "crossViewDepthConsistencyEvery": cross_view_depth_every,
             "crossViewDepthConsistencyStart": cross_view_depth_start,
+            "crossViewMinimumValidTracksPerStep": (
+                cross_view_minimum_valid_tracks
+            ),
             "crossViewDepthPairPlan": dataset.cross_view_pair_receipt,
             "crossViewDepthSteps": cross_view_depth_steps,
             "crossViewDepthSamples": cross_view_depth_samples,

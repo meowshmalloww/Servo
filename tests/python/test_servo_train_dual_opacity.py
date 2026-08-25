@@ -171,6 +171,88 @@ class CrossViewGeometryTests(unittest.TestCase):
         self.assertGreater(float(source.grad.abs().sum()), 0.0)
         self.assertGreater(float(target.grad.abs().sum()), 0.0)
 
+    def sparse_pair_samples(self, count: int = 64) -> dict:
+        pixels = np.asarray(
+            [[float(index % 4), float((index // 4) % 4)] for index in range(count)],
+            dtype=np.float32,
+        )
+        return {
+            "pointIds": np.arange(count, dtype=np.int64),
+            "sourcePixels": pixels,
+            "sourceDepths": np.full(count, 2.0, dtype=np.float32),
+            "targetPixels": pixels.copy(),
+            "targetDepths": np.full(count, 2.0, dtype=np.float32),
+        }
+
+    def test_sparse_track_pair_uses_external_camera_z_for_both_views(self) -> None:
+        source = torch.full((1, 4, 4, 1), 2.0, requires_grad=True)
+        target = torch.full((1, 4, 4, 1), 2.4, requires_grad=True)
+        alpha = torch.ones_like(source)
+
+        loss, valid, available = servo_train.sparse_track_pair_camera_z_loss(
+            source,
+            alpha,
+            target,
+            alpha,
+            self.sparse_pair_samples(),
+            1,
+            1,
+        )
+        loss.backward()
+
+        self.assertEqual(available, 64)
+        self.assertEqual(valid, 64)
+        self.assertGreater(float(loss.detach()), 0.0)
+        # The already-correct source is not moved to agree with the bad target;
+        # the external track target keeps its gradient at zero.
+        torch.testing.assert_close(source.grad, torch.zeros_like(source.grad))
+        self.assertGreater(float(target.grad.abs().sum()), 0.0)
+
+    def test_sparse_track_pair_rejects_low_support(self) -> None:
+        depth = torch.full((1, 4, 4, 1), 2.0, requires_grad=True)
+        alpha = torch.zeros_like(depth)
+
+        loss, valid, available = servo_train.sparse_track_pair_camera_z_loss(
+            depth,
+            alpha,
+            depth,
+            alpha,
+            self.sparse_pair_samples(),
+            1,
+            1,
+        )
+
+        self.assertEqual(available, 64)
+        self.assertEqual(valid, 0)
+        torch.testing.assert_close(loss, torch.tensor(0.0))
+
+    def test_sparse_track_pair_builder_intersects_point_ids(self) -> None:
+        records = []
+        for index, point_ids in enumerate(([1, 2, 3], [2, 3, 4])):
+            records.append(
+                servo_train.ImageRecord(
+                    name=f"video-000/{index:08d}.png",
+                    path=Path(f"{index}.png"),
+                    camera_id=1,
+                    camera_model="PINHOLE",
+                    camera_to_world=np.eye(4, dtype=np.float32),
+                    calibration=np.eye(3, dtype=np.float32),
+                    width=4,
+                    height=4,
+                    sparse_pixels=np.asarray(
+                        [[0, 0], [1, 1], [2, 2]], dtype=np.float32
+                    ),
+                    sparse_depths=np.asarray([1, 2, 3], dtype=np.float32),
+                    sparse_point_ids=np.asarray(point_ids, dtype=np.int64),
+                )
+            )
+
+        pairs = servo_train.build_sparse_track_pair_samples(records, {0: 1})
+
+        self.assertEqual(pairs[0]["pointIds"].tolist(), [2, 3])
+        self.assertEqual(pairs[0]["sourceDepths"].tolist(), [2.0, 3.0])
+        self.assertEqual(pairs[0]["targetDepths"].tolist(), [1.0, 2.0])
+
     def test_pair_plan_never_uses_heldout_view(self) -> None:
         records = []
         for index in range(4):

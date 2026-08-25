@@ -102,6 +102,18 @@ def build(
             "normalConsistencyWeight": 0.01,
             "normalConsistencyStart": 600,
         }
+    elif treatment == "sparse-track":
+        config.update(
+            {
+                "crossViewDepthMode": (
+                    "sparse-colmap-shared-track-camera-z-v1"
+                ),
+                "crossViewDepthConsistencyWeight": 0.005,
+                "crossViewDepthConsistencyStart": 250,
+                "crossViewDepthConsistencyEvery": 4,
+                "crossViewMinimumValidTracksPerStep": 64,
+            }
+        )
     elif treatment != "control":
         raise RuntimeError(f"Unsupported R22 treatment: {treatment}")
     config["diagnosticProvenance"] = {
@@ -115,7 +127,11 @@ def build(
         "purpose": (
             "Matched 1500-step gsplat 2DGS/surfel geometry diagnostic."
             if treatment == "surfel"
-            else "Matched 1500-step R17-policy short-run control."
+            else (
+                "Matched 1500-step COLMAP shared-track camera-Z diagnostic."
+                if treatment == "sparse-track"
+                else "Matched 1500-step R17-policy short-run control."
+            )
         ),
         "claimLimit": (
             "Short-run variance and treatment comparison only; not a "
@@ -137,7 +153,7 @@ def main() -> int:
     parser.add_argument("--seeds", nargs="+", type=int, default=(42, 43))
     parser.add_argument(
         "--treatment",
-        choices=("control", "surfel"),
+        choices=("control", "surfel", "sparse-track"),
         default="control",
     )
     args = parser.parse_args()
