@@ -109,6 +109,19 @@ class DualOpacityTests(unittest.TestCase):
         self.assertEqual(set(parameters), set(optimizers))
         self.assertIn("appearanceOpacityGates", optimizers)
 
+    def test_optimizer_learning_rate_multipliers_are_parameter_specific(self) -> None:
+        parameters = servo_train.create_parameters(
+            self.dataset(), sh_degree=0, device="cpu", dual_opacity=False
+        )
+        optimizers = servo_train.create_optimizers(
+            parameters,
+            learning_rate_multipliers={"means": 0.3, "scales": 0.1},
+        )
+
+        self.assertAlmostEqual(optimizers["means"].param_groups[0]["lr"], 4.8e-5)
+        self.assertAlmostEqual(optimizers["scales"].param_groups[0]["lr"], 5e-4)
+        self.assertAlmostEqual(optimizers["sh0"].param_groups[0]["lr"], 2.5e-3)
+
     def test_dual_checkpoint_requires_appearance_gate(self) -> None:
         parameters = servo_train.create_parameters(
             self.dataset(), sh_degree=0, device="cpu", dual_opacity=False

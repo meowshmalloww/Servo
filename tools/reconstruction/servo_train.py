@@ -2001,6 +2001,7 @@ def create_optimizers(
     parameters: Any,
     scene_scale: float = 1.0,
     learning_rate_scale: float = 1.0,
+    learning_rate_multipliers: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     import torch
 
@@ -2014,12 +2015,17 @@ def create_optimizers(
     }
     if "appearanceOpacityGates" in parameters:
         rates["appearanceOpacityGates"] = 5e-3
+    multipliers = dict(learning_rate_multipliers or {})
     return {
         name: torch.optim.Adam(
             [
                 {
                     "params": parameters[name],
-                    "lr": rates[name] * learning_rate_scale,
+                    "lr": (
+                        rates[name]
+                        * learning_rate_scale
+                        * float(multipliers.get(name, 1.0))
+                    ),
                     "name": name,
                 }
             ],
@@ -3990,6 +3996,7 @@ def fuse_semantic_photometric_confidence(
     rigid_static_confidence_floor: float = 0.25,
     vegetation_confidence_floor: float = 0.0,
     water_confidence_floor: float = 0.0,
+    protected_static_labels: Sequence[int] = (),
     hard_exclusion: Any | None = None,
 ) -> Any:
     """Fuse raw temporal evidence without erasing observed static RGB.
@@ -4039,6 +4046,14 @@ def fuse_semantic_photometric_confidence(
         raise TrainingError("Temporal photometric confidence must remain in [0,1].")
 
     labels = semantic.to(dtype=torch.int64)
+    protected_values = tuple(int(value) for value in protected_static_labels)
+    if (
+        len(set(protected_values)) != len(protected_values)
+        or any(value < 1 or value > 15 for value in protected_values)
+    ):
+        raise TrainingError(
+            "Protected static labels must be unique rigid-static semantic IDs."
+        )
     rigid_static = ((labels >= 1) & (labels <= 15)) | (labels == 24) | (labels == 25)
     vegetation = labels == 16
     water = labels == 23
@@ -4067,6 +4082,11 @@ def fuse_semantic_photometric_confidence(
         ),
         fused,
     )
+    if protected_values:
+        protected = torch.zeros_like(labels, dtype=torch.bool)
+        for value in protected_values:
+            protected |= labels == value
+        fused = torch.where(protected, torch.ones_like(fused), fused)
     if hard_exclusion is None:
         return fused
     if hard_exclusion.shape != temporal_confidence.shape:
@@ -5015,6 +5035,21 @@ def train(config_path: Path) -> int:
         raise TrainingError(
             "Semantic photometric-confidence policy is incomplete."
         ) from error
+    semantic_priority_full_confidence_labels = tuple(
+        int(value)
+        for value in config.get("semanticPriorityFullConfidenceLabels", [])
+    )
+    diagnostic_provenance = config.get("diagnosticProvenance")
+    if semantic_priority_full_confidence_labels and (
+        not isinstance(diagnostic_provenance, Mapping)
+        or diagnostic_provenance.get("nonPublishable") is not True
+        or semantic_priority_full_confidence_labels
+        != (1, 2, 3, 4, 5, 10, 12, 13, 14, 15)
+    ):
+        raise TrainingError(
+            "Priority static confidence is sealed to the road, boundary, and "
+            "sign non-publishable diagnostic contract."
+        )
     if (
         config.get("staticConfidenceMasks") is not True
         or config.get("staticConfidenceMethod") != STATIC_CONFIDENCE_METHOD
@@ -5213,6 +5248,9 @@ def train(config_path: Path) -> int:
         quality_gate.get("maximumRoadDepthAmbiguityP95", 1.0)
     )
     appearance_enabled = config.get("appearanceCompensation") is True
+    optimizer_learning_rate_multipliers = dict(
+        config.get("optimizerLearningRateMultipliers", {})
+    )
     appearance_learning_rate = float(config.get("appearanceLearningRate", 1e-3))
     appearance_regularization_weight = float(
         config.get("appearanceRegularization", 1e-4)
@@ -5480,6 +5518,29 @@ def train(config_path: Path) -> int:
         or appearance_regularization_weight < 0.0
     ):
         raise TrainingError("Appearance compensation settings are invalid.")
+    allowed_optimizer_multiplier_keys = {
+        "means",
+        "scales",
+        "quats",
+        "opacities",
+        "sh0",
+        "shN",
+        "appearanceOpacityGates",
+    }
+    if (
+        set(optimizer_learning_rate_multipliers)
+        - allowed_optimizer_multiplier_keys
+        or any(
+            not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not 0.0 < float(value) <= 1.0
+            for value in optimizer_learning_rate_multipliers.values()
+        )
+    ):
+        raise TrainingError(
+            "optimizerLearningRateMultipliers must contain supported finite "
+            "values in (0,1]."
+        )
     if (
         not math.isfinite(sparse_depth_weight)
         or sparse_depth_weight < 0.0
@@ -5682,7 +5743,10 @@ def train(config_path: Path) -> int:
             dual_opacity=dual_opacity_enabled,
             dual_opacity_initialization=dual_opacity_initialization,
         )
-        optimizers = create_optimizers(parameters)
+        optimizers = create_optimizers(
+            parameters,
+            learning_rate_multipliers=optimizer_learning_rate_multipliers,
+        )
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
             optimizers["means"], gamma=0.01 ** (1.0 / max_steps)
         )
@@ -5748,7 +5812,10 @@ def train(config_path: Path) -> int:
         parameters = parameters_from_state(
             checkpoint["splats"], device, dual_opacity=dual_opacity_enabled
         )
-        optimizers = create_optimizers(parameters)
+        optimizers = create_optimizers(
+            parameters,
+            learning_rate_multipliers=optimizer_learning_rate_multipliers,
+        )
         for name, optimizer in optimizers.items():
             optimizer.load_state_dict(checkpoint["optimizers"][name])
             optimizer_state_to_device(optimizer, device)
@@ -6386,6 +6453,7 @@ def train(config_path: Path) -> int:
                 rigid_static_confidence_floor=semantic_rigid_static_confidence_floor,
                 vegetation_confidence_floor=semantic_vegetation_confidence_floor,
                 water_confidence_floor=semantic_water_confidence_floor,
+                protected_static_labels=semantic_priority_full_confidence_labels,
                 hard_exclusion=video_capture_bottom_exclusion_mask(
                     dataset.records[index].name,
                     height,
@@ -7296,6 +7364,7 @@ def train(config_path: Path) -> int:
         ),
         "absgrad": absgrad,
         "growGrad2d": grow_grad2d,
+        "optimizerLearningRateMultipliers": optimizer_learning_rate_multipliers,
         "screenSpaceRefinement": {
             "policy": screen_space_refinement_policy,
             "densityRefinementPolicy": density_refinement_policy,
@@ -7376,6 +7445,9 @@ def train(config_path: Path) -> int:
             "semanticExcludedLabels": [0, 17, 18, 19, 20, 21, 22],
             "semanticRigidStaticConfidenceFloor": (
                 semantic_rigid_static_confidence_floor
+            ),
+            "semanticPriorityFullConfidenceLabels": list(
+                semantic_priority_full_confidence_labels
             ),
             "semanticVegetationConfidenceFloor": (
                 semantic_vegetation_confidence_floor

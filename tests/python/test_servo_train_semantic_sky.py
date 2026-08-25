@@ -527,6 +527,21 @@ class SemanticPhotometricConfidenceTests(unittest.TestCase):
             )
         )
 
+    def test_priority_driving_labels_keep_full_observed_rgb_confidence(self) -> None:
+        temporal = torch.zeros((1, 1, 4, 1), dtype=torch.float32)
+        semantic = torch.tensor([[[[1], [2], [12], [6]]]], dtype=torch.int64)
+
+        fused = servo_train.fuse_semantic_photometric_confidence(
+            temporal,
+            semantic,
+            protected_static_labels=(1, 2, 12),
+        )
+
+        torch.testing.assert_close(
+            fused,
+            torch.tensor([[[[1.0], [1.0], [1.0], [0.25]]]]),
+        )
+
     def test_rejects_nonfinite_or_out_of_range_temporal_evidence(self) -> None:
         semantic = torch.ones((1, 1, 2, 1), dtype=torch.int64)
         for temporal in (
