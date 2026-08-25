@@ -96,6 +96,13 @@ FRAME_OVERSAMPLING_SCHEMA = "servo.diagnostic-frame-oversampling/v1"
 FRAME_OVERSAMPLING_METHOD = "observed-sky-offender-weighted-sampling-v1"
 CROSS_VIEW_DENSE_MODE = "dense-expected-z-reprojection-v1"
 CROSS_VIEW_SPARSE_TRACK_MODE = "sparse-colmap-shared-track-camera-z-v1"
+DUAL_OPACITY_CORRECTED_INITIALIZATION = (
+    "base-legacy-0.10-appearance-gate-near-one-v1"
+)
+DUAL_OPACITY_EFFECTIVE_PRUNE_POLICY = (
+    "effective-low-and-no-geometry-evidence-v1"
+)
+DUAL_OPACITY_PRODUCT_RESET_POLICY = "product-preserving-controlled-reset-v1"
 
 
 class TrainingError(RuntimeError):
@@ -1556,6 +1563,7 @@ def create_parameters(
     sh_degree: int,
     device: str,
     dual_opacity: bool = False,
+    dual_opacity_initialization: str = "legacy-saturated-base-v1",
 ) -> Any:
     import torch
 
@@ -1565,7 +1573,11 @@ def create_parameters(
     count = len(points)
     quaternions = torch.zeros((count, 4), dtype=torch.float32)
     quaternions[:, 0] = 1.0
-    initial_geometry_opacity = 0.99 if dual_opacity else 0.1
+    corrected_dual_opacity = (
+        dual_opacity
+        and dual_opacity_initialization == DUAL_OPACITY_CORRECTED_INITIALIZATION
+    )
+    initial_geometry_opacity = 0.1 if corrected_dual_opacity or not dual_opacity else 0.99
     opacities = torch.logit(
         torch.full((count,), initial_geometry_opacity, dtype=torch.float32)
     )
@@ -1584,12 +1596,9 @@ def create_parameters(
         # densifier/pruner.  Its high initial support is paired with a low RGB
         # gate whose product exactly matches legacy 0.1 initialization.  This
         # gives geometry and appearance separate capacity from the first step.
+        initial_gate = 0.99 if corrected_dual_opacity else 0.1 / initial_geometry_opacity
         values["appearanceOpacityGates"] = torch.nn.Parameter(
-            torch.logit(
-                torch.full(
-                    (count,), 0.1 / initial_geometry_opacity, dtype=torch.float32
-                )
-            )
+            torch.logit(torch.full((count,), initial_gate, dtype=torch.float32))
         )
     return torch.nn.ParameterDict(values).to(device)
 
@@ -2571,6 +2580,32 @@ def gaussian_opacities(parameters: Any, geometry_only: bool = False) -> Any:
     if geometry_only or "appearanceOpacityGates" not in parameters:
         return geometry
     return geometry * torch.sigmoid(parameters["appearanceOpacityGates"])
+
+
+def reset_dual_opacity_preserving_product(
+    parameters: Any,
+    optimizers: Mapping[str, Any],
+    value: float,
+) -> None:
+    """Reset saturated base opacity without changing the rendered product."""
+
+    import torch
+
+    with torch.no_grad():
+        product = gaussian_opacities(parameters).clamp(1e-6, 1.0 - 1e-6)
+        base = torch.maximum(product, torch.full_like(product, float(value))).clamp(
+            1e-6, 1.0 - 1e-6
+        )
+        gate = (product / base).clamp(1e-6, 1.0 - 1e-6)
+        parameters["opacities"].data.copy_(torch.logit(base))
+        parameters["appearanceOpacityGates"].data.copy_(torch.logit(gate))
+        for name in ("opacities", "appearanceOpacityGates"):
+            optimizer = optimizers[name]
+            state = optimizer.state.get(parameters[name], {})
+            for key in ("exp_avg", "exp_avg_sq"):
+                value_tensor = state.get(key)
+                if value_tensor is not None:
+                    value_tensor.zero_()
 
 
 def composite_raster_background(
@@ -3902,6 +3937,8 @@ def clamp_parameters(parameters: Any, pin_surfel_z: bool = False) -> None:
         if pin_surfel_z:
             parameters["scales"].data[..., 2] = math.log(SURFEL_MINIMUM_SCALE)
         parameters["opacities"].data.clamp_(-12.0, 12.0)
+        if "appearanceOpacityGates" in parameters:
+            parameters["appearanceOpacityGates"].data.clamp_(-12.0, 12.0)
 
 
 def cleanup_parameters(
@@ -3912,7 +3949,7 @@ def cleanup_parameters(
     import torch
 
     with torch.no_grad():
-        opacity = torch.sigmoid(parameters["opacities"])
+        opacity = gaussian_opacities(parameters)
         scales = torch.exp(parameters["scales"])
         # Surfels are planar by construction; anisotropy is only meaningful
         # across the two in-plane axes.
@@ -4377,7 +4414,37 @@ def train(config_path: Path) -> int:
 
     gsplat_runtime_receipt = prepare_gsplat_runtime()
     from gsplat.strategy import DefaultStrategy
-    from gsplat.strategy.ops import reset_opa
+    from gsplat.strategy.ops import remove, reset_opa
+
+    class EffectiveOpacityDefaultStrategy(DefaultStrategy):
+        """Use export-visible opacity for pruning while preserving gsplat growth."""
+
+        @torch.no_grad()
+        def _prune_gs(
+            self,
+            params: Any,
+            optimizers: Any,
+            state: Any,
+            step: int,
+        ) -> int:
+            is_prune = gaussian_opacities(params).flatten() < self.prune_opa
+            if step > self.reset_every:
+                is_too_big = (
+                    torch.exp(params["scales"]).max(dim=-1).values
+                    > self.prune_scale3d * state["scene_scale"]
+                )
+                if step < self.refine_scale2d_stop_iter:
+                    is_too_big |= state["radii"] > self.prune_scale2d
+                is_prune |= is_too_big
+            count = int(is_prune.sum().item())
+            if count > 0:
+                remove(
+                    params=params,
+                    optimizers=optimizers,
+                    state=state,
+                    mask=is_prune,
+                )
+            return count
 
     with config_path.open("r", encoding="utf-8") as stream:
         config = json.load(stream)
@@ -4637,6 +4704,22 @@ def train(config_path: Path) -> int:
     surface_alignment_weight = float(config.get("surfaceAlignmentWeight", 0.0))
     road_planarity_weight = float(config.get("roadPlanarityWeight", 0.0))
     dual_opacity_enabled = config.get("dualOpacityEnabled") is True
+    dual_opacity_initialization = str(
+        config.get("dualOpacityInitialization", "legacy-saturated-base-v1")
+    )
+    dual_opacity_geometry_rgb_weight = float(
+        config.get("dualOpacityGeometryRgbWeight", 0.0)
+    )
+    dual_opacity_prune_policy = str(
+        config.get("dualOpacityPrunePolicy", "base-opacity-v1")
+    )
+    dual_opacity_reset_policy = str(
+        config.get("dualOpacityResetPolicy", "disabled-v1")
+    )
+    corrected_dual_opacity = (
+        dual_opacity_enabled
+        and dual_opacity_initialization == DUAL_OPACITY_CORRECTED_INITIALIZATION
+    )
     cross_view_depth_weight = float(
         config.get("crossViewDepthConsistencyWeight", 0.0)
     )
@@ -4753,6 +4836,24 @@ def train(config_path: Path) -> int:
         }
     if max_steps <= 0 or checkpoint_every <= 0:
         raise TrainingError("Training and checkpoint step counts must be positive.")
+    if corrected_dual_opacity and (
+        not is_nonpublishable_diagnostic_config(config)
+        or not 0.0 < dual_opacity_geometry_rgb_weight <= 0.10
+        or dual_opacity_prune_policy != DUAL_OPACITY_EFFECTIVE_PRUNE_POLICY
+        or dual_opacity_reset_policy != DUAL_OPACITY_PRODUCT_RESET_POLICY
+    ):
+        raise TrainingError(
+            "The corrected dual-opacity lifecycle is sealed to its bounded "
+            "non-publishable diagnostic contract."
+        )
+    if (
+        dual_opacity_enabled
+        and not corrected_dual_opacity
+        and dual_opacity_geometry_rgb_weight > 0.0
+    ):
+        raise TrainingError(
+            "Base-opacity RGB accountability requires the corrected lifecycle."
+        )
     if rasterization_mode not in {"classic", "antialiased"}:
         raise TrainingError("rasterizationMode must be classic or antialiased.")
     if not math.isfinite(eps2d) or eps2d <= 0.0:
@@ -4984,7 +5085,10 @@ def train(config_path: Path) -> int:
     needs_geometry_depth = render_requirements["depth"]
     needs_geometry_render = render_requirements["geometryRender"]
     needs_surfel_aux = render_requirements["surfelAux"]
-    strategy = DefaultStrategy(
+    strategy_type = (
+        EffectiveOpacityDefaultStrategy if corrected_dual_opacity else DefaultStrategy
+    )
+    strategy = strategy_type(
         prune_opa=0.005,
         grow_grad2d=0.0002 if surfel_ablation is not None else grow_grad2d,
         grow_scale3d=0.01,
@@ -4997,7 +5101,9 @@ def train(config_path: Path) -> int:
         # Resetting the geometry opacity would collapse the RGB product and
         # defeat the dual-opacity representation. Densification and pruning
         # remain active; only periodic opacity reset is moved beyond the run.
-        reset_every=max_steps + 1 if dual_opacity_enabled else 3_000,
+        reset_every=(
+            3_000 if corrected_dual_opacity or not dual_opacity_enabled else max_steps + 1
+        ),
         refine_every=100,
         absgrad=False if surfel_ablation is not None else absgrad,
         verbose=False,
@@ -5009,7 +5115,11 @@ def train(config_path: Path) -> int:
     checkpoint = load_checkpoint(checkpoint_dir, config)
     if checkpoint is None:
         parameters = create_parameters(
-            dataset, sh_degree, device, dual_opacity=dual_opacity_enabled
+            dataset,
+            sh_degree,
+            device,
+            dual_opacity=dual_opacity_enabled,
+            dual_opacity_initialization=dual_opacity_initialization,
         )
         optimizers = create_optimizers(parameters)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
@@ -5385,6 +5495,8 @@ def train(config_path: Path) -> int:
     scale_regularization = float(config.get("scaleRegularization", 0.001))
     torch.cuda.reset_peak_memory_stats()
     started = time.monotonic()
+
+    recent_dual_opacity_geometry_rgb_loss = 0.0
 
     def current_policy_state() -> dict[str, Any]:
         return {
@@ -5762,11 +5874,17 @@ def train(config_path: Path) -> int:
             )
             alpha = appearance_alpha
             geometry_information = information
+            geometry_color_render = None
             if dual_opacity_enabled and needs_geometry_render:
                 # Render geometry evidence through the base opacity.  RGB and
                 # the densification gradient continue to use the appearance
                 # product above, preventing road/sign detail from being
                 # sacrificed to a geometry-only objective.
+                geometry_render_mode = (
+                    "RGB+ED"
+                    if dual_opacity_geometry_rgb_weight > 0.0
+                    else ("ED" if needs_geometry_depth or needs_surfel_aux else "RGB")
+                )
                 geometry_depth, alpha, geometry_information = rasterize(
                     parameters,
                     camera,
@@ -5778,14 +5896,30 @@ def train(config_path: Path) -> int:
                     False,
                     rasterization_mode,
                     eps2d,
-                    render_mode=(
-                        "ED" if needs_geometry_depth or needs_surfel_aux else "RGB"
+                    render_mode=geometry_render_mode,
+                    colors_override=(
+                        torch.cat(
+                            [parameters["sh0"], parameters["shN"]], dim=1
+                        ).detach()
+                        if dual_opacity_geometry_rgb_weight > 0.0
+                        else None
+                    ),
+                    backgrounds=(
+                        raster_background
+                        if dual_opacity_geometry_rgb_weight > 0.0
+                        else None
                     ),
                     surfel_ablation=surfel_ablation,
                     geometry_opacity=True,
                 )
                 if needs_geometry_depth:
-                    expected_depth = geometry_depth[..., :1]
+                    expected_depth = (
+                        geometry_depth[..., 3:4]
+                        if geometry_render_mode == "RGB+ED"
+                        else geometry_depth[..., :1]
+                    )
+                if dual_opacity_geometry_rgb_weight > 0.0:
+                    geometry_color_render = geometry_depth[..., :3]
             training_render = apply_appearance(rendered, appearance, index)
             strategy.step_pre_backward(
                 params=parameters,
@@ -5804,6 +5938,24 @@ def train(config_path: Path) -> int:
                 confidence.permute(0, 3, 1, 2),
             )
             loss = 0.8 * l1 + 0.2 * ssim_loss
+            recent_dual_opacity_geometry_rgb_loss = 0.0
+            if geometry_color_render is not None:
+                geometry_training_render = apply_appearance(
+                    geometry_color_render, appearance, index
+                )
+                geometry_l1 = (
+                    (geometry_training_render - pixels).abs() * confidence
+                ).sum() / (confidence_sum * geometry_training_render.shape[-1])
+                geometry_ssim_loss = 1.0 - ssim(
+                    geometry_training_render.permute(0, 3, 1, 2),
+                    pixels.permute(0, 3, 1, 2),
+                    confidence.permute(0, 3, 1, 2),
+                )
+                geometry_rgb_loss = 0.8 * geometry_l1 + 0.2 * geometry_ssim_loss
+                loss = loss + dual_opacity_geometry_rgb_weight * geometry_rgb_loss
+                recent_dual_opacity_geometry_rgb_loss = float(
+                    geometry_rgb_loss.detach().item()
+                )
             recent_sparse_depth_loss = 0.0
             recent_semantic_sky_opacity_loss = 0.0
             recent_contributor_sky_cleanup_loss = 0.0
@@ -6261,13 +6413,21 @@ def train(config_path: Path) -> int:
             if should_reset_opacity(
                 step, strategy.reset_every, strategy.refine_stop_iter
             ):
-                reset_opa(
-                    params=parameters,
-                    optimizers=optimizers,
-                    state=strategy_state,
-                    value=strategy.prune_opa * 2.0,
-                )
-                emit("opacity_reset", step=step)
+                if corrected_dual_opacity:
+                    reset_dual_opacity_preserving_product(
+                        parameters,
+                        optimizers,
+                        strategy.prune_opa * 2.0,
+                    )
+                    emit("opacity_reset", step=step, productPreserved=True)
+                else:
+                    reset_opa(
+                        params=parameters,
+                        optimizers=optimizers,
+                        state=strategy_state,
+                        value=strategy.prune_opa * 2.0,
+                    )
+                    emit("opacity_reset", step=step)
             clamp_parameters(
                 parameters, pin_surfel_z=surfel_ablation is not None
             )
@@ -6337,6 +6497,9 @@ def train(config_path: Path) -> int:
                 crossViewDepthLoss=recent_cross_view_depth_loss,
                 crossViewDepthSteps=cross_view_depth_steps,
                 crossViewDepthSamples=cross_view_depth_samples,
+                dualOpacityGeometryRgbLoss=(
+                    recent_dual_opacity_geometry_rgb_loss
+                ),
                 depthLayerVarianceLoss=recent_depth_layer_variance_loss,
                 depthLayerVarianceSteps=depth_layer_variance_steps,
                 drivingSurfaceVarianceLoss=recent_driving_surface_variance_loss,
@@ -6612,13 +6775,24 @@ def train(config_path: Path) -> int:
         "dualOpacity": {
             "enabled": dual_opacity_enabled,
             "method": (
-                "stablegs-inspired-geometry-opacity-times-appearance-gate-v1"
+                (
+                    "stablegs-inspired-corrected-lifecycle-v2"
+                    if corrected_dual_opacity
+                    else "stablegs-inspired-geometry-opacity-times-appearance-gate-v1"
+                )
                 if dual_opacity_enabled
                 else "disabled"
             ),
+            "initialization": dual_opacity_initialization,
+            "geometryRgbWeight": dual_opacity_geometry_rgb_weight,
+            "recentGeometryRgbLoss": recent_dual_opacity_geometry_rgb_loss,
+            "prunePolicy": dual_opacity_prune_policy,
+            "resetPolicy": dual_opacity_reset_policy,
             "geometryObjectivesUseBaseOpacity": dual_opacity_enabled,
             "rgbAndExportUseProductOpacity": dual_opacity_enabled,
-            "opacityResetDisabled": dual_opacity_enabled,
+            "opacityResetDisabled": (
+                dual_opacity_enabled and not corrected_dual_opacity
+            ),
         },
         "geometryRegularization": {
             "staticConfidenceMasks": dataset.static_confidence_masks,

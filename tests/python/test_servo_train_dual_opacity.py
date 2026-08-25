@@ -52,6 +52,54 @@ class DualOpacityTests(unittest.TestCase):
             servo_train.gaussian_opacities(parameters), torch.full((2,), 0.1)
         )
 
+    def test_corrected_initialization_keeps_base_trainable_and_gate_near_one(self) -> None:
+        parameters = servo_train.create_parameters(
+            self.dataset(),
+            sh_degree=0,
+            device="cpu",
+            dual_opacity=True,
+            dual_opacity_initialization=(
+                servo_train.DUAL_OPACITY_CORRECTED_INITIALIZATION
+            ),
+        )
+
+        geometry = servo_train.gaussian_opacities(parameters, geometry_only=True)
+        product = servo_train.gaussian_opacities(parameters)
+
+        torch.testing.assert_close(geometry, torch.full((2,), 0.1))
+        torch.testing.assert_close(product, torch.full((2,), 0.099))
+
+    def test_product_preserving_reset_does_not_change_visible_opacity(self) -> None:
+        parameters = servo_train.create_parameters(
+            self.dataset(),
+            sh_degree=0,
+            device="cpu",
+            dual_opacity=True,
+            dual_opacity_initialization=(
+                servo_train.DUAL_OPACITY_CORRECTED_INITIALIZATION
+            ),
+        )
+        optimizers = servo_train.create_optimizers(parameters)
+        before = servo_train.gaussian_opacities(parameters).detach().clone()
+
+        servo_train.reset_dual_opacity_preserving_product(
+            parameters, optimizers, value=0.01
+        )
+
+        torch.testing.assert_close(
+            servo_train.gaussian_opacities(parameters), before, atol=1e-6, rtol=1e-6
+        )
+        self.assertTrue(
+            bool(
+                (
+                    servo_train.gaussian_opacities(
+                        parameters, geometry_only=True
+                    )
+                    >= before
+                ).all()
+            )
+        )
+
     def test_optimizer_tracks_gate_for_gsplat_densification(self) -> None:
         parameters = servo_train.create_parameters(
             self.dataset(), sh_degree=0, device="cpu", dual_opacity=True

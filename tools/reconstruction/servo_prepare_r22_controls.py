@@ -114,6 +114,23 @@ def build(
                 "crossViewMinimumValidTracksPerStep": 64,
             }
         )
+    elif treatment == "dual-corrected":
+        config.update(
+            {
+                "dualOpacityEnabled": True,
+                "dualOpacityInitialization": (
+                    "base-legacy-0.10-appearance-gate-near-one-v1"
+                ),
+                "dualOpacityGeometryRgbWeight": 0.10,
+                "dualOpacityPrunePolicy": (
+                    "effective-low-and-no-geometry-evidence-v1"
+                ),
+                "dualOpacityResetPolicy": (
+                    "product-preserving-controlled-reset-v1"
+                ),
+                "crossViewDepthConsistencyWeight": 0.0,
+            }
+        )
     elif treatment != "control":
         raise RuntimeError(f"Unsupported R22 treatment: {treatment}")
     config["diagnosticProvenance"] = {
@@ -130,7 +147,11 @@ def build(
             else (
                 "Matched 1500-step COLMAP shared-track camera-Z diagnostic."
                 if treatment == "sparse-track"
-                else "Matched 1500-step R17-policy short-run control."
+                else (
+                    "Matched 1500-step corrected dual-opacity lifecycle diagnostic."
+                    if treatment == "dual-corrected"
+                    else "Matched 1500-step R17-policy short-run control."
+                )
             )
         ),
         "claimLimit": (
@@ -153,7 +174,7 @@ def main() -> int:
     parser.add_argument("--seeds", nargs="+", type=int, default=(42, 43))
     parser.add_argument(
         "--treatment",
-        choices=("control", "surfel", "sparse-track"),
+        choices=("control", "surfel", "sparse-track", "dual-corrected"),
         default="control",
     )
     args = parser.parse_args()
