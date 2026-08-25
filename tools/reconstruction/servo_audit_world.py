@@ -1090,6 +1090,13 @@ def audit(
     support_values: list[float] = []
     lower_support_values: list[float] = []
     center_support_values: list[float] = []
+    support_thresholds = (0.10, 0.25, 0.50, 0.75)
+    support_curves: dict[float, list[float]] = {
+        threshold: [] for threshold in support_thresholds
+    }
+    lower_support_curves: dict[float, list[float]] = {
+        threshold: [] for threshold in support_thresholds
+    }
     environment_coverage_values: list[float] = []
     ambiguity_samples: list[np.ndarray] = []
     sky_diagnostics: list[dict[str, Any]] = []
@@ -1391,6 +1398,13 @@ def audit(
                 support_values.append(support)
                 lower_support_values.append(lower_support)
                 center_support_values.append(center_support)
+                for threshold in support_thresholds:
+                    support_curves[threshold].append(
+                        float(np.mean(alpha_np >= threshold))
+                    )
+                    lower_support_curves[threshold].append(
+                        float(np.mean(alpha_np[height // 2 :, :] >= threshold))
+                    )
                 if valid.any():
                     ambiguity_samples.append(relative_std[::4, ::4][valid[::4, ::4]].astype(np.float32, copy=True))
 
@@ -1650,6 +1664,23 @@ def audit(
             "lowerHalfMinimum": float(np.min(lower_support_values)),
             "centerMean": float(np.mean(center_support_values)),
             "centerMinimum": float(np.min(center_support_values)),
+            "thresholdCurve": {
+                f"alphaAtLeast{threshold:.2f}": {
+                    "meaning": (
+                        "Fraction of observed-path pixels above this accumulated "
+                        "finite-Gaussian alpha threshold; not occupancy or geometry."
+                    ),
+                    "overallMean": float(np.mean(support_curves[threshold])),
+                    "overallMinimum": float(np.min(support_curves[threshold])),
+                    "lowerHalfMean": float(
+                        np.mean(lower_support_curves[threshold])
+                    ),
+                    "lowerHalfMinimum": float(
+                        np.min(lower_support_curves[threshold])
+                    ),
+                }
+                for threshold in support_thresholds
+            },
         },
         "depthAmbiguity": {
             "meaning": "Relative standard deviation of composited Gaussian camera-space depth; this detects mixed layers but is not ground-truth depth error.",

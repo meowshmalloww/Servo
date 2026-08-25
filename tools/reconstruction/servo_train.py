@@ -103,6 +103,10 @@ DUAL_OPACITY_EFFECTIVE_PRUNE_POLICY = (
     "effective-low-and-no-geometry-evidence-v1"
 )
 DUAL_OPACITY_PRODUCT_RESET_POLICY = "product-preserving-controlled-reset-v1"
+COVERAGE_DENSIFICATION_SCHEMA = "servo.diagnostic-coverage-densification/v1"
+COVERAGE_DENSIFICATION_METHOD = "gsplat-1.5.3-tile-footprint-depth-scaled-v1"
+COVERAGE_DENSIFICATION_FOOTPRINT_SOURCE = "tiles-per-gaussian"
+COVERAGE_DENSIFICATION_DEPTH_SOURCE = "camera-space-z"
 
 
 class TrainingError(RuntimeError):
@@ -150,6 +154,219 @@ def supported_density_refinement_contract(
         and policy == DIAGNOSTIC_FIXED_DENSITY_REFINEMENT_POLICY
         and stop_iter == DIAGNOSTIC_FIXED_DENSITY_REFINEMENT_STOP
         and max(coarse_steps, dense_geometry_start) < stop_iter < main_fit_stop_iter
+    )
+
+
+def supported_coverage_densification_contract(
+    config: Mapping[str, Any], treatment: Mapping[str, Any]
+) -> bool:
+    """Seal the tile-footprint densification proxy to a single diagnostic A/B.
+
+    ``tiles_per_gauss`` is a conservative raster-tile footprint, not the exact
+    contributing-pixel count used by Pixel-GS.  The treatment therefore stays
+    explicitly diagnostic and changes only the running densification statistic.
+    """
+
+    try:
+        maximum_footprint_fraction = float(
+            treatment["maximumFootprintFraction"]
+        )
+        footprint_power = float(treatment["footprintPower"])
+        depth_scale_fraction = float(treatment["depthScaleFraction"])
+        depth_power = float(treatment["depthPower"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        is_nonpublishable_diagnostic_config(config)
+        and treatment.get("schema") == COVERAGE_DENSIFICATION_SCHEMA
+        and treatment.get("method") == COVERAGE_DENSIFICATION_METHOD
+        and treatment.get("footprintSource")
+        == COVERAGE_DENSIFICATION_FOOTPRINT_SOURCE
+        and treatment.get("depthSource") == COVERAGE_DENSIFICATION_DEPTH_SOURCE
+        and math.isclose(
+            maximum_footprint_fraction, 0.02, rel_tol=0.0, abs_tol=1e-12
+        )
+        and math.isclose(footprint_power, 1.0, rel_tol=0.0, abs_tol=1e-12)
+        and math.isclose(
+            depth_scale_fraction, 0.37, rel_tol=0.0, abs_tol=1e-12
+        )
+        and math.isclose(depth_power, 2.0, rel_tol=0.0, abs_tol=1e-12)
+        and treatment.get("packedRequired") is True
+        and treatment.get("surfelAllowed") is False
+        and treatment.get("dualOpacityAllowed") is False
+        and treatment.get("revisedOpacity") is False
+        and treatment.get("lossesChanged") is False
+        and treatment.get("opacityPolicyChanged") is False
+        and treatment.get("pruningPolicyChanged") is False
+    )
+
+
+def update_coverage_densification_state(
+    params: Mapping[str, Any],
+    state: dict[str, Any],
+    info: Mapping[str, Any],
+    *,
+    key_for_gradient: str,
+    absgrad: bool,
+    scene_scale: float,
+    maximum_footprint_fraction: float,
+    footprint_power: float,
+    depth_scale_fraction: float,
+    depth_power: float,
+) -> None:
+    """Accumulate clean-room footprint/depth-aware gsplat growth statistics.
+
+    The normalization and radius bookkeeping intentionally match gsplat 1.5.3
+    ``DefaultStrategy``.  Only the gradient numerator and denominator change.
+    """
+
+    import torch
+
+    required = (
+        "width",
+        "height",
+        "n_cameras",
+        "radii",
+        "gaussian_ids",
+        "depths",
+        "tiles_per_gauss",
+        "tile_width",
+        "tile_height",
+        key_for_gradient,
+    )
+    missing = [key for key in required if key not in info]
+    if missing:
+        raise TrainingError(
+            "Coverage-aware densification metadata is incomplete: "
+            + ", ".join(missing)
+        )
+    gradient_source = info[key_for_gradient]
+    gradient = (
+        getattr(gradient_source, "absgrad", None)
+        if absgrad
+        else getattr(gradient_source, "grad", None)
+    )
+    if gradient is None:
+        raise TrainingError(
+            "Coverage-aware densification did not receive projected-mean gradients."
+        )
+    gradients = gradient.clone()
+    gaussian_ids = info["gaussian_ids"]
+    radii = info["radii"].max(dim=-1).values
+    depths = info["depths"]
+    footprints = info["tiles_per_gauss"]
+    observation_count = int(gaussian_ids.numel())
+    if any(
+        int(value.numel()) != observation_count
+        for value in (radii, depths, footprints)
+    ) or gradients.shape != (observation_count, 2):
+        raise TrainingError(
+            "Coverage-aware densification requires aligned packed raster metadata."
+        )
+    if (
+        not torch.isfinite(gradients).all()
+        or not torch.isfinite(depths).all()
+        or not torch.isfinite(footprints).all()
+        or (depths <= 0.0).any()
+    ):
+        raise TrainingError(
+            "Coverage-aware densification rejected nonfinite or nonpositive metadata."
+        )
+    width = int(info["width"])
+    height = int(info["height"])
+    n_cameras = int(info["n_cameras"])
+    tile_width = int(info["tile_width"])
+    tile_height = int(info["tile_height"])
+    if min(width, height, n_cameras, tile_width, tile_height) <= 0:
+        raise TrainingError("Coverage-aware densification received invalid dimensions.")
+    gradients[..., 0] *= width / 2.0 * n_cameras
+    gradients[..., 1] *= height / 2.0 * n_cameras
+
+    gaussian_count = len(next(iter(params.values())))
+    if state.get("grad2d") is None:
+        state["grad2d"] = torch.zeros(gaussian_count, device=gradients.device)
+    if state.get("count") is None:
+        state["count"] = torch.zeros(gaussian_count, device=gradients.device)
+    if state.get("radii") is None:
+        state["radii"] = torch.zeros(gaussian_count, device=gradients.device)
+
+    total_tiles = tile_width * tile_height
+    maximum_footprint = max(1.0, maximum_footprint_fraction * total_tiles)
+    footprint_weights = footprints.to(dtype=gradients.dtype).clamp(
+        min=1.0, max=maximum_footprint
+    ).pow(footprint_power)
+    depth_denominator = depth_scale_fraction * float(scene_scale)
+    if not math.isfinite(depth_denominator) or depth_denominator <= 0.0:
+        raise TrainingError("Coverage-aware densification has an invalid scene scale.")
+    depth_weights = (depths / depth_denominator).clamp(min=0.0, max=1.0).pow(
+        depth_power
+    )
+    weighted_observations = footprint_weights * depth_weights
+    gradient_norms = gradients.norm(dim=-1)
+    state["grad2d"].index_add_(
+        0, gaussian_ids, gradient_norms * weighted_observations
+    )
+    state["count"].index_add_(0, gaussian_ids, footprint_weights)
+    state["radii"][gaussian_ids] = torch.maximum(
+        state["radii"][gaussian_ids],
+        radii / float(max(width, height)),
+    )
+
+    diagnostics = state.setdefault(
+        "coverageDensificationDiagnostics",
+        {
+            "observations": 0,
+            "footprintSum": 0.0,
+            "depthWeightedFootprintSum": 0.0,
+            "maximumFootprint": 0.0,
+            "cappedObservations": 0,
+            "defaultGrad2d": None,
+            "defaultCount": None,
+            "rawFootprintSum": None,
+            "depthSum": None,
+        },
+    )
+    if (
+        diagnostics.get("defaultGrad2d") is None
+        or len(diagnostics["defaultGrad2d"]) != gaussian_count
+        or diagnostics.get("rawFootprintSum") is None
+        or diagnostics.get("depthSum") is None
+    ):
+        diagnostics["defaultGrad2d"] = torch.zeros(
+            gaussian_count, device=gradients.device
+        )
+        diagnostics["defaultCount"] = torch.zeros(
+            gaussian_count, device=gradients.device
+        )
+        diagnostics["rawFootprintSum"] = torch.zeros(
+            gaussian_count, device=gradients.device
+        )
+        diagnostics["depthSum"] = torch.zeros(
+            gaussian_count, device=gradients.device
+        )
+    diagnostics["defaultGrad2d"].index_add_(
+        0, gaussian_ids, gradient_norms
+    )
+    diagnostics["defaultCount"].index_add_(
+        0,
+        gaussian_ids,
+        torch.ones_like(gaussian_ids, dtype=gradients.dtype),
+    )
+    diagnostics["rawFootprintSum"].index_add_(
+        0, gaussian_ids, footprints.to(dtype=gradients.dtype).clamp_min(1.0)
+    )
+    diagnostics["depthSum"].index_add_(0, gaussian_ids, depths)
+    diagnostics["observations"] += observation_count
+    diagnostics["footprintSum"] += float(footprint_weights.sum().item())
+    diagnostics["depthWeightedFootprintSum"] += float(
+        weighted_observations.sum().item()
+    )
+    diagnostics["maximumFootprint"] = max(
+        float(diagnostics["maximumFootprint"]),
+        float(footprint_weights.max().item()) if observation_count else 0.0,
+    )
+    diagnostics["cappedObservations"] += int(
+        (footprints > maximum_footprint).sum().item()
     )
 
 
@@ -4446,6 +4663,129 @@ def train(config_path: Path) -> int:
                 )
             return count
 
+    class FootprintDepthDefaultStrategy(DefaultStrategy):
+        """Change only gsplat's running growth statistic for the R24 A/B."""
+
+        @torch.no_grad()
+        def _update_state(
+            self,
+            params: Any,
+            state: Any,
+            info: Any,
+            packed: bool = False,
+        ) -> None:
+            if not packed:
+                raise TrainingError(
+                    "Coverage-aware densification requires packed gsplat metadata."
+                )
+            update_coverage_densification_state(
+                params,
+                state,
+                info,
+                key_for_gradient=self.key_for_gradient,
+                absgrad=self.absgrad,
+                scene_scale=float(state["scene_scale"]),
+                maximum_footprint_fraction=0.02,
+                footprint_power=1.0,
+                depth_scale_fraction=0.37,
+                depth_power=2.0,
+            )
+
+        @torch.no_grad()
+        def _grow_gs(
+            self,
+            params: Any,
+            optimizers: Any,
+            state: Any,
+            step: int,
+        ) -> tuple[int, int]:
+            diagnostics = state["coverageDensificationDiagnostics"]
+            treatment_score = state["grad2d"] / state["count"].clamp_min(1.0)
+            default_score = diagnostics["defaultGrad2d"] / diagnostics[
+                "defaultCount"
+            ].clamp_min(1.0)
+            treatment_candidates = treatment_score > self.grow_grad2d
+            default_candidates = default_score > self.grow_grad2d
+            observed = diagnostics["defaultCount"] > 0.0
+            mean_footprint = diagnostics["rawFootprintSum"] / diagnostics[
+                "defaultCount"
+            ].clamp_min(1.0)
+            mean_depth = diagnostics["depthSum"] / diagnostics[
+                "defaultCount"
+            ].clamp_min(1.0)
+            footprint_q75 = torch.quantile(mean_footprint[observed], 0.75)
+            depth_q10 = torch.quantile(mean_depth[observed], 0.10)
+            top_footprint = observed & (mean_footprint >= footprint_q75)
+            nearest_depth = observed & (mean_depth <= depth_q10)
+            is_small = (
+                torch.exp(params["scales"]).max(dim=-1).values
+                <= self.grow_scale3d * state["scene_scale"]
+            )
+
+            def split_candidates(score: Any) -> Any:
+                selected = (score > self.grow_grad2d) & ~is_small
+                if step < self.refine_scale2d_stop_iter:
+                    selected |= state["radii"] > self.grow_scale2d
+                return selected
+
+            treatment_split = split_candidates(treatment_score)
+            default_split = split_candidates(default_score)
+            added_split = treatment_split & ~default_split
+            added_split_count = int(added_split.sum().item())
+            emit(
+                "coverage_densification_decision",
+                step=step,
+                method=COVERAGE_DENSIFICATION_METHOD,
+                observations=int(diagnostics["observations"]),
+                footprintSum=float(diagnostics["footprintSum"]),
+                depthWeightedFootprintSum=float(
+                    diagnostics["depthWeightedFootprintSum"]
+                ),
+                maximumFootprint=float(diagnostics["maximumFootprint"]),
+                cappedObservationFraction=(
+                    float(diagnostics["cappedObservations"])
+                    / max(int(diagnostics["observations"]), 1)
+                ),
+                treatmentCandidates=int(treatment_candidates.sum().item()),
+                defaultCandidates=int(default_candidates.sum().item()),
+                addedCandidates=int(
+                    (treatment_candidates & ~default_candidates).sum().item()
+                ),
+                suppressedCandidates=int(
+                    (default_candidates & ~treatment_candidates).sum().item()
+                ),
+                treatmentSplitCandidates=int(treatment_split.sum().item()),
+                defaultSplitCandidates=int(default_split.sum().item()),
+                addedSplitCandidates=added_split_count,
+                addedSplitTopFootprintFraction=(
+                    float((added_split & top_footprint).sum().item())
+                    / max(added_split_count, 1)
+                ),
+                addedSplitNearestDepthFraction=(
+                    float((added_split & nearest_depth).sum().item())
+                    / max(added_split_count, 1)
+                ),
+                topFootprintQuartileThreshold=float(footprint_q75.item()),
+                nearestDepthDecileThreshold=float(depth_q10.item()),
+                treatmentScoreMean=float(treatment_score.mean().item()),
+                defaultScoreMean=float(default_score.mean().item()),
+            )
+            result = super()._grow_gs(params, optimizers, state, step)
+            diagnostics.update(
+                {
+                    "observations": 0,
+                    "footprintSum": 0.0,
+                    "depthWeightedFootprintSum": 0.0,
+                    "maximumFootprint": 0.0,
+                    "cappedObservations": 0,
+                    "defaultGrad2d": None,
+                    "defaultCount": None,
+                    "rawFootprintSum": None,
+                    "depthSum": None,
+                }
+            )
+            return result
+
     with config_path.open("r", encoding="utf-8") as stream:
         config = json.load(stream)
     if config.get("schema") != CONFIG_SCHEMA:
@@ -4615,6 +4955,16 @@ def train(config_path: Path) -> int:
     )
     sh_degree = int(config.get("shDegree", 3))
     packed = bool(config.get("packed", True))
+    coverage_densification: dict[str, Any] | None = None
+    if isinstance(config.get("coverageAwareDensification"), Mapping):
+        coverage_densification = dict(config["coverageAwareDensification"])
+        if not supported_coverage_densification_contract(
+            config, coverage_densification
+        ):
+            raise TrainingError(
+                "Coverage-aware densification is sealed to the R24 "
+                "non-publishable diagnostic contract."
+            )
     max_steps = int(config["maxSteps"])
     checkpoint_every = int(config["checkpointEvery"])
     rasterization_mode = str(config.get("rasterizationMode", ""))
@@ -4641,6 +4991,8 @@ def train(config_path: Path) -> int:
     grow_scale2d = float(config.get("growScale2d", 0.0))
     prune_scale2d = float(config.get("pruneScale2d", 0.0))
     refine_scale2d_stop_iter = int(config.get("refineScale2dStopIter", 0))
+    refine_start_iter = int(config.get("refineStartIter", 500))
+    refine_every = int(config.get("refineEvery", 100))
     target_gaussians = int(config.get("targetGaussians", 0))
     max_gaussians = int(config.get("maxGaussians", 0))
     quality_gate = config.get("qualityGate", {})
@@ -4836,6 +5188,20 @@ def train(config_path: Path) -> int:
         }
     if max_steps <= 0 or checkpoint_every <= 0:
         raise TrainingError("Training and checkpoint step counts must be positive.")
+    if (
+        refine_start_iter < 0
+        or refine_start_iter >= refine_scale2d_stop_iter
+        or refine_every <= 0
+        or (
+            (refine_start_iter != 500 or refine_every != 100)
+            and not (
+                is_nonpublishable_diagnostic_config(config)
+                and refine_start_iter == 100
+                and refine_every == 100
+            )
+        )
+    ):
+        raise TrainingError("The density refinement schedule is unsupported.")
     if corrected_dual_opacity and (
         not is_nonpublishable_diagnostic_config(config)
         or not 0.0 < dual_opacity_geometry_rgb_weight <= 0.10
@@ -4845,6 +5211,17 @@ def train(config_path: Path) -> int:
         raise TrainingError(
             "The corrected dual-opacity lifecycle is sealed to its bounded "
             "non-publishable diagnostic contract."
+        )
+    if coverage_densification is not None and (
+        not packed
+        or surfel_ablation is not None
+        or dual_opacity_enabled
+        or cross_view_depth_weight > 0.0
+        or bool(config.get("revisedOpacity", False))
+    ):
+        raise TrainingError(
+            "R24 coverage-aware densification requires packed, single-opacity "
+            "3DGS with no cross-view or surfel treatment."
         )
     if (
         dual_opacity_enabled
@@ -5086,7 +5463,11 @@ def train(config_path: Path) -> int:
     needs_geometry_render = render_requirements["geometryRender"]
     needs_surfel_aux = render_requirements["surfelAux"]
     strategy_type = (
-        EffectiveOpacityDefaultStrategy if corrected_dual_opacity else DefaultStrategy
+        FootprintDepthDefaultStrategy
+        if coverage_densification is not None
+        else EffectiveOpacityDefaultStrategy
+        if corrected_dual_opacity
+        else DefaultStrategy
     )
     strategy = strategy_type(
         prune_opa=0.005,
@@ -5096,7 +5477,7 @@ def train(config_path: Path) -> int:
         prune_scale3d=0.10,
         prune_scale2d=prune_scale2d,
         refine_scale2d_stop_iter=refine_scale2d_stop_iter,
-        refine_start_iter=500,
+        refine_start_iter=refine_start_iter,
         refine_stop_iter=refine_scale2d_stop_iter,
         # Resetting the geometry opacity would collapse the RGB product and
         # defeat the dual-opacity representation. Densification and pruning
@@ -5104,7 +5485,7 @@ def train(config_path: Path) -> int:
         reset_every=(
             3_000 if corrected_dual_opacity or not dual_opacity_enabled else max_steps + 1
         ),
-        refine_every=100,
+        refine_every=refine_every,
         absgrad=False if surfel_ablation is not None else absgrad,
         verbose=False,
         key_for_gradient=(
@@ -6725,6 +7106,8 @@ def train(config_path: Path) -> int:
         "densificationStrategy": (
             "default-2dgs-gradient"
             if surfel_ablation is not None
+            else COVERAGE_DENSIFICATION_METHOD
+            if coverage_densification is not None
             else ("default-absgrad" if absgrad else "default")
         ),
         "absgrad": absgrad,
@@ -6735,6 +7118,8 @@ def train(config_path: Path) -> int:
             "growScale2d": grow_scale2d,
             "pruneScale2d": prune_scale2d,
             "stopIter": refine_scale2d_stop_iter,
+            "startIter": refine_start_iter,
+            "refineEvery": refine_every,
             "actualStopIter": int(strategy.refine_stop_iter),
             "mainFitStopIter": main_fit_stop_iter,
             "growthFrozenAtTarget": density_growth_frozen,
@@ -6743,6 +7128,7 @@ def train(config_path: Path) -> int:
         },
         "mainSampling": main_sampling_receipt,
         "frameOversampling": frame_oversampling_receipt,
+        "coverageAwareDensification": coverage_densification,
         "surfelAblation": (
             {
                 **surfel_ablation,
