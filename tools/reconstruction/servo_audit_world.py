@@ -32,6 +32,7 @@ import numpy as np
 AUDIT_SCHEMA = "servo.gaussian-path-audit/v4"
 DIAGNOSTIC_PROVENANCE_SCHEMA = "servo.diagnostic-training-provenance/v1"
 SKY_DIAGNOSTIC_SCHEMA = "servo.sky-leakage-diagnostic/v1"
+COVERAGE_ENVELOPE_SCHEMA = "servo.observed-coverage-envelope/v1"
 SEMANTIC_SKY_LABEL = 17
 SEMANTIC_ROAD_LABELS = frozenset({1, 2, 5})
 SEMANTIC_ROAD_MARKING_LABELS = frozenset({2})
@@ -730,6 +731,77 @@ def aggregate_navigation_stress(samples: list[dict[str, Any]]) -> dict[str, Any]
         ),
         "depthAmbiguityP95Maximum": float(
             np.max([sample["depthAmbiguityP95"] for sample in samples])
+        ),
+    }
+
+
+def build_coverage_envelope(
+    samples: list[dict[str, Any]], *, baseline: float, world_sha256: str
+) -> dict[str, Any]:
+    """Serialize tested camera evidence without implying unseen-space validity."""
+
+    thresholds = {
+        "observedCorridor": {
+            "minimumSupport": 0.90,
+            "minimumLowerHalfSupport": 0.90,
+            "maximumDepthAmbiguityP50": 0.10,
+            "maximumDepthAmbiguityP95": 0.45,
+        },
+        "coverageEdge": {
+            "minimumSupport": 0.50,
+            "minimumLowerHalfSupport": 0.65,
+            "maximumDepthAmbiguityP50": 0.20,
+            "maximumDepthAmbiguityP95": 0.90,
+        },
+    }
+
+    def satisfies(sample: dict[str, Any], gate: dict[str, float]) -> bool:
+        return (
+            float(sample["support"]) >= gate["minimumSupport"]
+            and float(sample["lowerHalfSupport"])
+            >= gate["minimumLowerHalfSupport"]
+            and float(sample["depthAmbiguityP50"])
+            <= gate["maximumDepthAmbiguityP50"]
+            and float(sample["depthAmbiguityP95"])
+            <= gate["maximumDepthAmbiguityP95"]
+        )
+
+    classified: list[dict[str, Any]] = []
+    counts = {"observed-corridor": 0, "coverage-edge": 0, "unknown": 0}
+    for sample in samples:
+        state = (
+            "observed-corridor"
+            if satisfies(sample, thresholds["observedCorridor"])
+            else "coverage-edge"
+            if satisfies(sample, thresholds["coverageEdge"])
+            else "unknown"
+        )
+        counts[state] += 1
+        classified.append(
+            {
+                key: value
+                for key, value in {**sample, "evidenceState": state}.items()
+                if key not in {"c2w", "rgb", "alpha"}
+            }
+        )
+    return {
+        "schema": COVERAGE_ENVELOPE_SCHEMA,
+        "worldPlySha256": world_sha256,
+        "metric": False,
+        "collisionValidated": False,
+        "generatedCoverage": False,
+        "baseline": {
+            "normalizedCameraStepMedian": baseline,
+            "metric": False,
+        },
+        "thresholds": thresholds,
+        "counts": counts,
+        "samples": classified,
+        "outsidePolicy": "unknown-not-free-space",
+        "meaning": (
+            "A sampled camera-space evidence envelope derived from rendered opacity "
+            "support and mixed-depth spread. It is not occupancy, correctness, or "
+            "collision evidence. Unsampled and failed poses remain unknown."
         ),
     }
 
@@ -1538,6 +1610,12 @@ def audit(
         "elapsedSeconds": stress_elapsed,
         "unobservedSpace": {"validated": False, "policy": "unknown-not-free-space"},
     }
+    coverage_envelope = build_coverage_envelope(
+        stress_samples,
+        baseline=stress_baseline,
+        world_sha256=actual_ply_hash,
+    )
+    atomic_json(output / "observed-coverage-envelope.json", coverage_envelope)
     ambiguity = np.concatenate(ambiguity_samples) if ambiguity_samples else np.empty(0, dtype=np.float32)
     if reference_images is not None and (
         len(registered_psnr) != len(cameras)
@@ -1692,6 +1770,12 @@ def audit(
         },
         "drivingEvidence": load_driving_evidence_summary(source.environment_root),
         "navigationStress": navigation_stress,
+        "observedCoverageEnvelope": {
+            "schema": COVERAGE_ENVELOPE_SCHEMA,
+            "asset": "observed-coverage-envelope.json",
+            "counts": coverage_envelope["counts"],
+            "outsidePolicy": coverage_envelope["outsidePolicy"],
+        },
         "drivingReadiness": {
             "status": "not-ready",
             "collisionValidated": False,

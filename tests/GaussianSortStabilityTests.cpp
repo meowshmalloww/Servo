@@ -33,6 +33,7 @@ private slots:
     void viewDepthKeyIsFarToNear();
     void viewDepthOrderTracksTheProducingCamera();
     void preprocessShaderUsesTheTestedPolicy();
+    void preprocessShaderRejectsPathologicalFootprints();
 };
 
 void GaussianSortStabilityTests::viewDepthKeyIsFarToNear()
@@ -81,6 +82,19 @@ void GaussianSortStabilityTests::preprocessShaderUsesTheTestedPolicy()
 
     QVERIFY(source.contains("depthKeys[index] = ~floatBitsToUint(depth);"));
     QVERIFY(!source.contains("depthKeys[index] = ~floatBitsToUint(cameraDistanceSquared);"));
+}
+
+void GaussianSortStabilityTests::preprocessShaderRejectsPathologicalFootprints()
+{
+    QFile shader(QStringLiteral(SERVO_GAUSSIAN_PREPROCESS_SHADER));
+    QVERIFY2(shader.open(QIODevice::ReadOnly | QIODevice::Text),
+             qPrintable(shader.errorString()));
+    const QByteArray source = shader.readAll();
+
+    QVERIFY(source.contains("bool pathologicalFootprint"));
+    QVERIFY(source.contains("majorLength > maximumMajorLength"));
+    QVERIFY(source.contains("majorLength / minorLength > 12.0"));
+    QVERIFY(source.contains("if (pathologicalFootprint)"));
 }
 
 QTEST_GUILESS_MAIN(GaussianSortStabilityTests)

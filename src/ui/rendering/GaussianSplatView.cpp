@@ -765,6 +765,8 @@ double GaussianSplatView::pathProgress() const
         return 0.0;
     return std::clamp(m_pathDistance / double(m_scene->cameraPathDistances.last()), 0.0, 1.0);
 }
+double GaussianSplatView::captureEnvelopeScore() const { return m_captureEnvelopeScore; }
+QString GaussianSplatView::captureEnvelopeStatus() const { return m_captureEnvelopeStatus; }
 int GaussianSplatView::visualizationMode() const { return m_visualizationMode; }
 
 void GaussianSplatView::setSource(const QUrl &source)
@@ -800,6 +802,7 @@ void GaussianSplatView::setFollowPath(bool value)
         m_pathLateralOffset = 0.0;
         m_pathVerticalOffset = 0.0;
         updatePathCamera();
+        updateCaptureEnvelope();
         ++m_cameraRevision;
         emit pathProgressChanged();
         update();
@@ -833,6 +836,7 @@ void GaussianSplatView::resetCamera()
             updatePathCamera();
         else
             updateCameraVectors();
+        updateCaptureEnvelope();
         ++m_cameraRevision;
         emit pathProgressChanged();
         update();
@@ -858,6 +862,7 @@ void GaussianSplatView::look(double deltaX, double deltaY)
                                         maximumPitch);
     m_pitch = totalPitch - basePitch;
     updateCameraVectors();
+    updateCaptureEnvelope();
     ++m_cameraRevision;
     update();
 }
@@ -888,6 +893,7 @@ void GaussianSplatView::moveCamera(double forward,
             return;
         }
         updatePathCamera();
+        updateCaptureEnvelope();
         ++m_cameraRevision;
         emit pathProgressChanged();
         update();
@@ -906,6 +912,7 @@ void GaussianSplatView::moveCamera(double forward,
         return;
     direction.normalize();
     m_cameraPosition += direction * float(m_movementSpeed * elapsedSeconds);
+    updateCaptureEnvelope();
     ++m_cameraRevision;
     update();
 }
@@ -1091,6 +1098,50 @@ void GaussianSplatView::updatePathCamera()
     m_cameraPosition = pathPosition + pathRight * float(m_pathLateralOffset)
                        + worldUp * float(m_pathVerticalOffset);
     updateCameraVectors();
+}
+
+void GaussianSplatView::updateCaptureEnvelope()
+{
+    double score = 0.0;
+    QString status = QStringLiteral("NO CAPTURE EVIDENCE");
+    if (m_scene && !m_scene->cameraPath.isEmpty()
+        && m_scene->cameraPath.size() == m_scene->cameraPathForwards.size()) {
+        qsizetype nearest = 0;
+        float distanceSquared = std::numeric_limits<float>::max();
+        for (qsizetype index = 0; index < m_scene->cameraPath.size(); ++index) {
+            const float candidate = (m_cameraPosition - m_scene->cameraPath.at(index)).lengthSquared();
+            if (candidate < distanceSquared) {
+                distanceSquared = candidate;
+                nearest = index;
+            }
+        }
+        const double distance = std::sqrt(std::max(0.0f, distanceSquared));
+        const double spatialLimit = std::max(1e-5, double(m_scene->pathOffsetLimit));
+        const double spatialScore = std::clamp(
+            1.0 - std::max(0.0, distance - spatialLimit) / (3.0 * spatialLimit),
+            0.0,
+            1.0);
+        const QVector3D recordedForward = normalizedOr(
+            m_scene->cameraPathForwards.at(nearest), m_initialForward);
+        const double cosine = std::clamp(double(QVector3D::dotProduct(
+                                             normalizedOr(m_cameraForward, m_initialForward),
+                                             recordedForward)),
+                                         -1.0,
+                                         1.0);
+        const double angleDegrees = qRadiansToDegrees(std::acos(cosine));
+        const double angularScore = std::clamp((35.0 - angleDegrees) / 30.0, 0.0, 1.0);
+        score = std::min(spatialScore, angularScore);
+        status = score >= 0.75 ? QStringLiteral("OBSERVED CORRIDOR")
+                              : score >= 0.35 ? QStringLiteral("COVERAGE EDGE")
+                                              : QStringLiteral("UNOBSERVED / UNSTABLE");
+    }
+    if (qFuzzyCompare(m_captureEnvelopeScore, score)
+        && m_captureEnvelopeStatus == status) {
+        return;
+    }
+    m_captureEnvelopeScore = score;
+    m_captureEnvelopeStatus = status;
+    emit captureEnvelopeChanged();
 }
 
 void GaussianSplatRenderer::resetResources()
@@ -1620,7 +1671,10 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     uniforms.environmentFallback[0] = m_scene->backgroundColorSrgb.x();
     uniforms.environmentFallback[1] = m_scene->backgroundColorSrgb.y();
     uniforms.environmentFallback[2] = m_scene->backgroundColorSrgb.z();
-    uniforms.environmentFallback[3] = 1.0f;
+    // Reject only screen-spanning, highly anisotropic projections.  This does
+    // not fill unobserved space; it prevents invalid geometry from turning
+    // into translucent sheets during modest camera movement.
+    uniforms.environmentFallback[3] = 0.35f;
 
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->updateDynamicBuffer(m_uniformBuffer.get(), 0, sizeof(uniforms), &uniforms);

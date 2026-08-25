@@ -70,6 +70,8 @@ class GaussianSplatView : public QQuickRhiItem
     Q_PROPERTY(bool pathAvailable READ pathAvailable NOTIFY sceneChanged)
     Q_PROPERTY(bool followPath READ followPath WRITE setFollowPath NOTIFY navigationModeChanged)
     Q_PROPERTY(double pathProgress READ pathProgress NOTIFY pathProgressChanged)
+    Q_PROPERTY(double captureEnvelopeScore READ captureEnvelopeScore NOTIFY captureEnvelopeChanged)
+    Q_PROPERTY(QString captureEnvelopeStatus READ captureEnvelopeStatus NOTIFY captureEnvelopeChanged)
     Q_PROPERTY(int visualizationMode READ visualizationMode WRITE setVisualizationMode NOTIFY visualizationModeChanged)
 
 public:
@@ -97,6 +99,8 @@ public:
     bool followPath() const;
     void setFollowPath(bool value);
     double pathProgress() const;
+    double captureEnvelopeScore() const;
+    QString captureEnvelopeStatus() const;
     int visualizationMode() const;
     void setVisualizationMode(int value);
 
@@ -115,6 +119,7 @@ signals:
     void movementSpeedChanged();
     void navigationModeChanged();
     void pathProgressChanged();
+    void captureEnvelopeChanged();
     void visualizationModeChanged();
 
 protected:
@@ -144,6 +149,7 @@ private:
     void setStatus(const QString &status, const QString &error = {});
     void updateCameraVectors();
     void updatePathCamera();
+    void updateCaptureEnvelope();
 
     QUrl m_source;
     std::shared_ptr<const GaussianSceneData> m_scene;
@@ -173,6 +179,8 @@ private:
     double m_pathDistance = 0.0;
     double m_pathLateralOffset = 0.0;
     double m_pathVerticalOffset = 0.0;
+    double m_captureEnvelopeScore = 0.0;
+    QString m_captureEnvelopeStatus = QStringLiteral("NO CAPTURE EVIDENCE");
     quint64 m_loadGeneration = 0;
     quint64 m_cameraRevision = 1;
     int m_visualizationMode = 0;

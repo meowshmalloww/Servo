@@ -205,6 +205,24 @@ void main()
     vec2 minorDirection = vec2(-majorDirection.y, majorDirection.x);
     vec2 majorAxis = majorDirection * (extent * sqrt(lambdaMajor));
     vec2 minorAxis = minorDirection * (extent * sqrt(lambdaMinor));
+    // Near-plane or badly constrained anisotropic splats can project into the
+    // screen-spanning "fiberglass" sheets seen when leaving the training
+    // cameras.  They are not useful visual completion.  Fail closed for only
+    // the pathological combination of a giant footprint and strong projected
+    // anisotropy; ordinary close, approximately round splats remain visible.
+    // environmentFallback.w is the maximum major-axis fraction of the shorter
+    // viewport dimension (0 disables this diagnostic guard).
+    float majorLength = length(majorAxis);
+    float minorLength = max(length(minorAxis), 1e-4);
+    float maximumMajorLength = environmentFallback.w
+                               * min(viewportFocal.x, viewportFocal.y);
+    bool pathologicalFootprint = environmentFallback.w > 0.0
+                                 && majorLength > maximumMajorLength
+                                 && majorLength / minorLength > 12.0;
+    if (pathologicalFootprint) {
+        rejectGaussian(index, outputBase);
+        return;
+    }
     vec4 clipMean = projectionMatrix * cameraMean4;
     vec2 ndc = clipMean.xy / clipMean.w;
     vec2 ndcRadius = 2.0 * (abs(majorAxis) + abs(minorAxis)) / viewportFocal.xy;

@@ -845,7 +845,7 @@ Item {
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
                                 anchors.margins: 12
-                                height: 72
+                                height: 86
                                 visible: root.exploreReady
                                 color: Theme.overlayHud
                                 radius: Theme.cornerPopup
@@ -864,6 +864,19 @@ Item {
                                                   : "EXPLORE / FREE FLY (OUTSIDE COVERAGE MAY FAIL)"
                                             color: Theme.textSecondary
                                             font.family: Theme.uiFont
+                                            font.pixelSize: 8
+                                            font.weight: Font.DemiBold
+                                        }
+                                        Text {
+                                            text: gaussianView.captureEnvelopeStatus
+                                                  + " · "
+                                                  + (gaussianView.captureEnvelopeScore * 100).toFixed(0)
+                                                  + "% camera evidence"
+                                            color: gaussianView.captureEnvelopeScore >= 0.75
+                                                   ? Theme.success
+                                                   : gaussianView.captureEnvelopeScore >= 0.35
+                                                     ? Theme.warning : Theme.error
+                                            font.family: Theme.monoFont
                                             font.pixelSize: 8
                                             font.weight: Font.DemiBold
                                         }
@@ -889,8 +902,8 @@ Item {
                                         }
                                     }
                                     Text {
-                                        text: gaussianView.visibleGaussianCount.toLocaleString()
-                                              + " submitted\n"
+                                        text: gaussianView.gaussianCount.toLocaleString()
+                                              + " total splats\n"
                                               + (gaussianView.followPath
                                                  ? (gaussianView.pathProgress * 100).toFixed(0) + "% path"
                                                  : gaussianView.movementSpeed.toFixed(2) + " u/s")
@@ -901,7 +914,7 @@ Item {
                                     }
                                     Text {
                                         text: gaussianView.renderFps > 0
-                                              ? gaussianView.renderFps.toFixed(0) + " submit Hz / "
+                                              ? gaussianView.renderFps.toFixed(0) + " render callbacks/s / "
                                                 + gaussianView.geometryUpdateFps.toFixed(1) + " geometry Hz\n"
                                                 + gaussianView.frameTimeMs.toFixed(1) + " ms CPU / "
                                                 + (gaussianView.gpuTimeMs > 0

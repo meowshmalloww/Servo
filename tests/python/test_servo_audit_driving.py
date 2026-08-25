@@ -144,6 +144,38 @@ class DrivingAuditTest(unittest.TestCase):
         self.assertAlmostEqual(summary["lowerHalfSupportMinimum"], 0.5)
         self.assertAlmostEqual(summary["depthAmbiguityP95Maximum"], 0.7)
 
+    def test_coverage_envelope_fails_unknown_without_strong_support(self) -> None:
+        envelope = servo_audit_world.build_coverage_envelope(
+            [
+                {
+                    "anchor": 1,
+                    "case": "yaw-right-5deg",
+                    "group": "rotation",
+                    "support": 0.94,
+                    "lowerHalfSupport": 0.93,
+                    "depthAmbiguityP50": 0.08,
+                    "depthAmbiguityP95": 0.40,
+                },
+                {
+                    "anchor": 2,
+                    "case": "lateral-right-2x",
+                    "group": "lateral",
+                    "support": 0.48,
+                    "lowerHalfSupport": 0.61,
+                    "depthAmbiguityP50": 0.24,
+                    "depthAmbiguityP95": 1.10,
+                },
+            ],
+            baseline=0.1,
+            world_sha256="sha256:" + "a" * 64,
+        )
+        self.assertEqual(envelope["schema"], "servo.observed-coverage-envelope/v1")
+        self.assertFalse(envelope["metric"])
+        self.assertFalse(envelope["collisionValidated"])
+        self.assertEqual(envelope["samples"][0]["evidenceState"], "observed-corridor")
+        self.assertEqual(envelope["samples"][1]["evidenceState"], "unknown")
+        self.assertEqual(envelope["outsidePolicy"], "unknown-not-free-space")
+
 
 if __name__ == "__main__":
     unittest.main()
