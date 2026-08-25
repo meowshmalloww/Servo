@@ -133,6 +133,10 @@ REGION_DENSIFICATION_CLASS_NAMES = (
     "road-marking",
     "sign",
 )
+INITIAL_SCALE_SCHEMA = "servo.diagnostic-projected-footprint-init/v1"
+INITIAL_SCALE_METHOD = (
+    "colmap-track-projection-jacobian-tail-cap-v1"
+)
 
 
 class TrainingError(RuntimeError):
@@ -151,6 +155,29 @@ def is_nonpublishable_diagnostic_config(config: Mapping[str, Any]) -> bool:
         isinstance(provenance, Mapping)
         and provenance.get("schema") == DIAGNOSTIC_PROVENANCE_SCHEMA
         and provenance.get("nonPublishable") is True
+    )
+
+
+def supported_initial_scale_contract(
+    config: Mapping[str, Any], policy: Mapping[str, Any]
+) -> bool:
+    """Seal the calibrated track-footprint initializer to an isolated diagnostic."""
+
+    try:
+        calibration_quantile = float(policy["calibrationQuantile"])
+        maximum_capped_fraction = float(policy["maximumCappedFraction"])
+        minimum_valid_observations = int(policy["minimumValidObservations"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        is_nonpublishable_diagnostic_config(config)
+        and policy.get("schema") == INITIAL_SCALE_SCHEMA
+        and policy.get("method") == INITIAL_SCALE_METHOD
+        and policy.get("covariance") == "isotropic"
+        and policy.get("generatedEvidence") is False
+        and math.isclose(calibration_quantile, 0.90, rel_tol=0.0, abs_tol=1e-12)
+        and math.isclose(maximum_capped_fraction, 0.11, rel_tol=0.0, abs_tol=1e-12)
+        and minimum_valid_observations == 3
     )
 
 
@@ -1661,6 +1688,154 @@ def semantic_sparse_point_filter(
     }
 
 
+def projected_track_scale_caps(
+    reconstruction: Any,
+    point_ids: Any,
+    *,
+    normalization_scale: float,
+    training_factor: int,
+    target_radius_pixels: float,
+    minimum_valid_observations: int,
+) -> tuple[Any, dict[str, Any]]:
+    """Estimate an isotropic world-scale cap from calibrated point tracks.
+
+    For each observation, the largest singular value of the calibrated
+    perspective Jacobian maps an isotropic world-space sigma to its projected
+    major-axis sigma.  The requested radius is pre-``eps2d``: gsplat's
+    antialias floor remains an independent raster setting.  The cap is based
+    only on registered, undistorted pinhole observations and remains nonmetric.
+    """
+
+    import numpy as np
+
+    identifiers = np.asarray(point_ids, dtype=np.int64).reshape(-1)
+    caps = np.full(len(identifiers), np.nan, dtype=np.float32)
+    observation_counts = np.zeros(len(identifiers), dtype=np.int32)
+    rejected_camera_model = 0
+    rejected_invalid = 0
+    for ordinal, point_id in enumerate(identifiers.tolist()):
+        point = reconstruction.points3D[int(point_id)]
+        candidates: list[float] = []
+        for element in point.track.elements:
+            image_id = int(element.image_id)
+            image = reconstruction.images.get(image_id)
+            if image is None or not image.has_pose:
+                rejected_invalid += 1
+                continue
+            camera = reconstruction.cameras[image.camera_id]
+            if str(camera.model_name) not in {"PINHOLE", "SIMPLE_PINHOLE"}:
+                rejected_camera_model += 1
+                continue
+            point_index = int(element.point2D_idx)
+            if point_index < 0 or point_index >= len(image.points2D):
+                rejected_invalid += 1
+                continue
+            xy = np.asarray(image.points2D[point_index].xy, dtype=np.float64)
+            if (
+                xy.shape != (2,)
+                or not np.isfinite(xy).all()
+                or xy[0] < 0.0
+                or xy[1] < 0.0
+                or xy[0] >= float(camera.width)
+                or xy[1] >= float(camera.height)
+            ):
+                rejected_invalid += 1
+                continue
+            camera_from_world = np.asarray(
+                image.cam_from_world().matrix(), dtype=np.float64
+            )
+            point_camera = (
+                camera_from_world[:, :3]
+                @ np.asarray(point.xyz, dtype=np.float64)
+                + camera_from_world[:, 3]
+            )
+            calibration = np.asarray(camera.calibration_matrix(), dtype=np.float64)
+            x = float(point_camera[0]) * float(normalization_scale)
+            y = float(point_camera[1]) * float(normalization_scale)
+            z = float(point_camera[2]) * float(normalization_scale)
+            training_width = max(1, round(int(camera.width) / training_factor))
+            training_height = max(1, round(int(camera.height) / training_factor))
+            fx = float(calibration[0, 0]) * training_width / int(camera.width)
+            fy = float(calibration[1, 1]) * training_height / int(camera.height)
+            if (
+                not math.isfinite(x)
+                or not math.isfinite(y)
+                or not math.isfinite(z)
+                or z <= 1e-5
+                or not math.isfinite(fx)
+                or not math.isfinite(fy)
+                or fx <= 0.0
+                or fy <= 0.0
+            ):
+                rejected_invalid += 1
+                continue
+            jacobian = np.asarray(
+                [
+                    [fx / z, 0.0, -fx * x / (z * z)],
+                    [0.0, fy / z, -fy * y / (z * z)],
+                ],
+                dtype=np.float64,
+            )
+            maximum_projection_variance = float(
+                np.linalg.eigvalsh(jacobian @ jacobian.T)[-1]
+            )
+            if (
+                not math.isfinite(maximum_projection_variance)
+                or maximum_projection_variance <= 0.0
+            ):
+                rejected_invalid += 1
+                continue
+            candidate = float(target_radius_pixels) / math.sqrt(
+                maximum_projection_variance
+            )
+            if not math.isfinite(candidate) or candidate <= 0.0:
+                rejected_invalid += 1
+                continue
+            candidates.append(candidate)
+        observation_counts[ordinal] = len(candidates)
+        if len(candidates) < minimum_valid_observations:
+            continue
+        caps[ordinal] = np.float32(np.median(candidates))
+
+    valid_counts = observation_counts[observation_counts > 0]
+    valid_caps = caps[np.isfinite(caps)]
+
+    def percentiles(values: Any) -> dict[str, float | None]:
+        if len(values) == 0:
+            return {name: None for name in ("p10", "p50", "p90", "p95", "p99")}
+        return {
+            name: float(np.percentile(values, percentile))
+            for name, percentile in (
+                ("p10", 10),
+                ("p50", 50),
+                ("p90", 90),
+                ("p95", 95),
+                ("p99", 99),
+            )
+        }
+
+    return caps, {
+        "schema": INITIAL_SCALE_SCHEMA,
+        "method": INITIAL_SCALE_METHOD,
+        "targetRadiusPixels": float(target_radius_pixels),
+        "targetRadiusDefinition": (
+            "median-observation-one-sigma-major-axis-before-eps2d-at-training-resolution"
+        ),
+        "trainingFactor": int(training_factor),
+        "minimumValidObservations": int(minimum_valid_observations),
+        "observationAggregation": "median",
+        "inputSparsePoints": int(len(identifiers)),
+        "eligibleSparsePoints": int(len(valid_caps)),
+        "eligibleFraction": float(len(valid_caps) / max(1, len(identifiers))),
+        "validTrackObservationCount": percentiles(valid_counts),
+        "projectedCapScale": percentiles(valid_caps),
+        "rejectedCameraModelObservations": int(rejected_camera_model),
+        "rejectedInvalidObservations": int(rejected_invalid),
+        "metric": False,
+        "scaleProvenance": "sfm-arbitrary",
+    }
+
+
 class ColmapDataset:
     def __init__(
         self,
@@ -1672,6 +1847,7 @@ class ColmapDataset:
         geometry_root: Path | None = None,
         require_geometry_priors: bool = False,
         require_certified_sky_evidence: bool = False,
+        initial_scale_policy: Mapping[str, Any] | None = None,
     ) -> None:
         import numpy as np
         try:
@@ -1846,9 +2022,97 @@ class ColmapDataset:
             "reliableSceneRadius": reliable_scene_radius,
             "semanticSparsePointFilter": semantic_seed_stats,
         }
-        xyz = (xyz - center[None, :]) * scale
-        self.points = xyz.astype(np.float32, copy=False)
+        self.initial_scale_caps = None
+        normalized_xyz = (xyz - center[None, :]) * scale
+        if initial_scale_policy is not None:
+            unit_caps, initial_scale_stats = projected_track_scale_caps(
+                reconstruction,
+                point_ids,
+                normalization_scale=scale,
+                training_factor=self.factor,
+                target_radius_pixels=1.0,
+                minimum_valid_observations=int(
+                    initial_scale_policy["minimumValidObservations"]
+                ),
+            )
+            eligible_fraction = float(initial_scale_stats["eligibleFraction"])
+            if eligible_fraction < 0.01:
+                raise TrainingError(
+                    "Projected-footprint initialization is inactive: fewer than "
+                    "1% of sparse seeds have three valid calibrated observations."
+                )
+            nearest_linear = np.exp(nearest_scales(normalized_xyz)).astype(
+                np.float64
+            )
+            unit_caps64 = np.asarray(unit_caps, dtype=np.float64)
+            valid_caps = np.isfinite(unit_caps64) & (unit_caps64 > 0.0)
+            implied_radius = nearest_linear[valid_caps] / unit_caps64[valid_caps]
+            calibration_quantile = float(
+                initial_scale_policy["calibrationQuantile"]
+            )
+            calibrated_target_radius = float(
+                np.quantile(implied_radius, calibration_quantile)
+            )
+            self.initial_scale_caps = (
+                unit_caps64 * calibrated_target_radius
+            ).astype(np.float32)
+            initial_scale_stats.update(
+                {
+                    "calibrationQuantile": calibration_quantile,
+                    "calibratedTargetRadiusPixels": calibrated_target_radius,
+                    "targetRadiusDefinition": (
+                        "dataset-tail-one-sigma-major-axis-before-eps2d-"
+                        "at-training-resolution"
+                    ),
+                }
+            )
+            self.initialization_stats["projectedFootprintScale"] = initial_scale_stats
+        self.points = normalized_xyz.astype(np.float32, copy=False)
         self.colors = (rgb / 255.0).clip(0.0, 1.0).astype(np.float32, copy=False)
+
+        if self.initial_scale_caps is not None:
+            nearest_linear = np.exp(nearest_scales(self.points)).astype(np.float64)
+            caps = np.asarray(self.initial_scale_caps, dtype=np.float64)
+            valid_caps = np.isfinite(caps) & (caps > 0.0)
+            chosen = nearest_linear.copy()
+            chosen[valid_caps] = np.minimum(
+                nearest_linear[valid_caps], caps[valid_caps]
+            )
+            capped = valid_caps & (chosen < nearest_linear)
+            capped_fraction = float(capped.mean())
+            maximum_capped_fraction = float(
+                initial_scale_policy["maximumCappedFraction"]
+            )
+            if capped_fraction > maximum_capped_fraction:
+                raise TrainingError(
+                    "Projected-footprint initialization capped "
+                    f"{capped_fraction:.1%} of sparse seeds, above the sealed "
+                    f"{maximum_capped_fraction:.1%} maximum; the diagnostic is malformed."
+                )
+
+            def distribution(values: Any) -> dict[str, float]:
+                return {
+                    name: float(np.percentile(values, percentile))
+                    for name, percentile in (
+                        ("p50", 50),
+                        ("p90", 90),
+                        ("p95", 95),
+                        ("p99", 99),
+                    )
+                }
+
+            scale_stats = self.initialization_stats["projectedFootprintScale"]
+            scale_stats.update(
+                {
+                    "nearestNeighborScale": distribution(nearest_linear),
+                    "chosenScale": distribution(chosen),
+                    "cappedPointFraction": capped_fraction,
+                    "capRatio": distribution(chosen / nearest_linear),
+                    "cappedCapRatio": distribution(
+                        chosen[capped] / nearest_linear[capped]
+                    ),
+                }
+            )
 
         reliable_point_ids = {int(point_id) for point_id in point_ids.tolist()}
         images_by_name = {
@@ -2264,7 +2528,19 @@ def create_parameters(
 
     points = torch.from_numpy(dataset.points)
     colors = torch.from_numpy(dataset.colors)
-    scales = torch.from_numpy(nearest_scales(dataset.points)).unsqueeze(-1).repeat(1, 3)
+    scale_logs = nearest_scales(dataset.points)
+    initial_scale_caps = getattr(dataset, "initial_scale_caps", None)
+    if initial_scale_caps is not None:
+        import numpy as np
+
+        nearest_linear = np.exp(scale_logs).astype(np.float32)
+        caps = np.asarray(initial_scale_caps, dtype=np.float32)
+        valid_caps = np.isfinite(caps) & (caps > 0.0)
+        nearest_linear[valid_caps] = np.minimum(
+            nearest_linear[valid_caps], caps[valid_caps]
+        )
+        scale_logs = np.log(nearest_linear).astype(np.float32)
+    scales = torch.from_numpy(scale_logs).unsqueeze(-1).repeat(1, 3)
     count = len(points)
     quaternions = torch.zeros((count, 4), dtype=torch.float32)
     quaternions[:, 0] = 1.0
@@ -5547,6 +5823,14 @@ def train(config_path: Path) -> int:
                 geometry_root,
                 config.get("certifiedSkyEvidence"),
             )
+    initial_scale_policy: dict[str, Any] | None = None
+    if isinstance(config.get("initialScalePolicy"), Mapping):
+        initial_scale_policy = dict(config["initialScalePolicy"])
+        if not supported_initial_scale_contract(config, initial_scale_policy):
+            raise TrainingError(
+                "Projected-footprint initialization is sealed to the R31 "
+                "non-publishable isotropic diagnostic contract."
+            )
     frame_oversampling_receipt = parse_frame_oversampling_config(config)
     dataset = ColmapDataset(
         Path(config["data"]),
@@ -5563,6 +5847,7 @@ def train(config_path: Path) -> int:
             )
             or contributor_sky_cleanup_enabled
         ),
+        initial_scale_policy=initial_scale_policy,
     )
     appearance_frame_selection_receipt = apply_appearance_frame_selection(
         config, dataset
