@@ -44,6 +44,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.venv-*/
 venv/
 
 # Local data, model artifacts, and experiment output
@@ -54,6 +55,26 @@ venv/
 /models/
 /runs/
 /worlds/
+/diagnostics/
+/campaigns/
+/external/
+/.serena/
+
+# Generated demo evidence. Keep the compact baseline/checkpoints and receipts,
+# but regenerate per-timestep frame dumps locally.
+/demo/**/jobs/**/frames/
+/demo/**/campaign-cli-demo/
+
+# Local control API source is tracked; Docker/cloud deployment scaffolding is
+# intentionally excluded from the native no-install hackathon build.
+/cloud/**/Dockerfile
+/cloud/infra/
+/cloud/exam_job/
+/cloud/training_job/
+/cloud/control_api/requirements-gcs.txt
+
+# Rejected one-off reconstruction experiment generator.
+/tools/reconstruction/servo_prepare_r21.py
 
 # Secrets and local configuration
 .env

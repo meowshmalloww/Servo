@@ -66,6 +66,11 @@ void WorldLibraryModelTests::discoversVerifiedPublishedJobs()
              QFileInfo(worldPath).canonicalFilePath());
     QVERIFY(model.totalBytes() > 0);
     QVERIFY(!model.selectedWorld().value(QStringLiteral("previewUrl")).toUrl().isEmpty());
+    QCOMPARE(model.data(item, WorldLibraryModel::RecordedFrameCountRole).toInt(), 2);
+    const QVariantList recordedFrames = model.data(
+        item, WorldLibraryModel::RecordedFrameUrlsRole).toList();
+    QCOMPARE(recordedFrames.size(), 2);
+    QVERIFY(recordedFrames.first().toUrl().isLocalFile());
 }
 
 void WorldLibraryModelTests::surfacesTerminalFailedJobsForDiagnosis()
@@ -296,6 +301,7 @@ QString WorldLibraryModelTests::createWorld(const QString &jobsRoot,
               { QStringLiteral("ply"), plyRelativePath },
               { QStringLiteral("validationRenders"),
                 QStringLiteral("validation-renders") },
+              { QStringLiteral("cameras"), QStringLiteral("cameras.json") },
           } },
         { QStringLiteral("coordinateSystem"),
           QJsonObject { { QStringLiteral("scale"),
@@ -311,6 +317,27 @@ QString WorldLibraryModelTests::createWorld(const QString &jobsRoot,
     };
     if (!writeFile(QDir(worldPath).filePath(QStringLiteral("world.json")),
                    QJsonDocument(manifest).toJson(QJsonDocument::Compact))) {
+        return {};
+    }
+    const QJsonObject cameras {
+        { QStringLiteral("cameras"),
+          QJsonArray {
+              QJsonObject { { QStringLiteral("image"),
+                              QStringLiteral("video-000/00000000.png") } },
+              QJsonObject { { QStringLiteral("image"),
+                              QStringLiteral("video-000/00000001.png") } },
+              QJsonObject { { QStringLiteral("image"),
+                              QStringLiteral("../../outside.png") } },
+          } },
+    };
+    if (!writeFile(QDir(worldPath).filePath(QStringLiteral("cameras.json")),
+                   QJsonDocument(cameras).toJson(QJsonDocument::Compact))
+        || !writeFile(QDir(jobPath).filePath(
+                          QStringLiteral("stages/pose/training/images/video-000/00000000.png")),
+                      QByteArrayLiteral("frame zero"))
+        || !writeFile(QDir(jobPath).filePath(
+                          QStringLiteral("stages/pose/training/images/video-000/00000001.png")),
+                      QByteArrayLiteral("frame one"))) {
         return {};
     }
 

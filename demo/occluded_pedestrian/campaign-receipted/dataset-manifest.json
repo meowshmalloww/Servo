@@ -1,0 +1,47 @@
+{
+  "schema_name": "servo.realityci.dataset/v1",
+  "record_id": "ds-b730fcb2853b4a04",
+  "created_at": "2026-08-24T02:55:19.870529Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": "cam-d30db72211b74c83",
+  "parent_id": null,
+  "causation_id": "diag-8645d3d0e3d6400c",
+  "content_hash": "sha256:cba19f9e6bc68c8390f358c0e62351e03731bd4ddf2cd5b7d8f1d38349014807",
+  "purpose": "behavior-cloning-fine-tune",
+  "split_counts": {
+    "train": 24,
+    "validation": 4
+  },
+  "scenario_hashes": [
+    "sha256:278561c7d6680d2c18191a42810430993d021feaf4fd071e7d463c97c10214cb",
+    "sha256:3067c440ccf5b8ea19d4d545b162b74daee3699a34ad182b2428b60a592f0ae0",
+    "sha256:3d3776b42bc3bda9e3ba39be15c1f2bdb5037249e893e12636b61832b28b5337",
+    "sha256:3e1b16dc4c239b082002a887d5f427de59290a2a9fcd0451f7c67318f1aecf01",
+    "sha256:5015aeb8c185c185394914966da727352b6cf814e9bbde6ad4ddaf2e3e83b011",
+    "sha256:57e321958828b489ad835b945eb528739100ce207ceafbc6c42f3381b4e93110",
+    "sha256:6fd194a746c146a6e1f8ddb09dd88ab2c21aadfed42cde924a50122d5477913e",
+    "sha256:732d814aa3bc2dc7583b627e5316bd25bc46b80c9f92043ed4edc595839bdfa4",
+    "sha256:809edd2e9cd00dd2b5592f90e7d065c1c4611aa682f5ea6ee592177c45c1902e",
+    "sha256:857655aab4a977cff87fcf7889d5b1672f2f693cbf5f0b8bb66936f08a00f9fc",
+    "sha256:89b2eca7d1bcb57961b83bc9f8c925ca19b6ed09dbca6a66bd23a85e1abec96d",
+    "sha256:93952c18a6331f06a3fe483bcf5c26bbe95702f35de631ec1ec5b03e58d7b87b",
+    "sha256:967177c2ac85225768ae76caabf1e57fa1f1c1e00a764b1dd9db9be35649d2c8",
+    "sha256:ab0d597334bfa9e64f123a57590550d1e6dcd8ebe2efc9ed7c83db98f0130a12",
+    "sha256:bdacc29b15a9021118ad4723c6ac7d9435e7cba37fa8bc82b168a71485c5a4cb",
+    "sha256:c2d9650fda1b4443bfcedc5ef1aaaaa40def6622c3b86c3c872a7622d8d9b6aa",
+    "sha256:c42220da5aaa39d3c63d85ddd65411807cc2d9e2cc9d63e90130c67be22a7fd6",
+    "sha256:ce331dfba707e374ded242cc46e1d421cfa288e35bb33af39896150be7512828",
+    "sha256:d81c311e4ddb3a5d8a3865ccdf66e6cd368edb48dc23b56ae2e4fc686e247c2a",
+    "sha256:db4dc437ac5fb144419aca92ee0d87609d3b7d797cac8c212f811b51b2d1909d",
+    "sha256:f215bec55dea3450b36b4303ea9be8662472b0a96196cbe6a95263c2c38cc2cc",
+    "sha256:f33e943e0756919c6fcf23f63a51180842723ef723fa89370b2134ba95a83a83",
+    "sha256:f8b7b3530101db671f0df351f83d48394c87c82f80adc3623e0eec5a22c5629f",
+    "sha256:fc301f413ab78023dc0f36d576bae4ea8ffb72615b8ba02b092d26d218a6d1d1"
+  ],
+  "oracle_label_method": "unbraking-conflict-horizon/v1",
+  "seed_range_lo": 41000000,
+  "seed_range_hi": 41500013
+}

@@ -9,7 +9,8 @@ Item {
     default property alias editor: editorHost.data
 
     width: parent ? parent.width : implicitWidth
-    height: 34
+    implicitHeight: 36
+    height: implicitHeight
 
     RowLayout {
         anchors.fill: parent
@@ -24,15 +25,18 @@ Item {
             font.pixelSize: 11
             elide: Text.ElideRight
             Layout.preferredWidth: root.labelWidth
+            Layout.minimumWidth: 0
             Layout.alignment: Qt.AlignVCenter
         }
 
         RowLayout {
             id: editorHost
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
             Layout.preferredHeight: Theme.controlHeight
             Layout.alignment: Qt.AlignVCenter
             spacing: 4
+            clip: true
         }
     }
 }

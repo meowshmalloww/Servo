@@ -242,7 +242,10 @@ bool readInitialCamera(const QString &plyPath,
         // Traverse a few registered viewpoints per second. This keeps the
         // default camera inside observed coverage regardless of the scene's
         // arbitrary monocular normalization scale.
-        *movementSpeed = std::clamp(*middle * 4.0f, 0.01f, 2.0f);
+        // Camera spacing is in an arbitrary SfM scale. Four times the median
+        // step made a long road capture feel nearly stationary; twelve times
+        // keeps path-following responsive while remaining bounded.
+        *movementSpeed = std::clamp(*middle * 12.0f, 0.20f, 6.0f);
         *pathOffsetLimit = std::clamp(*middle * 2.5f, 0.005f, 0.12f);
     }
     if (!coherentVideoPath || cameraPath->size() < 2) {
@@ -424,6 +427,7 @@ struct alignas(16) CameraUniforms
     float viewportFocal[4];
     float parameters[4];
     float environmentFallback[4];
+    float stabilization[4];
 };
 
 struct alignas(16) RadixConfig
@@ -471,50 +475,43 @@ bool Servo::Rendering::readGaussianWorldEnvironment(const QString &plyPath,
     }
 
     const QJsonObject manifest = document.object();
-    QString pipelineRevision = manifest.value(QStringLiteral("pipelineRevision")).toString();
-    if (pipelineRevision.isEmpty()) {
-        pipelineRevision = manifest.value(QStringLiteral("training"))
-                               .toObject()
-                               .value(QStringLiteral("configuration"))
-                               .toObject()
-                               .value(QStringLiteral("pipelineRevision"))
-                               .toString();
-    }
-
     const QJsonValue environmentValue = manifest.value(QStringLiteral("environment"));
-    if (environmentValue.isUndefined()) {
-        if (pipelineRevision.endsWith(QStringLiteral("-r6")))
-            return true;
-        return fail(QStringLiteral(
-            "The Gaussian world manifest is missing environment.backgroundColorSrgb."));
-    }
+    // Background color is optional in the rasterizer. Worlds published before
+    // the environment layer (including R17) retain the initialized black
+    // fallback instead of being rejected as invalid Gaussian data.
+    if (environmentValue.isUndefined())
+        return true;
     if (!environmentValue.isObject())
         return fail(QStringLiteral("The Gaussian world environment must be an object."));
     const QJsonObject environmentObject = environmentValue.toObject();
 
     const QJsonValue backgroundValue = environmentObject.value(QStringLiteral("backgroundColorSrgb"));
-    if (!backgroundValue.isArray()) {
+    if (backgroundValue.isUndefined()) {
+        // An environment descriptor may omit a constant fallback. Black is
+        // deterministic and remains distinct from observed directional pixels.
+    } else if (!backgroundValue.isArray()) {
         return fail(QStringLiteral(
             "environment.backgroundColorSrgb must be an array of three numbers."));
-    }
-    const QJsonArray components = backgroundValue.toArray();
-    if (components.size() != 3) {
-        return fail(QStringLiteral(
-            "environment.backgroundColorSrgb must contain exactly three numbers."));
-    }
-    std::array<float, 3> backgroundValues {};
-    for (int component = 0; component < 3; ++component) {
-        const QJsonValue value = components.at(component);
-        const double number = value.toDouble(std::numeric_limits<double>::quiet_NaN());
-        if (!value.isDouble() || !std::isfinite(number) || number < 0.0 || number > 1.0) {
+    } else {
+        const QJsonArray components = backgroundValue.toArray();
+        if (components.size() != 3) {
             return fail(QStringLiteral(
-                "environment.backgroundColorSrgb values must be finite numbers within [0,1]."));
+                "environment.backgroundColorSrgb must contain exactly three numbers."));
         }
-        backgroundValues[size_t(component)] = float(number);
+        std::array<float, 3> backgroundValues {};
+        for (int component = 0; component < 3; ++component) {
+            const QJsonValue value = components.at(component);
+            const double number = value.toDouble(std::numeric_limits<double>::quiet_NaN());
+            if (!value.isDouble() || !std::isfinite(number) || number < 0.0 || number > 1.0) {
+                return fail(QStringLiteral(
+                    "environment.backgroundColorSrgb values must be finite numbers within [0,1]."));
+            }
+            backgroundValues[size_t(component)] = float(number);
+        }
+        environment->backgroundColorSrgb = QVector3D(backgroundValues[0],
+                                                      backgroundValues[1],
+                                                      backgroundValues[2]);
     }
-    environment->backgroundColorSrgb = QVector3D(backgroundValues[0],
-                                                  backgroundValues[1],
-                                                  backgroundValues[2]);
 
     const QString directionalSource = QStringLiteral(
         "observed-oneformer-sky-equirectangular-plus-mean-fallback-srgb-v1");
@@ -709,6 +706,7 @@ private:
     QVector3D m_cameraForward;
     QVector3D m_cameraUp;
     float m_verticalFov = 52.0f;
+    float m_captureEnvelopeScore = 0.0f;
     int m_visualizationMode = 0;
     quint64 m_cameraRevision = 0;
     quint64 m_sortedCameraRevision = 0;
@@ -1218,6 +1216,7 @@ void GaussianSplatRenderer::synchronize(QQuickRhiItem *item)
     m_cameraUp = view->cameraUp();
     m_verticalFov = view->verticalFieldOfView();
     m_visualizationMode = view->visualizationMode();
+    m_captureEnvelopeScore = float(view->captureEnvelopeScore());
     m_cameraRevision = view->cameraRevision();
 }
 
@@ -1674,7 +1673,12 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     // Reject only screen-spanning, highly anisotropic projections.  This does
     // not fill unobserved space; it prevents invalid geometry from turning
     // into translucent sheets during modest camera movement.
-    uniforms.environmentFallback[3] = 0.35f;
+    const float captureSupport = std::clamp(m_captureEnvelopeScore, 0.0f, 1.0f);
+    // Preserve the recorded corridor while tightening the guard as the camera
+    // leaves measured poses. Unsupported screen-sized sheets are less useful
+    // than an explicit hole and previously caused the fiberglass failure.
+    uniforms.environmentFallback[3] = 0.18f + 0.17f * captureSupport;
+    uniforms.stabilization[0] = captureSupport;
 
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->updateDynamicBuffer(m_uniformBuffer.get(), 0, sizeof(uniforms), &uniforms);

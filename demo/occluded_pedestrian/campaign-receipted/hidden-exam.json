@@ -1,0 +1,44 @@
+{
+  "schema_name": "servo.realityci.hidden-exam/v1",
+  "record_id": "exam-5126e25d0909428b",
+  "created_at": "2026-08-24T02:55:30.201090Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": "cam-d30db72211b74c83",
+  "parent_id": null,
+  "causation_id": "sha256:351923997d01335e74f6ec51d1bab769e43680e08120bfd9a48eef473813fb00",
+  "content_hash": "sha256:40de7612bb03b5d4cdfd81ced9da45913bd8f9f7d42d1c5a4070b0d2a844c0d5",
+  "exam_id": "exam-a0250b0aab4f4d9e",
+  "vault_id": "vault:sha256:351923997d01335e7",
+  "scenario_count": 8,
+  "baseline": {
+    "checkpoint_sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+    "counts": {
+      "total": 8,
+      "success": 4,
+      "collision": 4,
+      "near_miss": 0,
+      "timeout_or_other": 0
+    },
+    "mean_detection_delay_s": 3.2625
+  },
+  "candidate": {
+    "checkpoint_sha256": "sha256:2b0cd6deae1cc8cc01ed05c51c6c328d9f87c8abcdffbcdd1a55fe9502b30dea",
+    "counts": {
+      "total": 8,
+      "success": 7,
+      "collision": 1,
+      "near_miss": 0,
+      "timeout_or_other": 0
+    },
+    "mean_detection_delay_s": 3.4
+  },
+  "candidate_success_interval": {
+    "lower": 0.5291051942301385,
+    "upper": 0.9775830911367039
+  },
+  "isolation_receipt_sha256": "sha256:351923997d01335e74f6ec51d1bab769e43680e08120bfd9a48eef473813fb00",
+  "status": "completed"
+}

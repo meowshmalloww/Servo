@@ -1,0 +1,8 @@
+{
+  "schema": "servo.realityci.seed-vault/v1.receipt",
+  "scenario_count": 8,
+  "sealed_sha256": "sha256:351923997d01335e74f6ec51d1bab769e43680e08120bfd9a48eef473813fb00",
+  "seed_range_lo": 87000000,
+  "seed_range_hi": 87000007,
+  "created_at": "2026-08-24T02:55:19.884975+00:00"
+}

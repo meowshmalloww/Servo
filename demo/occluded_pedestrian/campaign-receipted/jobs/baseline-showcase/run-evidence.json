@@ -1,0 +1,37 @@
+{
+  "schema_name": "servo.realityci.run-evidence/v1",
+  "record_id": "run-fea59ef166904ccf",
+  "created_at": "2026-08-24T02:55:17.329938Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": "cam-d30db72211b74c83",
+  "parent_id": null,
+  "causation_id": null,
+  "content_hash": "sha256:fab034bd57e53ec09adc62d5c36a716626317c84f3c3b79c9f02d2f736ff60ea",
+  "run_id": "run-fea59ef166904ccf",
+  "body": {
+    "scenario_id": "occ-55000008",
+    "scenario_hash": "sha256:35b0a3632152b597d879fbccb22d7a4a37c090c20e65c7aa9d227c7e5dfd1494",
+    "policy_checkpoint_sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+    "seed": 55000008,
+    "result": "collision",
+    "metrics": {
+      "duration_s": 5.9,
+      "distance_travelled_m": 69.703951,
+      "min_ego_speed_mps": 11.814229,
+      "final_ego_speed_mps": 11.814229,
+      "brake_requested": false,
+      "min_pedestrian_distance_m": -0.10574
+    },
+    "first_ground_truth_visibility_s": 0.0,
+    "first_policy_detection_s": null,
+    "detection_delay_s": null,
+    "brake_command_s": null,
+    "collision_s": 5.8999999999999995,
+    "collision_relative_speed_mps": 11.931684867697433,
+    "perception_confidence_at_detection": null
+  },
+  "artifacts": []
+}

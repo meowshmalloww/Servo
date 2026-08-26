@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.21)
 
 project(Servo VERSION 0.2.0 LANGUAGES CXX)
 
+# Single-configuration generators otherwise default to an unoptimized binary
+# when CMAKE_BUILD_TYPE is omitted. Keep developer overrides intact.
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -18,6 +25,7 @@ find_package(Qt6 6.11 REQUIRED COMPONENTS
     QuickControls2
     QuickDialogs2
     ShaderTools
+    Sql
     Svg
 )
 

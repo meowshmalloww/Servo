@@ -1,4 +1,4 @@
-import QtQuick
+﻿import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "../components"
@@ -6,7 +6,48 @@ import "../components"
 Item {
     id: root
 
-    readonly property bool diagnosisServiceAvailable: false
+    // Live availability mirrors the control API connection state.
+    readonly property bool diagnosisServiceAvailable: RealityCIController.online
+    readonly property var proposalPayload: RealityCIController.latestPayload("HYPOTHESES_PROPOSED")
+    readonly property var failurePayload: RealityCIController.latestPayload("FAILURE_DETECTED")
+    readonly property var rootCausePayload: RealityCIController.latestPayload("ROOT_CAUSE_ESTABLISHED")
+    readonly property var inconclusivePayload: RealityCIController.latestPayload("ROOT_CAUSE_INCONCLUSIVE")
+    readonly property bool causeEstablished: Object.keys(rootCausePayload).length > 0
+    property var hypothesisRows: []
+    property var experimentRows: []
+
+    function rebuildFromEvents() {
+        const nextHypothesisRows = []
+        const hypotheses = root.proposalPayload.hypotheses === undefined
+                           ? [] : root.proposalPayload.hypotheses
+        for (let i = 0; i < hypotheses.length; ++i) {
+            nextHypothesisRows.push({
+                kind: String(hypotheses[i].kind),
+                claim: String(hypotheses[i].claim),
+                id: String(hypotheses[i].hypothesis_id)
+            })
+        }
+        root.hypothesisRows = nextHypothesisRows
+
+        const nextExperimentRows = []
+        const completed = RealityCIController.payloadsOf("EXPERIMENT_COMPLETED")
+        for (let j = 0; j < completed.length; ++j) {
+            nextExperimentRows.push({
+                sequence: completed[j].sequence,
+                intervention: String(completed[j].intervention),
+                outcome: String(completed[j].outcome),
+                scenario: String(completed[j].derived_scenario_id)
+            })
+        }
+        root.experimentRows = nextExperimentRows
+    }
+
+    Connections {
+        target: RealityCIController
+        function onEventsChanged() { root.rebuildFromEvents() }
+        function onConnectionStateChanged() { if (!RealityCIController.online) root.rebuildFromEvents() }
+    }
+    Component.onCompleted: rebuildFromEvents()
 
     ColumnLayout {
         anchors.fill: parent
@@ -15,17 +56,34 @@ Item {
         PageToolbar {
             title: "Diagnose"
             subtitle: "Failure evidence, causal hypotheses, and counterfactual experiments"
+            helpText: "Inspect the failure timeline, ranked hypotheses from the Diagnostician, and executed counterfactual experiments. Root cause is established by code from intervention outcomes - never by an LLM opinion."
             iconSource: Theme.icon("diagnose")
             Layout.fillWidth: true
+
+            StatusBadge {
+                text: RealityCIController.connectionState
+                tone: RealityCIController.online ? "success"
+                      : RealityCIController.connectionState === "error" ? "error" : "neutral"
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            IconButton {
+                iconSource: Theme.icon("refresh")
+                toolTip: "Reconnect and reload records"
+                enabled: !RealityCIController.busy
+                onClicked: RealityCIController.connectToServer()
+            }
 
             TextButton {
                 text: "Run Experiments"
                 iconSource: Theme.icon("play")
                 tone: "primary"
-                enabled: false
+                enabled: root.diagnosisServiceAvailable && !RealityCIController.busy
+                         && RealityCIController.hasCampaign && !RealityCIController.terminal
                 toolTip: root.diagnosisServiceAvailable
-                         ? "Execute selected counterfactual experiments"
-                         : "Causal experiment service is not connected"
+                         ? "Advance the campaign into the counterfactual experiment stage"
+                         : "Control API is not connected"
+                onClicked: RealityCIController.stepCampaign()
             }
         }
 
@@ -45,33 +103,50 @@ Item {
                     spacing: 0
 
                     PanelHeader {
-                        title: "Failure Queue"
-                        subtitle: Session.failureModel === null ? "No model" : "Connected"
+                        title: "Failure Record"
+                        subtitle: Object.keys(root.failurePayload).length > 0
+                                  ? String(root.failurePayload.failure_id)
+                                  : "No failure in the loaded campaign"
                         iconSource: Theme.icon("diagnose")
                         Layout.fillWidth: true
                     }
 
-                    SearchField {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 7
-                        Layout.rightMargin: 7
-                        Layout.topMargin: 7
-                        Layout.bottomMargin: 6
-                        hint: "Search failures"
-                    }
-
-                    DataTable {
+                    ScrollView {
+                        id: failureScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        model: Session.failureModel
-                        columns: [
-                            { title: "FAILURE", width: 116 },
-                            { title: "RUN", width: 84 },
-                            { title: "STATE", width: 86 }
-                        ]
-                        emptyIcon: Theme.icon("diagnose")
-                        emptyTitle: "No failure evidence"
-                        emptyDescription: "Detected failures appear only after an evaluator publishes an evidence bundle for a durable run."
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                        Column {
+                            width: failureScroll.availableWidth
+
+                            Section {
+                                title: "Detected Failure"
+                                visible: Object.keys(root.failurePayload).length > 0
+                                PropertyRow { label: "Class"; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.failurePayload.failure_class) } }
+                                PropertyRow { label: "Severity"; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.failurePayload.severity) } }
+                                PropertyRow { label: "Record"; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.failurePayload.failure_id) } }
+                            }
+
+                            Section {
+                                title: "Diagnostician"
+                                visible: root.proposalPayload.diagnostician !== undefined
+                                PropertyRow { label: "Service"; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.proposalPayload.diagnostician) } }
+                                PropertyRow { label: "Model"; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.proposalPayload.model_id) } }
+                                PropertyRow { label: "Prompt ver."; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.proposalPayload.prompt_template_version) } }
+                            }
+
+                            EmptyState {
+                                width: parent.width
+                                height: 180
+                                visible: Object.keys(root.failurePayload).length === 0
+                                iconSource: Theme.icon("diagnose")
+                                title: "No failure evidence"
+                                description: "Detected failures appear only after a connected campaign publishes an evidence bundle."
+                            }
+                        }
                     }
                 }
             }
@@ -79,29 +154,46 @@ Item {
             SplitView {
                 orientation: Qt.Vertical
                 SplitView.fillWidth: true
-                SplitView.minimumWidth: 660
+                SplitView.minimumWidth: 620
                 handle: SplitHandle { }
 
-                ViewportSurface {
+                Panel {
                     SplitView.fillHeight: true
-                    SplitView.minimumHeight: 250
-                    title: "Failure Evidence"
-                    available: false
-                    emptyTitle: "No failure selected"
-                    emptyDescription: "Select a failure to inspect synchronized sensor evidence, policy outputs, and executed trajectory."
-                }
+                    SplitView.minimumHeight: 200
 
-                Timeline {
-                    SplitView.preferredHeight: 108
-                    SplitView.minimumHeight: 84
-                    SplitView.maximumHeight: 165
-                    available: false
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 0
+
+                        PanelHeader {
+                            title: "Ranked Hypotheses"
+                            subtitle: root.hypothesisRows.length > 0
+                                      ? "Proposed by " + root.proposalPayload.diagnostician
+                                      : "No causal proposal published"
+                            iconSource: Theme.icon("search")
+                            Layout.fillWidth: true
+                        }
+
+                        RecordTable {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            rows: root.hypothesisRows
+                            columns: [
+                                { title: "KIND", field: "kind", width: 150 },
+                                { title: "CLAIM", field: "claim", width: 420 },
+                                { title: "ID", field: "id", width: 130 }
+                            ]
+                            emptyIcon: Theme.icon("diagnose")
+                            emptyTitle: "No hypotheses"
+                            emptyDescription: "A connected Diagnostician publishes ranked hypotheses after a failure record exists."
+                        }
+                    }
                 }
 
                 Panel {
-                    SplitView.preferredHeight: 220
-                    SplitView.minimumHeight: 160
-                    SplitView.maximumHeight: 330
+                    SplitView.preferredHeight: 240
+                    SplitView.minimumHeight: 170
+                    SplitView.maximumHeight: 380
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -109,24 +201,26 @@ Item {
 
                         PanelHeader {
                             title: "Counterfactual Experiments"
-                            subtitle: Session.experimentModel === null ? "No model" : "Connected"
+                            subtitle: root.experimentRows.length > 0
+                                      ? root.experimentRows.length + " executed interventions"
+                                      : "No experiments executed"
                             iconSource: Theme.icon("table")
                             Layout.fillWidth: true
                         }
 
-                        DataTable {
+                        RecordTable {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            model: Session.experimentModel
+                            rows: root.experimentRows
                             columns: [
-                                { title: "INTERVENTION", width: 230 },
-                                { title: "TARGET", width: 150 },
-                                { title: "DELTA", width: 90 },
-                                { title: "OUTCOME", width: 130 }
+                                { title: "SEQ", field: "sequence", width: 52 },
+                                { title: "INTERVENTION", field: "intervention", width: 230 },
+                                { title: "OUTCOME", field: "outcome", width: 140 },
+                                { title: "DERIVED SCENARIO", field: "scenario", width: 260 }
                             ]
                             emptyIcon: Theme.icon("diagnose")
                             emptyTitle: "No experiments"
-                            emptyDescription: "A hypothesis adapter can publish interventions after a failure is selected."
+                            emptyDescription: "Executed counterfactuals appear here with their measured outcomes."
                         }
                     }
                 }
@@ -143,7 +237,7 @@ Item {
 
                     PanelHeader {
                         title: "Causal Inspector"
-                        subtitle: "No selection"
+                        subtitle: root.causeEstablished ? "Established by deterministic gate" : "No selection"
                         iconSource: Theme.icon("settings")
                         Layout.fillWidth: true
                     }
@@ -160,56 +254,54 @@ Item {
                             width: inspectorScroll.availableWidth
 
                             Section {
-                                title: "Failure"
-                                PropertyRow { label: "Failure ID"; labelWidth: 102; TextInput { placeholderText: "No selection"; readOnly: true } }
-                                PropertyRow { label: "Run"; labelWidth: 102; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Event time"; labelWidth: 102; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Evaluator"; labelWidth: 102; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                            }
-
-                            Section {
-                                title: "Hypotheses"
-                                summary: "Ranked by evidence"
-
-                                Item {
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 210
-
-                                    DataTable {
-                                        anchors.fill: parent
-                                        model: null
-                                        columns: [
-                                            { title: "HYPOTHESIS", width: 190 },
-                                            { title: "EVIDENCE", width: 104 }
-                                        ]
-                                        emptyIcon: Theme.icon("diagnose")
-                                        emptyTitle: "No hypotheses"
-                                        emptyDescription: "No causal proposal has been published."
-                                    }
-                                }
-                            }
-
-                            Section {
                                 title: "Causal Conclusion"
 
                                 Item {
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 160
+                                    Layout.preferredHeight: root.causeEstablished ? 120 : 160
 
                                     EmptyState {
                                         anchors.fill: parent
+                                        visible: !root.causeEstablished
                                         iconSource: Theme.icon("info")
-                                        title: "Not established"
-                                        description: "Servo reports a root cause only when interventions support it. Confidence is never inferred from a ranked suggestion alone."
+                                        title: root.inconclusivePayload.satisfied !== undefined
+                                               ? "Inconclusive - more evidence scheduled"
+                                               : "Not established"
+                                        description: "Servo reports a root cause only when executed interventions support it."
+                                    }
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        visible: root.causeEstablished
+                                        spacing: 4
+
+                                        StatusBadge {
+                                            text: String(root.rootCausePayload.root_cause)
+                                            tone: "success"
+                                        }
+                                        PropertyRow { label: "Rule"; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.rootCausePayload.rule) } }
+                                        PropertyRow { label: "Diagnosis"; labelWidth: 102; TextInput { readOnly: true; placeholderText: String(root.rootCausePayload.diagnosis_id) } }
                                     }
                                 }
                             }
 
                             Section {
                                 title: "Evidence Contract"
-                                PropertyRow { label: "Interventions"; labelWidth: 102; TextInput { placeholderText: "None executed"; readOnly: true } }
-                                PropertyRow { label: "Artifacts"; labelWidth: 102; TextInput { placeholderText: "None"; readOnly: true } }
-                                PropertyRow { label: "Provenance"; labelWidth: 102; TextInput { placeholderText: "Unavailable"; readOnly: true } }
+                                PropertyRow {
+                                    label: "Interventions"
+                                    labelWidth: 102
+                                    TextInput { readOnly: true; placeholderText: String(root.experimentRows.length) + " executed" }
+                                }
+                                PropertyRow {
+                                    label: "Response hash"
+                                    labelWidth: 102
+                                    TextInput { readOnly: true; placeholderText: root.proposalPayload.response_sha256 === undefined ? "None" : String(root.proposalPayload.response_sha256) }
+                                }
+                                PropertyRow {
+                                    label: "Provenance"
+                                    labelWidth: 102
+                                    TextInput { readOnly: true; placeholderText: "deterministic gate over outcomes only" }
+                                }
                             }
                         }
                     }
@@ -220,8 +312,14 @@ Item {
                         Layout.fillWidth: true
                         Layout.margins: 8
                         spacing: 6
-                        TextButton { text: "Create Experience Plan"; iconSource: Theme.icon("plus"); enabled: false; Layout.fillWidth: true }
-                        IconButton { iconSource: Theme.icon("export"); toolTip: "Export evidence"; enabled: false; buttonSize: Theme.controlHeight }
+                        TextButton {
+                            text: "Create Experience Plan"
+                            iconSource: Theme.icon("plus")
+                            enabled: root.causeEstablished && !RealityCIController.busy
+                                     && RealityCIController.hasCampaign && !RealityCIController.terminal
+                            Layout.fillWidth: true
+                            onClicked: RealityCIController.stepCampaign()
+                        }
                     }
                 }
             }

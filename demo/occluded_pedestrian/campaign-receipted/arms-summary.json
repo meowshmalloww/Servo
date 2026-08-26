@@ -1,0 +1,36 @@
+{
+  "arms": [
+    {
+      "intervention": "remove_occluder",
+      "outcomes": [
+        "safe",
+        "safe",
+        "safe"
+      ]
+    },
+    {
+      "intervention": "oracle_perception",
+      "outcomes": [
+        "safe",
+        "safe",
+        "safe"
+      ]
+    },
+    {
+      "intervention": "oracle_planner",
+      "outcomes": [
+        "unsafe",
+        "unsafe",
+        "unsafe"
+      ]
+    },
+    {
+      "intervention": "reveal_pedestrian_earlier",
+      "outcomes": [
+        "unsafe",
+        "unsafe",
+        "unsafe"
+      ]
+    }
+  ]
+}

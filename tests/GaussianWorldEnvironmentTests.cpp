@@ -78,7 +78,7 @@ private slots:
     void r7ReadsExactSrgbBackground();
     void r7ReadsObservedDirectionalSkyEvidence();
     void observedDirectionalSkyRejectsInventedUnknownTexel();
-    void r7RequiresEnvironment();
+    void legacyWorldWithoutEnvironmentUsesBlackFallback();
     void malformedManifestFailsClosed();
     void malformedBackgroundFailsClosed_data();
     void malformedBackgroundFailsClosed();
@@ -218,7 +218,7 @@ void GaussianWorldEnvironmentTests::observedDirectionalSkyRejectsInventedUnknown
     QVERIFY(error.contains(QStringLiteral("zero RGB")));
 }
 
-void GaussianWorldEnvironmentTests::r7RequiresEnvironment()
+void GaussianWorldEnvironmentTests::legacyWorldWithoutEnvironmentUsesBlackFallback()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -226,13 +226,14 @@ void GaussianWorldEnvironmentTests::r7RequiresEnvironment()
         directory.path(),
         manifestBytes(QStringLiteral("native-colmap-servo-road-geometry-r7"))));
 
-    QVector3D background;
+    QVector3D background(1.0f, 1.0f, 1.0f);
     QString error;
-    QVERIFY(!Servo::Rendering::readGaussianWorldBackground(
+    QVERIFY(Servo::Rendering::readGaussianWorldBackground(
         QDir(directory.path()).filePath(QStringLiteral("world.ply")),
         &background,
         &error));
-    QVERIFY(error.contains(QStringLiteral("backgroundColorSrgb")));
+    QCOMPARE(background, QVector3D(0.0f, 0.0f, 0.0f));
+    QVERIFY(error.isEmpty());
 }
 
 void GaussianWorldEnvironmentTests::malformedManifestFailsClosed()

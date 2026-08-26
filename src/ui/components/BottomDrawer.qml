@@ -16,7 +16,7 @@ Panel {
         expanded = true;
     }
 
-    implicitHeight: expanded ? 212 : 34
+    implicitHeight: expanded ? 218 : 31
 
     Behavior on implicitHeight {
         NumberAnimation {
@@ -31,7 +31,7 @@ Panel {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 34
+            Layout.preferredHeight: 31
             color: Theme.chrome
 
             RowLayout {
@@ -42,7 +42,7 @@ Panel {
                 IconButton {
                     iconSource: Theme.icon("chevron-down")
                     toolTip: root.expanded ? "Collapse" : "Expand"
-                    buttonSize: 25
+                    buttonSize: 23
                     rotation: root.expanded ? 0 : -90
 
                     Behavior on rotation {
@@ -58,12 +58,13 @@ Panel {
                 Repeater {
                     model: root.tabs
 
-                    delegate: TextButton {
+                    delegate: TopTab {
                         required property int index
                         required property string modelData
                         text: modelData
-                        compact: true
-                        selected: root.currentTab === index && root.expanded
+                        current: root.currentTab === index && root.expanded
+                        implicitWidth: Math.max(72, contentItem.implicitWidth + 24)
+                        implicitHeight: 31
                         onClicked: {
                             if (root.currentTab === index && root.expanded)
                                 root.expanded = false;
@@ -78,11 +79,11 @@ Panel {
                 }
 
                 Text {
-                    visible: root.expanded
-                    text: "No active process"
+                    text: root.expanded ? "SUPPORTING OUTPUT" : ""
                     color: Theme.textMuted
-                    font.family: Theme.monoFont
+                    font.family: Theme.uiFont
                     font.pixelSize: 8
+                    font.letterSpacing: 0.6
                     Layout.rightMargin: 8
                 }
             }
@@ -93,8 +94,8 @@ Panel {
             Layout.fillWidth: true
             Layout.fillHeight: true
             iconSource: root.currentTab === 0 ? Theme.icon("warning") : (root.currentTab === 1 ? Theme.icon("table") : Theme.icon("terminal"))
-            title: root.currentTab === 0 ? "No problems" : (root.currentTab === 1 ? "No process output" : "No terminal session")
-            description: root.currentTab === 0 ? "Diagnostics appear here when a real frontend or service error is reported." : (root.currentTab === 1 ? "Build, compiler, and connected-service output will stream here." : "A local command session has not been attached. The UI does not emulate shell output.")
+            title: root.currentTab === 0 ? "No problems" : (root.currentTab === 1 ? "No output yet" : "No terminal attached")
+            description: root.currentTab === 0 ? "Errors and warnings appear here." : (root.currentTab === 1 ? "Build and run output appears here." : "Connect a local command session when needed.")
         }
     }
 }

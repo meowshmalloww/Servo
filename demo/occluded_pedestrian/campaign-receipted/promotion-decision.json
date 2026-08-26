@@ -1,0 +1,66 @@
+{
+  "schema_name": "servo.realityci.promotion-decision/v1",
+  "record_id": "promo-8b20d94f838d433c",
+  "created_at": "2026-08-24T02:55:31.337244Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": "cam-d30db72211b74c83",
+  "parent_id": null,
+  "causation_id": null,
+  "content_hash": "sha256:9fd2318a39d390a546a146ded8f79946e2e37ed1c645623b20f422d2314e50fb",
+  "decision_id": "promo-e34a32421370480c",
+  "decision": "promoted",
+  "candidate_checkpoint_sha256": "sha256:2b0cd6deae1cc8cc01ed05c51c6c328d9f87c8abcdffbcdd1a55fe9502b30dea",
+  "baseline_checkpoint_sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+  "checks": [
+    {
+      "name": "exam_completed",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "candidate_target_success",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "candidate_lower_bound",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "beats_baseline_on_hidden",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "no_protected_regression",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "no_severity_one_regressions",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "checkpoint_identity",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "baseline_identity",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "isolation_receipt_present",
+      "passed": true,
+      "detail": ""
+    }
+  ],
+  "reasons": [],
+  "gate_version": "promotion-gate/v1"
+}

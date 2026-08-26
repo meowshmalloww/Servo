@@ -1,4 +1,4 @@
-pragma ComponentBehavior: Bound
+﻿pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Layouts
@@ -9,13 +9,16 @@ import "../components"
 Item {
     id: root
 
+    readonly property bool longRunActive: AiChatController.statusText.toLowerCase().indexOf("long run") >= 0
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
         PageToolbar {
-            title: "Assistant"
-            subtitle: "A native Gemini conversation for Servo engineering work"
+            title: "Servo"
+            subtitle: "Ask, build, debug."
+            helpText: "Talk with Servo about the current project and worlds."
             iconSource: Theme.icon("assistant")
             Layout.fillWidth: true
 
@@ -26,7 +29,7 @@ Item {
             }
 
             TextButton {
-                text: "New conversation"
+                text: "New"
                 iconSource: Theme.icon("plus")
                 compact: true
                 enabled: AiChatController.count > 0 || AiChatController.busy
@@ -94,10 +97,10 @@ Item {
                         width: Math.min(520, parent.width - 24)
                         visible: AiChatController.count === 0 && !AiChatController.busy
                         iconSource: Theme.icon("assistant")
-                        title: "Talk to Servo Assistant"
+                        title: "What should we work on?"
                         description: AiChatController.configured
-                                     ? "Ask about reconstruction, diagnostics, experiments, or the current engineering workflow. Responses come from the configured Gemini API."
-                                     : "Set GOOGLE_API_KEY or GEMINI_API_KEY in the environment and restart Servo. The UI will never simulate an AI response when no provider is connected."
+                                     ? "Ask Servo about this project, a world, or the next build step."
+                                     : "Connect Gemini in Settings to start."
                     }
 
                     ListView {
@@ -224,8 +227,8 @@ Item {
                                 anchors.leftMargin: 14
                                 anchors.verticalCenter: parent.verticalCenter
                                 running: AiChatController.busy
-                                label: "Thinking"
-                                variant: "Dots"
+                                label: AiChatController.statusText
+                                variant: root.longRunActive ? "Orbit" : "Dots"
                             }
                         }
                     }
@@ -236,18 +239,21 @@ Item {
                     Layout.fillWidth: true
                     Layout.maximumWidth: 760
                     Layout.alignment: Qt.AlignHCenter
-                    models: AiChatController.modelNames
+                    modelOptions: AiChatController.modelOptions
                     efforts: AiChatController.effortNames
                     attachments: AiChatController.pendingAttachments
                     maxAttachments: AiChatController.maxAttachments
                     busy: AiChatController.busy
+                    busyLabel: AiChatController.statusText
+                    busyVariant: root.longRunActive ? "Orbit" : "Dots"
                     backendConfigured: AiChatController.configured
 
                     onAttachRequested: attachmentDialog.open()
                     onRemoveAttachmentRequested: index => AiChatController.removeAttachment(index)
                     onStopRequested: AiChatController.cancel()
                     onSendRequested: (prompt, modelName, effortName) => {
-                        if (AiChatController.sendMessage(prompt, modelName, effortName))
+                        if (AiChatController.runLocalAction(prompt)
+                                || AiChatController.sendMessage(prompt, modelName, effortName))
                             chatInput.clearPrompt();
                     }
                 }

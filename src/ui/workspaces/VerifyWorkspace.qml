@@ -1,4 +1,4 @@
-import QtQuick
+﻿import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "../components"
@@ -6,9 +6,48 @@ import "../components"
 Item {
     id: root
 
-    readonly property bool verifierAvailable: false
-    property var baselineSeries: []
-    property var candidateSeries: []
+    // Real availability: verification stages run inside the campaign engine.
+    readonly property bool verifierAvailable: RealityCIController.online
+    readonly property var examPayload: RealityCIController.latestPayload("HIDDEN_EXAM_COMPLETED")
+    readonly property var regressionPayload: RealityCIController.latestPayload("REGRESSION_COMPLETED")
+    readonly property var promotedPayload: RealityCIController.latestPayload("CHECKPOINT_PROMOTED")
+    readonly property var rejectedPayload: RealityCIController.latestPayload("CHECKPOINT_REJECTED")
+    readonly property var checkpointPayload: RealityCIController.latestPayload("CHECKPOINT_READY")
+    readonly property var debtPayload: RealityCIController.latestPayload("REALITY_DEBT_UPDATED")
+    readonly property bool decisionMade: Object.keys(root.promotedPayload).length > 0
+                                          || Object.keys(root.rejectedPayload).length > 0
+    readonly property bool promoted: Object.keys(root.promotedPayload).length > 0
+
+    property var examRows: []
+    property var failedCheckRows: []
+
+    function rebuildFromEvents() {
+        const nextExamRows = []
+        if (root.examPayload.exam_id !== undefined) {
+            nextExamRows.push({
+                capability: "occluded-pedestrian-crossing/v1",
+                scenarios: String(root.examPayload.exam_id),
+                baseline: (Number(root.examPayload.baseline_success) * 100).toFixed(1) + "%",
+                candidate: (Number(root.examPayload.candidate_success) * 100).toFixed(1) + "%"
+            })
+        }
+        root.examRows = nextExamRows
+
+        const decision = root.promoted ? root.promotedPayload : root.rejectedPayload
+        const nextFailedRows = []
+        if (decision.failed_checks !== undefined) {
+            const checks = decision.failed_checks
+            for (let i = 0; i < checks.length; ++i)
+                nextFailedRows.push({ check: String(checks[i]) })
+        }
+        root.failedCheckRows = nextFailedRows
+    }
+
+    Connections {
+        target: RealityCIController
+        function onEventsChanged() { root.rebuildFromEvents() }
+    }
+    Component.onCompleted: rebuildFromEvents()
 
     ColumnLayout {
         anchors.fill: parent
@@ -17,16 +56,34 @@ Item {
         PageToolbar {
             title: "Verify"
             subtitle: "Hidden examination, regression gates, checkpoint comparison, and promotion policy"
+            helpText: "The candidate faces a hidden exam (vault opened only here) plus protected regression suites. The promotion gate is pure code: target success, confidence floor, no regressions, verified hashes."
             iconSource: Theme.icon("verify")
             Layout.fillWidth: true
 
-            TextButton { text: "Export Report"; iconSource: Theme.icon("export"); enabled: false }
+            StatusBadge {
+                text: RealityCIController.connectionState
+                tone: RealityCIController.online ? "success"
+                      : RealityCIController.connectionState === "error" ? "error" : "neutral"
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            IconButton {
+                iconSource: Theme.icon("refresh")
+                toolTip: "Reconnect and reload records"
+                enabled: !RealityCIController.busy
+                onClicked: RealityCIController.connectToServer()
+            }
+
             TextButton {
                 text: "Run Hidden Exam"
                 iconSource: Theme.icon("play")
                 tone: "primary"
-                enabled: false
-                toolTip: root.verifierAvailable ? "Evaluate selected checkpoint" : "Verification service is not connected"
+                enabled: root.verifierAvailable && !RealityCIController.busy
+                         && RealityCIController.hasCampaign && !RealityCIController.terminal
+                toolTip: root.verifierAvailable
+                         ? "Advance the campaign into the hidden exam stage"
+                         : "Control API is not connected"
+                onClicked: RealityCIController.stepCampaign()
             }
         }
 
@@ -46,33 +103,46 @@ Item {
                     spacing: 0
 
                     PanelHeader {
-                        title: "Checkpoints"
-                        subtitle: Session.checkpointModel === null ? "No model" : "Connected"
+                        title: "Hidden Exam Results"
+                        subtitle: root.examPayload.exam_id !== undefined
+                                  ? String(root.examPayload.exam_id)
+                                  : "No exam committed"
                         iconSource: Theme.icon("verify")
                         Layout.fillWidth: true
                     }
 
-                    SearchField {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 7
-                        Layout.rightMargin: 7
-                        Layout.topMargin: 7
-                        Layout.bottomMargin: 6
-                        hint: "Search checkpoints"
-                    }
-
-                    DataTable {
+                    RecordTable {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        model: Session.checkpointModel
+                        Layout.topMargin: 6
+                        rows: root.examRows
                         columns: [
-                            { title: "CHECKPOINT", width: 132 },
-                            { title: "SOURCE", width: 104 },
-                            { title: "GATE", width: 82 }
+                            { title: "CAPABILITY", field: "capability", width: 200 },
+                            { title: "EXAM", field: "scenarios", width: 130 },
+                            { title: "BASELINE", field: "baseline", width: 84 },
+                            { title: "CANDIDATE", field: "candidate", width: 90 }
                         ]
                         emptyIcon: Theme.icon("verify")
-                        emptyTitle: "No checkpoints"
-                        emptyDescription: "Committed candidate and baseline checkpoints appear after an adapter publishes artifact metadata."
+                        emptyTitle: "No hidden-exam results"
+                        emptyDescription: "Held-out results appear after the examiner commits an exam record on seeds sealed before training."
+                    }
+
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft }
+
+                    Section {
+                        title: "Generalization"
+                        Layout.fillWidth: true
+                        PropertyRow {
+                            label: "Interval"
+                            labelWidth: 104
+                            TextInput {
+                                readOnly: true
+                                placeholderText: root.examPayload.interval === undefined
+                                                 ? "Not evaluated"
+                                                 : "95% CI " + (Number(root.examPayload.interval[0]) * 100).toFixed(1)
+                                                   + "%–" + (Number(root.examPayload.interval[1]) * 100).toFixed(1) + "%"
+                            }
+                        }
                     }
                 }
             }
@@ -80,79 +150,95 @@ Item {
             SplitView {
                 orientation: Qt.Vertical
                 SplitView.fillWidth: true
-                SplitView.minimumWidth: 680
+                SplitView.minimumWidth: 620
                 handle: SplitHandle { }
-
-                Item {
-                    SplitView.preferredHeight: 270
-                    SplitView.minimumHeight: 210
-                    SplitView.maximumHeight: 390
-
-                    RowLayout {
-                        anchors.fill: parent
-                        spacing: 4
-
-                        LinePlot {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            title: "Baseline"
-                            unit: "selected verification metric"
-                            values: root.baselineSeries
-                            minimum: 0
-                            maximum: 1
-                            lineColor: Theme.textSecondary
-                        }
-
-                        LinePlot {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            title: "Candidate"
-                            unit: "selected verification metric"
-                            values: root.candidateSeries
-                            minimum: 0
-                            maximum: 1
-                        }
-                    }
-                }
 
                 Panel {
                     SplitView.fillHeight: true
-                    SplitView.minimumHeight: 240
+                    SplitView.minimumHeight: 180
 
                     ColumnLayout {
                         anchors.fill: parent
                         spacing: 0
 
                         PanelHeader {
-                            title: "Hidden Exam Results"
-                            subtitle: "No exam selected"
+                            title: "Regression Protection"
+                            subtitle: root.regressionPayload.regression_id !== undefined
+                                      ? String(root.regressionPayload.suites) + " protected suites rerun"
+                                      : "Not evaluated"
                             iconSource: Theme.icon("table")
                             Layout.fillWidth: true
                         }
 
-                        DataTable {
+                        Section {
+                            title: "Protected Capabilities"
                             Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            model: null
-                            columns: [
-                                { title: "CAPABILITY", width: 210 },
-                                { title: "SCENARIOS", width: 100 },
-                                { title: "BASELINE", width: 104 },
-                                { title: "CANDIDATE", width: 104 },
-                                { title: "GATE", width: 88 }
-                            ]
-                            emptyIcon: Theme.icon("verify")
-                            emptyTitle: "No hidden-exam results"
-                            emptyDescription: "Held-out results remain empty until the verifier commits an exam record."
+                            PropertyRow {
+                                label: "Suites"
+                                labelWidth: 104
+                                TextInput { readOnly: true; placeholderText: root.regressionPayload.suites === undefined ? "None configured" : String(root.regressionPayload.suites) }
+                            }
+                            PropertyRow {
+                                label: "Max drop"
+                                labelWidth: 104
+                                TextInput { readOnly: true; placeholderText: root.regressionPayload.max_drop_pp === undefined ? "Not evaluated" : String(root.regressionPayload.max_drop_pp) + " pp" }
+                            }
+                            PropertyRow {
+                                label: "Policy"
+                                labelWidth: 104
+                                TextInput { readOnly: true; placeholderText: "deterministic thresholds - an LLM cannot waive these gates" }
+                            }
                         }
+
+                        Item { Layout.fillHeight: true }
                     }
                 }
 
-                BottomDrawer {
-                    SplitView.preferredHeight: implicitHeight
-                    SplitView.minimumHeight: 34
-                    SplitView.maximumHeight: 220
-                    tabs: ["Exam Output", "Regression", "Artifacts"]
+                Panel {
+                    SplitView.preferredHeight: 220
+                    SplitView.minimumHeight: 150
+                    SplitView.maximumHeight: 340
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 0
+
+                        PanelHeader {
+                            title: "Decision Record"
+                            subtitle: !root.decisionMade
+                                      ? "Gate not evaluated"
+                                      : (root.promoted ? "PROMOTED" : "REJECTED")
+                            iconSource: Theme.icon("check")
+                            Layout.fillWidth: true
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.margins: 8
+                            spacing: 8
+
+                            StatusBadge {
+                                text: !root.decisionMade
+                                      ? RealityCIController.campaignState
+                                      : (root.promoted ? "promoted by code" : "rejected by code")
+                                tone: !root.decisionMade ? "neutral"
+                                      : (root.promoted ? "success" : "error")
+                            }
+                        }
+
+                        RecordTable {
+                            id: failedChecksTable
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            rows: root.failedCheckRows
+                            columns: [
+                                { title: "FAILED CHECK", field: "check", width: 420 }
+                            ]
+                            emptyTitle: root.decisionMade ? "All deterministic checks passed" : "No decision yet"
+                            emptyDescription: "The gate evaluates target success, confidence floor, regressions, hashes, and isolation receipts."
+                            emptyIcon: Theme.icon("check")
+                        }
+                    }
                 }
             }
 
@@ -167,7 +253,7 @@ Item {
 
                     PanelHeader {
                         title: "Promotion Gate"
-                        subtitle: "Not evaluated"
+                        subtitle: !root.decisionMade ? "Not evaluated" : "Decision recorded"
                         iconSource: Theme.icon("settings")
                         Layout.fillWidth: true
                     }
@@ -185,49 +271,64 @@ Item {
 
                             Section {
                                 title: "Selection"
-                                PropertyRow { label: "Baseline"; labelWidth: 104; TextInput { placeholderText: "No baseline selected"; readOnly: true } }
-                                PropertyRow { label: "Candidate"; labelWidth: 104; TextInput { placeholderText: "No candidate selected"; readOnly: true } }
-                                PropertyRow { label: "Exam suite"; labelWidth: 104; TextInput { placeholderText: "No hidden suite"; readOnly: true } }
-                            }
-
-                            Section {
-                                title: "Generalization"
-                                PropertyRow { label: "Result"; labelWidth: 104; TextInput { placeholderText: "Not evaluated"; readOnly: true } }
-                                PropertyRow { label: "Coverage"; labelWidth: 104; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Threshold"; labelWidth: 104; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                            }
-
-                            Section {
-                                title: "Regression"
-                                PropertyRow { label: "Protected sets"; labelWidth: 104; TextInput { placeholderText: "None configured"; readOnly: true } }
-                                PropertyRow { label: "Regressions"; labelWidth: 104; TextInput { placeholderText: "Not evaluated"; readOnly: true } }
-                                PropertyRow { label: "Policy"; labelWidth: 104; TextInput { placeholderText: "Unavailable"; readOnly: true } }
+                                PropertyRow {
+                                    label: "Baseline"
+                                    labelWidth: 104
+                                    TextInput { readOnly: true; placeholderText: String(root.checkpointPayload.parent_sha256) }
+                                }
+                                PropertyRow {
+                                    label: "Candidate"
+                                    labelWidth: 104
+                                    TextInput { readOnly: true; placeholderText: String(root.checkpointPayload.candidate_sha256) }
+                                }
                             }
 
                             Section {
                                 title: "Reality Debt"
-                                PropertyRow { label: "Before"; labelWidth: 104; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "After"; labelWidth: 104; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Delta"; labelWidth: 104; TextInput { placeholderText: "Not computed"; readOnly: true } }
+                                PropertyRow {
+                                    label: "Total debt"
+                                    labelWidth: 104
+                                    TextInput {
+                                        readOnly: true
+                                        placeholderText: root.debtPayload.total_debt === undefined
+                                                         ? "Not computed"
+                                                         : Number(root.debtPayload.total_debt).toFixed(3)
+                                    }
+                                }
                             }
 
                             Section {
-                                title: "Decision Record"
-                                PropertyRow { label: "Gate state"; labelWidth: 104; TextInput { placeholderText: "Not evaluated"; readOnly: true } }
-                                PropertyRow { label: "Exam artifact"; labelWidth: 104; TextInput { placeholderText: "None"; readOnly: true } }
-                                PropertyRow { label: "Provenance"; labelWidth: 104; TextInput { placeholderText: "Unavailable"; readOnly: true } }
+                                title: "Decision Provenance"
+                                PropertyRow {
+                                    label: "Decision ID"
+                                    labelWidth: 104
+                                    TextInput {
+                                        readOnly: true
+                                        placeholderText: root.promotedPayload.decision_id !== undefined
+                                                         ? String(root.promotedPayload.decision_id)
+                                                         : (root.rejectedPayload.decision_id !== undefined
+                                                            ? String(root.rejectedPayload.decision_id)
+                                                            : "None")
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Authority"
+                                    labelWidth: 104
+                                    TextInput { readOnly: true; placeholderText: "deterministic code - not an LLM opinion" }
+                                }
+                            }
+
+                            Text {
+                                width: parent.width - 24
+                                leftPadding: 12
+                                bottomPadding: 12
+                                text: "Promote/Reject buttons are intentionally absent: humans cannot override the deterministic gate in either direction."
+                                color: Theme.textMuted
+                                font.family: Theme.uiFont
+                                font.pixelSize: 9
+                                wrapMode: Text.WrapAnywhere
                             }
                         }
-                    }
-
-                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.margins: 8
-                        spacing: 6
-                        TextButton { text: "Reject"; tone: "danger"; enabled: false; Layout.fillWidth: true }
-                        TextButton { text: "Promote"; iconSource: Theme.icon("check"); tone: "primary"; enabled: false; Layout.fillWidth: true }
                     }
                 }
             }

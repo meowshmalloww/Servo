@@ -22,20 +22,46 @@ qt_add_executable(AiChatControllerTests
     AiChatControllerTests.cpp
     ../src/ui/chat/AiChatController.cpp
     ../src/ui/chat/AiChatController.h
+    ../src/ui/chat/AiChatStore.cpp
+    ../src/ui/chat/AiChatStore.h
 )
 
 target_include_directories(AiChatControllerTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui/chat
 )
 
+target_compile_definitions(AiChatControllerTests PRIVATE
+    SERVO_PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
 target_link_libraries(AiChatControllerTests
+    PRIVATE
+        Qt6::Network
+        Qt6::Qml
+        Qt6::Sql
+        Qt6::Test
+)
+
+add_test(NAME AiChatControllerTests COMMAND AiChatControllerTests)
+
+qt_add_executable(RealityCIControllerTests
+    RealityCIControllerTests.cpp
+    ../src/ui/realityci/RealityCIController.cpp
+    ../src/ui/realityci/RealityCIController.h
+)
+
+target_include_directories(RealityCIControllerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui/realityci
+)
+
+target_link_libraries(RealityCIControllerTests
     PRIVATE
         Qt6::Network
         Qt6::Qml
         Qt6::Test
 )
 
-add_test(NAME AiChatControllerTests COMMAND AiChatControllerTests)
+add_test(NAME RealityCIControllerTests COMMAND RealityCIControllerTests)
 
 qt_add_executable(ReconstructionControllerTests
     ReconstructionControllerTests.cpp
@@ -151,3 +177,23 @@ add_test(
             -s ${CMAKE_CURRENT_SOURCE_DIR}/python
             -p test_reconstruction_release.py
 )
+
+# Give every Qt test executable a runnable PATH even when the developer shell
+# does not preload the Qt bin directory (see README quick start).
+find_path(Qt6_RUNTIME_DIR
+          NAMES Qt6Core.dll
+          HINTS ${Qt6_DIR}/../../../bin)
+if(Qt6_RUNTIME_DIR)
+    set_tests_properties(
+        MediaSourceModelTests
+        AiChatControllerTests
+        RealityCIControllerTests
+        ReconstructionControllerTests
+        WorldLibraryModelTests
+        GaussianPathSmoothingTests
+        GaussianSortStabilityTests
+        GaussianWorldEnvironmentTests
+        PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${Qt6_RUNTIME_DIR}"
+    )
+endif()

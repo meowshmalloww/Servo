@@ -1,0 +1,54 @@
+{
+  "schema_name": "servo.realityci.curriculum/v1",
+  "record_id": "curr-c3679224076a4ca5",
+  "created_at": "2026-08-24T02:55:19.870529Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": "cam-d30db72211b74c83",
+  "parent_id": "diag-8645d3d0e3d6400c",
+  "causation_id": "diag-8645d3d0e3d6400c",
+  "content_hash": "sha256:a0a49137fe5577377d804f5209c7ee2ac2e89165499c0db49ab4ab182aac793b",
+  "objective_capability": "occluded-pedestrian-crossing/v1",
+  "stages": [
+    {
+      "stage_index": 0,
+      "name": "ordinary-visible",
+      "difficulty": 0.25,
+      "scenario_count": 10,
+      "dimension_ranges": {
+        "occlusion_ratio": [
+          0.0,
+          0.0
+        ],
+        "ego_speed": [
+          11.5,
+          17.0
+        ]
+      },
+      "seed_low": 41000000,
+      "seed_high": 41000153
+    },
+    {
+      "stage_index": 1,
+      "name": "occluded-emergence",
+      "difficulty": 0.85,
+      "scenario_count": 14,
+      "dimension_ranges": {
+        "occlusion_ratio": [
+          0.4,
+          1.0
+        ],
+        "ego_speed": [
+          16.0,
+          17.0
+        ]
+      },
+      "seed_low": 41500000,
+      "seed_high": 41500013
+    }
+  ],
+  "total_scenarios": 24,
+  "provenance": "deterministic-pools-v1"
+}

@@ -168,7 +168,7 @@ private:
     float m_pitch = 0.0f;
     float m_verticalFieldOfView = 52.0f;
     double m_loadProgress = 0.0;
-    double m_movementSpeed = 0.6;
+    double m_movementSpeed = 1.8;
     double m_renderFps = 0.0;
     double m_frameTimeMs = 0.0;
     double m_gpuTimeMs = 0.0;

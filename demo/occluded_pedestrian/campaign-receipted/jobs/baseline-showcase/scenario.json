@@ -1,0 +1,63 @@
+{
+  "schema_name": "servo.realityci.scenario/v1",
+  "record_id": "scn-28c98f8c7dbf4f08",
+  "created_at": "2026-08-24T02:55:15.496975Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": null,
+  "parent_id": null,
+  "causation_id": null,
+  "content_hash": "",
+  "scenario_id": "occ-55000008",
+  "seed": 55000008,
+  "world_ref": {
+    "world_id": "virtual-yosemite-straight",
+    "source_tag": "procedural"
+  },
+  "route": {
+    "start_s_m": 12.0,
+    "end_s_m": 100.0,
+    "speed_limit_mps": 17.0
+  },
+  "ego": {
+    "initial_speed_mps": 11.814229061610023,
+    "max_acceleration_mps2": 2.5,
+    "max_braking_mps2": 6.5,
+    "brake_actuation_delay_s": 0.18,
+    "length_m": 4.6,
+    "width_m": 1.9,
+    "lane_center_lateral_m": 0.0,
+    "lane_width_m": 3.5
+  },
+  "pedestrian": {
+    "crossing_speed_mps": 1.6702677406629924,
+    "emergence_s": 4.672279346314698,
+    "crossing_angle_deg": 89.09311775510292,
+    "start_lateral_m": 2.4,
+    "end_lateral_m": -3.0,
+    "width_m": 0.5,
+    "height_m": 1.75
+  },
+  "occluder": {
+    "position_s_m": 78.0,
+    "lateral_offset_m": 2.1,
+    "length_m": 4.5,
+    "width_m": 1.85,
+    "height_m": 1.5
+  },
+  "appearance": {
+    "brightness": 1.0092424691700104,
+    "contrast": 0.9960757315624957,
+    "weather_tag": "clear"
+  },
+  "provenance": {
+    "background": "procedural-deterministic-road",
+    "actors": "synthetic-controllable",
+    "collision_truth": "deterministic-scenario-state"
+  },
+  "derivation": null,
+  "dt_s": 0.02,
+  "horizon_s": 12.0
+}

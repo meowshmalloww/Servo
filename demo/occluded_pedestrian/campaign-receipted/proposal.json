@@ -1,0 +1,89 @@
+{
+  "summary": "Failure collision_with_pedestrian at t=5.8999999999999995s; detection delay Nones. Requesting discriminating counterfactuals.",
+  "diagnostician": "deterministic-diagnostician/v1",
+  "model_id": null,
+  "prompt_template_version": null,
+  "response_sha256": null,
+  "hypotheses": [
+    {
+      "hypothesis_id": "H1",
+      "kind": "not_detected",
+      "claim": "The policy never raised hazard above threshold before impact.",
+      "status": "untested",
+      "supporting_evidence": [],
+      "contradicting_evidence": []
+    },
+    {
+      "hypothesis_id": "H2",
+      "kind": "detected_too_late",
+      "claim": "Detection occurred later than the physics allows for stopping.",
+      "status": "untested",
+      "supporting_evidence": [],
+      "contradicting_evidence": []
+    },
+    {
+      "hypothesis_id": "H3",
+      "kind": "planner_failed",
+      "claim": "Perception fired but no brake command was issued.",
+      "status": "untested",
+      "supporting_evidence": [],
+      "contradicting_evidence": []
+    },
+    {
+      "hypothesis_id": "H4",
+      "kind": "controller_failed",
+      "claim": "A brake command was issued but actuation failed to engage.",
+      "status": "untested",
+      "supporting_evidence": [],
+      "contradicting_evidence": []
+    },
+    {
+      "hypothesis_id": "H5",
+      "kind": "occlusion_caused_perception_failure",
+      "claim": "Partial occlusion delayed perception beyond the stoppable window.",
+      "status": "untested",
+      "supporting_evidence": [],
+      "contradicting_evidence": []
+    }
+  ],
+  "requested_experiments": [
+    {
+      "intervention": "remove_occluder",
+      "parameters": {},
+      "hypothesis_ids": [
+        "H5"
+      ],
+      "estimated_cost_seconds": 6.0
+    },
+    {
+      "intervention": "oracle_perception",
+      "parameters": {},
+      "hypothesis_ids": [
+        "H1",
+        "H2",
+        "H5"
+      ],
+      "estimated_cost_seconds": 6.0
+    },
+    {
+      "intervention": "oracle_planner",
+      "parameters": {},
+      "hypothesis_ids": [
+        "H3",
+        "H5"
+      ],
+      "estimated_cost_seconds": 6.0
+    },
+    {
+      "intervention": "reveal_pedestrian_earlier",
+      "parameters": {
+        "delta_seconds": 1.2
+      },
+      "hypothesis_ids": [
+        "H2",
+        "H5"
+      ],
+      "estimated_cost_seconds": 6.0
+    }
+  ]
+}

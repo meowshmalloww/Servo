@@ -1,0 +1,48 @@
+{
+  "schema_name": "servo.realityci.regression-report/v1",
+  "record_id": "regr-10fe29b175554cac",
+  "created_at": "2026-08-24T02:55:31.306592Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": "cam-d30db72211b74c83",
+  "parent_id": null,
+  "causation_id": null,
+  "content_hash": "sha256:fb81bc91fb80072588253f133a7528ef956b22feea324f46fe2c9b33175c64e4",
+  "candidate_checkpoint_sha256": "sha256:2b0cd6deae1cc8cc01ed05c51c6c328d9f87c8abcdffbcdd1a55fe9502b30dea",
+  "baseline_checkpoint_sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+  "suites": [
+    {
+      "suite": "ordinary_crossing",
+      "scenario_count": 4,
+      "baseline_success_rate": 1.0,
+      "candidate_success_rate": 1.0,
+      "delta_percentage_points": 0.0
+    },
+    {
+      "suite": "visible_pedestrian",
+      "scenario_count": 2,
+      "baseline_success_rate": 1.0,
+      "candidate_success_rate": 1.0,
+      "delta_percentage_points": 0.0
+    },
+    {
+      "suite": "no_pedestrian",
+      "scenario_count": 1,
+      "baseline_success_rate": 1.0,
+      "candidate_success_rate": 1.0,
+      "delta_percentage_points": 0.0
+    },
+    {
+      "suite": "braking_control",
+      "scenario_count": 2,
+      "baseline_success_rate": 1.0,
+      "candidate_success_rate": 1.0,
+      "delta_percentage_points": 0.0
+    }
+  ],
+  "severity_one_regressions": 0,
+  "max_drop_percentage_points": 0.0,
+  "status": "completed"
+}

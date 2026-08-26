@@ -1,0 +1,376 @@
+{
+  "checkpoint_uri": "D:\\Servo\\demo\\occluded_pedestrian\\baseline\\baseline.pt",
+  "checkpoint_sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+  "suites": [
+    {
+      "suite": "ordinary_visible_crossing",
+      "count": 16,
+      "success_rate": 1.0,
+      "collision_rate": 0.0,
+      "mean_detection_delay_s": 0.24000000000000005,
+      "evaluations": [
+        {
+          "scenario_id": "clear-7500000",
+          "seed": 7500000,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.0,
+          "detection_delay_s": 0.0,
+          "brake_command_s": 0.0,
+          "ego_speed_mps": 12.08066049599808
+        },
+        {
+          "scenario_id": "clear-7500017",
+          "seed": 7500017,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.3,
+          "detection_delay_s": 0.3,
+          "brake_command_s": 0.3,
+          "ego_speed_mps": 14.297132359275817
+        },
+        {
+          "scenario_id": "clear-7500034",
+          "seed": 7500034,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.1,
+          "detection_delay_s": 0.1,
+          "brake_command_s": 0.1,
+          "ego_speed_mps": 13.80530237397263
+        },
+        {
+          "scenario_id": "empty-7500051",
+          "seed": 7500051,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": null,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 14.09706529223141
+        },
+        {
+          "scenario_id": "irrel-7500068",
+          "seed": 7500068,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 12.8010795237243
+        },
+        {
+          "scenario_id": "clear-7500085",
+          "seed": 7500085,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.0,
+          "detection_delay_s": 0.0,
+          "brake_command_s": 0.0,
+          "ego_speed_mps": 12.98654222285975
+        },
+        {
+          "scenario_id": "clear-7500102",
+          "seed": 7500102,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.5,
+          "detection_delay_s": 0.5,
+          "brake_command_s": 0.5,
+          "ego_speed_mps": 16.234876113141386
+        },
+        {
+          "scenario_id": "clear-7500119",
+          "seed": 7500119,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.6,
+          "detection_delay_s": 0.6,
+          "brake_command_s": 0.6,
+          "ego_speed_mps": 15.942851762808658
+        },
+        {
+          "scenario_id": "empty-7500136",
+          "seed": 7500136,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": null,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 12.282805269070781
+        },
+        {
+          "scenario_id": "irrel-7500153",
+          "seed": 7500153,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 14.844082245842788
+        },
+        {
+          "scenario_id": "clear-7500170",
+          "seed": 7500170,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.2,
+          "detection_delay_s": 0.2,
+          "brake_command_s": 0.2,
+          "ego_speed_mps": 15.93645859410693
+        },
+        {
+          "scenario_id": "clear-7500187",
+          "seed": 7500187,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.5,
+          "detection_delay_s": 0.5,
+          "brake_command_s": 0.5,
+          "ego_speed_mps": 14.886266179831463
+        },
+        {
+          "scenario_id": "clear-7500204",
+          "seed": 7500204,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.2,
+          "detection_delay_s": 0.2,
+          "brake_command_s": 0.2,
+          "ego_speed_mps": 15.21830779649149
+        },
+        {
+          "scenario_id": "empty-7500221",
+          "seed": 7500221,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": null,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 15.559026800679757
+        },
+        {
+          "scenario_id": "irrel-7500238",
+          "seed": 7500238,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 15.899051323891783
+        },
+        {
+          "scenario_id": "clear-7500255",
+          "seed": 7500255,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.0,
+          "detection_delay_s": 0.0,
+          "brake_command_s": 0.0,
+          "ego_speed_mps": 16.1121111113162
+        }
+      ]
+    },
+    {
+      "suite": "occluded_emergence",
+      "count": 16,
+      "success_rate": 0.625,
+      "collision_rate": 0.3125,
+      "mean_detection_delay_s": 2.842857142857143,
+      "evaluations": [
+        {
+          "scenario_id": "occ-8800000",
+          "seed": 8800000,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 0.7,
+          "detection_delay_s": 0.7,
+          "brake_command_s": 0.7,
+          "ego_speed_mps": 11.83530266518901
+        },
+        {
+          "scenario_id": "occ-8800001",
+          "seed": 8800001,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 1.1,
+          "detection_delay_s": 1.1,
+          "brake_command_s": 1.1,
+          "ego_speed_mps": 11.971227439137277
+        },
+        {
+          "scenario_id": "occ-8800002",
+          "seed": 8800002,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 1.7,
+          "detection_delay_s": 1.7,
+          "brake_command_s": 1.7,
+          "ego_speed_mps": 11.700743432048917
+        },
+        {
+          "scenario_id": "occ-8800003",
+          "seed": 8800003,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 1.3,
+          "detection_delay_s": 1.3,
+          "brake_command_s": 1.3,
+          "ego_speed_mps": 11.708034911791364
+        },
+        {
+          "scenario_id": "occ-8800004",
+          "seed": 8800004,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 2.0,
+          "detection_delay_s": 2.0,
+          "brake_command_s": 2.0,
+          "ego_speed_mps": 11.954284145027266
+        },
+        {
+          "scenario_id": "occ-8800005",
+          "seed": 8800005,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 1.3,
+          "detection_delay_s": 1.3,
+          "brake_command_s": 1.3,
+          "ego_speed_mps": 11.948041467481442
+        },
+        {
+          "scenario_id": "occ-8800006",
+          "seed": 8800006,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 1.3,
+          "detection_delay_s": 1.3,
+          "brake_command_s": 1.3,
+          "ego_speed_mps": 11.925136423369953
+        },
+        {
+          "scenario_id": "occ-8800007",
+          "seed": 8800007,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 1.3,
+          "detection_delay_s": 1.3,
+          "brake_command_s": 1.3,
+          "ego_speed_mps": 11.870090347942599
+        },
+        {
+          "scenario_id": "occ-8800008",
+          "seed": 8800008,
+          "result": "collision",
+          "collision_s": 5.9399999999999995,
+          "first_visibility_s": 0.0,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 11.734980612341023
+        },
+        {
+          "scenario_id": "occ-8800009",
+          "seed": 8800009,
+          "result": "collision",
+          "collision_s": 6.42,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 4.9,
+          "detection_delay_s": 4.9,
+          "brake_command_s": 4.9,
+          "ego_speed_mps": 11.775397234841584
+        },
+        {
+          "scenario_id": "occ-8800010",
+          "seed": 8800010,
+          "result": "timeout",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 4.8,
+          "detection_delay_s": 4.8,
+          "brake_command_s": 4.8,
+          "ego_speed_mps": 11.785021169910905
+        },
+        {
+          "scenario_id": "occ-8800011",
+          "seed": 8800011,
+          "result": "collision",
+          "collision_s": 5.92,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 5.3,
+          "detection_delay_s": 5.3,
+          "brake_command_s": 5.3,
+          "ego_speed_mps": 11.853195961227168
+        },
+        {
+          "scenario_id": "occ-8800012",
+          "seed": 8800012,
+          "result": "collision",
+          "collision_s": 6.26,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 4.9,
+          "detection_delay_s": 4.9,
+          "brake_command_s": 4.9,
+          "ego_speed_mps": 11.859552783612422
+        },
+        {
+          "scenario_id": "occ-8800013",
+          "seed": 8800013,
+          "result": "collision",
+          "collision_s": 5.8,
+          "first_visibility_s": 0.0,
+          "first_detection_s": null,
+          "detection_delay_s": null,
+          "brake_command_s": null,
+          "ego_speed_mps": 11.985435431650197
+        },
+        {
+          "scenario_id": "occ-8800014",
+          "seed": 8800014,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 4.7,
+          "detection_delay_s": 4.7,
+          "brake_command_s": 4.7,
+          "ego_speed_mps": 11.847347189500242
+        },
+        {
+          "scenario_id": "occ-8800015",
+          "seed": 8800015,
+          "result": "success",
+          "collision_s": null,
+          "first_visibility_s": 0.0,
+          "first_detection_s": 4.5,
+          "detection_delay_s": 4.5,
+          "brake_command_s": 4.5,
+          "ego_speed_mps": 11.776838223395588
+        }
+      ]
+    }
+  ]
+}

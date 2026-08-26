@@ -19,10 +19,13 @@ ApplicationWindow {
     title: Session.projectOpen ? "Servo - " + Session.projectName : "Servo"
     color: Theme.window
 
-    readonly property var workspaceNames: ["Create World", "Worlds", "Runs", "Diagnose", "Train", "Verify", "Capabilities", "Assistant"]
-    readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/DiagnoseWorkspace.qml", "workspaces/TrainWorkspace.qml", "workspaces/VerifyWorkspace.qml", "workspaces/CapabilitiesWorkspace.qml", "workspaces/AiWorkspace.qml"]
+    // Keep primary navigation task-shaped. The disconnected diagnostic,
+    // training, verification, and capability shells remain available to the
+    // backend workbench, but no longer compete with the hackathon flow.
+    readonly property var workspaceNames: ["Create", "Worlds", "Runs", "Assistant"]
+    readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/AiWorkspace.qml"]
 
-    readonly property var workspaceIcons: ["build", "world", "run", "diagnose", "train", "verify", "capability", "assistant"]
+    readonly property var workspaceIcons: ["build", "world", "run", "assistant"]
 
     function showDebugTab(index) {
         debugDrawer.showTab(index);
@@ -61,6 +64,7 @@ ApplicationWindow {
         debugDrawer.expanded = appSettings.debugExpanded;
         Session.worldModel = WorldLibraryModel;
         RuntimeMetrics.attachWindow(window);
+        RealityCIController.connectToServer();
     }
 
     Connections {
@@ -115,6 +119,21 @@ ApplicationWindow {
         }
     }
 
+    Connections {
+        target: AiChatController
+        function onActionRequested(action, argument) {
+            if (action === "create-world")
+                Session.workspaceIndex = 0;
+            else if (action === "open-worlds" || action === "explore-world")
+                Session.workspaceIndex = 1;
+            else if (action === "open-runs")
+                Session.workspaceIndex = 2;
+            if (action === "weather")
+                Session.worldWeather = argument;
+            Session.assistantActionRequested(action, argument);
+        }
+    }
+
     Shortcut {
         sequence: "Ctrl+O"
         onActivated: projectDialog.open()
@@ -143,22 +162,6 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+4"
         onActivated: Session.workspaceIndex = 3
-    }
-    Shortcut {
-        sequence: "Ctrl+5"
-        onActivated: Session.workspaceIndex = 4
-    }
-    Shortcut {
-        sequence: "Ctrl+6"
-        onActivated: Session.workspaceIndex = 5
-    }
-    Shortcut {
-        sequence: "Ctrl+7"
-        onActivated: Session.workspaceIndex = 6
-    }
-    Shortcut {
-        sequence: "Ctrl+8"
-        onActivated: Session.workspaceIndex = 7
     }
 
     menuBar: MenuBar {
@@ -467,11 +470,11 @@ ApplicationWindow {
                     }
 
                     TextButton {
-                        text: "Assistant"
+                        text: "Ask Servo"
                         iconSource: Theme.icon("assistant")
-                        selected: Session.workspaceIndex === 7
+                        selected: Session.workspaceIndex === 3
                         compact: true
-                        onClicked: Session.workspaceIndex = 7
+                        onClicked: Session.workspaceIndex = 3
                     }
 
                     RowLayout {
@@ -540,8 +543,12 @@ ApplicationWindow {
                 Loader {
                     id: workspaceLoader
                     anchors.fill: parent
-                    asynchronous: false
+                    // Render the startup workspace immediately, then spread
+                    // future heavy workspace construction across frames.
+                    property bool deferFutureLoads: false
+                    asynchronous: deferFutureLoads
                     source: window.workspaceFiles[Session.workspaceIndex]
+                    visible: status === Loader.Ready
 
                     property real appear: 1
 
@@ -556,6 +563,8 @@ ApplicationWindow {
 
                     onLoaded: {
                         appearAnimation.restart();
+                        if (!deferFutureLoads)
+                            Qt.callLater(function() { workspaceLoader.deferFutureLoads = true; });
                     }
 
                     NumberAnimation {
@@ -567,6 +576,15 @@ ApplicationWindow {
                         duration: Theme.animSlow
                         easing.type: Easing.OutCubic
                     }
+                }
+
+                LoadingState {
+                    anchors.centerIn: parent
+                    visible: workspaceLoader.status === Loader.Loading
+                    running: visible
+                    label: "Opening workspace"
+                    variant: "Pulse"
+                    showElapsed: false
                 }
             }
 

@@ -64,6 +64,7 @@ Item {
         PageToolbar {
             title: "Create World"
             subtitle: "Turn observed image and video media into a validated 3D Gaussian world"
+            helpText: "Ingest media, recover cameras with COLMAP, fit Gaussians with gsplat, then pass quality gates. The result renders appearance only — deterministic scenario state owns physics and collision truth."
             iconSource: Theme.icon("build")
             Layout.fillWidth: true
 

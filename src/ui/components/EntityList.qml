@@ -51,6 +51,7 @@ Item {
             model: root.model
             currentIndex: root.currentIndex
             boundsBehavior: Flickable.StopAtBounds
+            reuseItems: true
             spacing: 1
             ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded

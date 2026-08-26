@@ -91,7 +91,9 @@ RuntimeMetrics::RuntimeMetrics(QObject *parent)
     : QObject(parent)
 {
     m_sampleTimer.setInterval(1000);
-    m_sampleTimer.setTimerType(Qt::PreciseTimer);
+    // Telemetry does not need millisecond precision. A coarse timer lets the
+    // OS coalesce this wakeup with other work and reduces background overhead.
+    m_sampleTimer.setTimerType(Qt::CoarseTimer);
     connect(&m_sampleTimer, &QTimer::timeout, this, &RuntimeMetrics::sample);
 
 #ifdef Q_OS_WIN

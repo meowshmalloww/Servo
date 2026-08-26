@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a5568"/>
+    </marker>
+    <style>
+      .box { fill:#ffffff; stroke:#2d3748; stroke-width:1.4; rx:8; }
+      .cloud { fill:#f0f6ff; stroke:#1a73e8; }
+      .local { fill:#f6f8fa; stroke:#2d3748; }
+      .gate { fill:#fff5f5; stroke:#c53030; }
+      .ok { fill:#f0fff4; stroke:#276749; }
+      .lbl { font-size:13px; fill:#1a202c; }
+      .sub { font-size:11px; fill:#4a5568; }
+      .title { font-size:16px; font-weight:700; fill:#111; }
+      .flow { stroke:#4a5568; stroke-width:1.6; fill:none; marker-end:url(#arr); }
+      .dashed { stroke-dasharray:5 4; }
+    </style>
+  </defs>
+
+  <text x="480" y="28" text-anchor="middle" class="title">Servo RealityCI — autonomous fail-to-promote loop</text>
+
+  <!-- Desktop plane -->
+  <rect x="20" y="50" width="240" height="150" class="box local" rx="10"/>
+  <text x="140" y="72" text-anchor="middle" class="title">Desktop (native)</text>
+  <text x="140" y="94" text-anchor="middle" class="sub">Qt 6 / QML · C++20 · Vulkan Gaussian viewer</text>
+  <text x="140" y="112" text-anchor="middle" class="sub">Worlds library · evidence workbench</text>
+  <text x="140" y="130" text-anchor="middle" class="sub">Reconstruction: FFmpeg · COLMAP · gsplat</text>
+  <text x="140" y="148" text-anchor="middle" class="sub">Appearance only — never collision truth</text>
+
+  <!-- Backend core -->
+  <rect x="300" y="40" width="360" height="330" class="box local" rx="10"/>
+  <text x="480" y="62" text-anchor="middle" class="title">RealityCI backend (tools/realityci)</text>
+
+  <rect x="320" y="78" width="150" height="34" class="box"/>
+  <text x="395" y="100" text-anchor="middle" class="lbl">Scenario runner</text>
+  <rect x="490" y="78" width="150" height="34" class="box"/>
+  <text x="565" y="100" text-anchor="middle" class="lbl">Policy adapters</text>
+
+  <rect x="320" y="122" width="150" height="34" class="box gate"/>
+  <text x="395" y="144" text-anchor="middle" class="lbl">Failure evaluators</text>
+  <rect x="490" y="122" width="150" height="34" class="box"/>
+  <text x="565" y="144" text-anchor="middle" class="lbl">Diagnostician</text>
+  <text x="565" y="158" text-anchor="middle" class="sub">Gemini or deterministic</text>
+
+  <rect x="320" y="166" width="150" height="34" class="box"/>
+  <text x="395" y="188" text-anchor="middle" class="lbl">Counterfactual engine</text>
+  <rect x="490" y="166" width="150" height="34" class="box gate"/>
+  <text x="565" y="188" text-anchor="middle" class="lbl">Causal gate (code)</text>
+
+  <rect x="320" y="210" width="150" height="34" class="box"/>
+  <text x="395" y="232" text-anchor="middle" class="lbl">Seed vault (hidden)</text>
+  <rect x="490" y="210" width="150" height="34" class="box"/>
+  <text x="565" y="232" text-anchor="middle" class="lbl">Curriculum planner</text>
+
+  <rect x="320" y="254" width="150" height="34" class="box"/>
+  <text x="395" y="276" text-anchor="middle" class="lbl">BC trainer (PyTorch)</text>
+  <rect x="490" y="254" width="150" height="34" class="box"/>
+  <text x="565" y="276" text-anchor="middle" class="lbl">Hidden examiner</text>
+
+  <rect x="320" y="298" width="150" height="34" class="box"/>
+  <text x="395" y="320" text-anchor="middle" class="lbl">Regression guardian</text>
+  <rect x="490" y="298" width="150" height="34" class="box ok"/>
+  <text x="565" y="320" text-anchor="middle" class="lbl">Promotion gate</text>
+
+  <rect x="320" y="342" width="320" height="22" style="fill:#edf2f7;stroke:#a0aec0;" rx="6"/>
+  <text x="480" y="358" text-anchor="middle" class="sub">fsync event log · idempotency keys · atomic state · SHA-256 receipts</text>
+
+  <!-- Capability plane -->
+  <rect x="700" y="40" width="240" height="180" class="box local" rx="10"/>
+  <text x="820" y="62" text-anchor="middle" class="title">Capability memory</text>
+  <text x="820" y="84" text-anchor="middle" class="sub">Capability register (9 states)</text>
+  <text x="820" y="102" text-anchor="middle" class="sub">Reality Debt formula (code)</text>
+  <text x="820" y="120" text-anchor="middle" class="sub">Next-weakness selector</text>
+  <text x="820" y="138" text-anchor="middle" class="sub">WorldScout capture missions</text>
+  <text x="820" y="160" text-anchor="middle" class="sub">VERIFIED / FAILED transitions</text>
+  <text x="820" y="178" text-anchor="middle" class="sub">only from promotion decisions</text>
+
+  <!-- Cloud plane -->
+  <rect x="700" y="250" width="240" height="220" class="box cloud" rx="10"/>
+  <text x="820" y="272" text-anchor="middle" class="title">Google Cloud plane</text>
+  <text x="820" y="294" text-anchor="middle" class="sub">Cloud Run API (FastAPI) · Jobs</text>
+  <text x="820" y="312" text-anchor="middle" class="sub">Firestore state · Pub/Sub events</text>
+  <text x="820" y="330" text-anchor="middle" class="sub">GCS artifacts · Vertex AI Gemini</text>
+  <text x="820" y="352" text-anchor="middle" class="sub">Same engine code as local runs</text>
+  <text x="820" y="370" text-anchor="middle" class="sub">Deploy: cloud/infra README</text>
+  <text x="820" y="392" text-anchor="middle" class="sub">ADK 2.7 graph: adk_graph.py</text>
+  <text x="820" y="410" text-anchor="middle" class="sub">(SequentialAgent over verified steps)</text>
+
+  <!-- ADK strip -->
+  <rect x="20" y="230" width="260" height="130" class="box cloud" rx="10"/>
+  <text x="150" y="252" text-anchor="middle" class="title">Google ADK graph</text>
+  <text x="150" y="274" text-anchor="middle" class="sub">12 SequentialAgent nodes = pipeline states</text>
+  <text x="150" y="292" text-anchor="middle" class="sub">InMemory / DB session persistence</text>
+  <text x="150" y="310" text-anchor="middle" class="sub">Event streaming · resumable · idempotent</text>
+  <text x="150" y="334" text-anchor="middle" class="sub">tools/realityci/adk_graph.py</text>
+
+  <!-- Flows -->
+  <path d="M 260 125 H 300" class="flow"/>
+  <path d="M 660 139 H 700" class="flow"/>
+  <path d="M 480 370 V 400 H 150 V 360" class="flow"/>
+  <path d="M 280 295 H 300" class="flow dashed"/>
+  <path d="M 700 360 H 665" class="flow dashed"/>
+
+  <!-- Legend -->
+  <rect x="20" y="420" width="920" height="160" fill="#fbfdff" stroke="#cbd5e0" rx="10"/>
+  <text x="40" y="446" class="lbl" font-weight="700">Loop contract enforced in code</text>
+  <text x="40" y="468" class="lbl">RUN → FAILURE_DETECTED → hypotheses → counterfactual experiments → ROOT_CAUSE_ESTABLISHED → curriculum → TRAIN → hidden exam → regression → PROMOTE/REJECT → debt → next weakness</text>
+  <text x="40" y="492" class="sub">• Deterministic gates own collision, success, regression and promotion decisions. LLM agents may propose and explain — never decide.</text>
+  <text x="40" y="512" class="sub">• Hidden exam seeds are sealed in a vault before training exists; trainer-side components never receive them (structural partition + SHA receipts).</text>
+  <text x="40" y="532" class="sub">• Every artifact is content-addressed (SHA-256); every event is sequence-numbered and idempotency-keyed.</text>
+  <text x="40" y="552" class="sub">• Gaussian splats render camera appearance only; deterministic scenario state owns actor motion and collision truth.</text>
+  <text x="40" y="572" class="sub">Red = deterministic gates that cannot be overridden by any model. Blue outline = Google-executable planes.</text>
+</svg>

@@ -1,0 +1,45 @@
+{
+  "schema_name": "servo.realityci.reality-debt/v1",
+  "record_id": "debt-46bbc7a27de64d93",
+  "created_at": "2026-08-24T02:55:31.387202Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": "cam-d30db72211b74c83",
+  "parent_id": null,
+  "causation_id": null,
+  "content_hash": "sha256:bc3691ae705866c541913fa33453fa39d599c0f224fbe7397cc56ff242718599",
+  "total_debt": 2.3115,
+  "formula": {
+    "formula_version": "reality-debt/v1",
+    "description": "sum over capabilities of importance_weight * state_weight * (1 - 0.3*confidence) * coverage_factor * freshness_decay(floor 0.4) * regression_penalty * missing_penalty"
+  },
+  "contributions": [
+    {
+      "capability_id": "cap-b2e1d3f4a5b6c7d8",
+      "taxonomy_id": "visible-pedestrian-crossing/v1",
+      "contribution": 0.69
+    },
+    {
+      "capability_id": "cap-d4e5f6a7b8c9d0e1",
+      "taxonomy_id": "low-light-crossing/v1",
+      "contribution": 0.621
+    },
+    {
+      "capability_id": "cap-c3d4e5f6a7b8c9d0",
+      "taxonomy_id": "empty-road-cruise/v1",
+      "contribution": 0.5175
+    },
+    {
+      "capability_id": "cap-e5f6a7b8c9d0e1f2",
+      "taxonomy_id": "glare-approach/v1",
+      "contribution": 0.483
+    },
+    {
+      "capability_id": "cap-a1f0c2e45b67d890",
+      "taxonomy_id": "occluded-pedestrian-crossing/v1",
+      "contribution": 0.0
+    }
+  ]
+}

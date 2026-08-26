@@ -56,7 +56,9 @@ public:
         PipelineRevisionRole,
         ScaleTextRole,
         PublishedRole,
-        FailureTextRole
+        FailureTextRole,
+        RecordedFrameUrlsRole,
+        RecordedFrameCountRole
     };
     Q_ENUM(Role)
 
@@ -89,6 +91,7 @@ public:
 
     Q_INVOKABLE void refresh();
     Q_INVOKABLE bool selectWorld(const QString &worldId);
+    Q_INVOKABLE bool selectWorldMatching(const QString &query);
     Q_INVOKABLE void selectWorldPath(const QString &worldPath);
     Q_INVOKABLE bool renameWorld(const QString &worldId, const QString &displayName);
     Q_INVOKABLE bool deleteWorld(const QString &worldId);

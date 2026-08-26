@@ -1,4 +1,4 @@
-import QtQuick
+﻿import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import "../components"
@@ -6,8 +6,33 @@ import "../components"
 Item {
     id: root
 
-    readonly property bool acquisitionServiceAvailable: false
+    // Real availability: capability updates come from campaign debt records.
+    readonly property bool acquisitionServiceAvailable: RealityCIController.online
+    readonly property var debtPayload: RealityCIController.latestPayload("REALITY_DEBT_UPDATED")
+    readonly property var capabilityPayload: RealityCIController.latestPayload("CAPABILITY_UPDATED")
+    readonly property var weaknessPayload: RealityCIController.latestPayload("NEXT_WEAKNESS_SELECTED")
+    readonly property var missionPayload: RealityCIController.latestPayload("CAPTURE_MISSION_CREATED")
     property var debtSeries: []
+    property var eventRows: []
+
+    function rebuildFromEvents() {
+        const nextRows = []
+        const updates = RealityCIController.payloadsOf("CAPABILITY_UPDATED")
+        for (let i = 0; i < updates.length; ++i) {
+            nextRows.push({
+                capability: String(updates[i].capability),
+                evidence: String(updates[i].state),
+                checkpoint: String(updates[i].last_verified_checkpoint)
+            })
+        }
+        root.eventRows = nextRows
+    }
+
+    Connections {
+        target: RealityCIController
+        function onEventsChanged() { root.rebuildFromEvents() }
+    }
+    Component.onCompleted: rebuildFromEvents()
 
     ColumnLayout {
         anchors.fill: parent
@@ -16,18 +41,30 @@ Item {
         PageToolbar {
             title: "Capabilities"
             subtitle: "Reality Debt, evidence coverage, and missing-reality acquisition requirements"
+            helpText: "The capability register tracks every skill with its evidence state and Reality Debt score. Verified capabilities shrink the debt; blocked ones raise a capture mission instead of endless training."
             iconSource: Theme.icon("capability")
             Layout.fillWidth: true
 
-            TextButton { text: "Export Requirements"; iconSource: Theme.icon("export"); enabled: false }
-            TextButton {
-                text: "Create Capture Mission"
-                iconSource: Theme.icon("plus")
-                tone: "primary"
-                enabled: false
-                toolTip: root.acquisitionServiceAvailable
-                         ? "Create an acquisition mission from selected gaps"
-                         : "Acquisition service is not connected"
+            StatusBadge {
+                text: RealityCIController.connectionState
+                tone: RealityCIController.online ? "success"
+                      : RealityCIController.connectionState === "error" ? "error" : "neutral"
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            IconButton {
+                iconSource: Theme.icon("refresh")
+                toolTip: "Reconnect and reload records"
+                enabled: !RealityCIController.busy
+                onClicked: RealityCIController.connectToServer()
+            }
+
+            StatusBadge {
+                text: root.debtPayload.total_debt === undefined
+                      ? "debt not computed"
+                      : "reality debt " + Number(root.debtPayload.total_debt).toFixed(3)
+                tone: root.debtPayload.total_debt === undefined ? "neutral" : "info"
+                Layout.alignment: Qt.AlignVCenter
             }
         }
 
@@ -48,32 +85,26 @@ Item {
 
                     PanelHeader {
                         title: "Capability Register"
-                        subtitle: Session.capabilityModel === null ? "No model" : "Connected"
+                        subtitle: root.capabilityPayload.capability !== undefined
+                                  ? String(root.capabilityPayload.capability) + " · " + String(root.capabilityPayload.state)
+                                  : "No capability records"
                         iconSource: Theme.icon("capability")
                         Layout.fillWidth: true
                     }
 
-                    SearchField {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 7
-                        Layout.rightMargin: 7
-                        Layout.topMargin: 7
-                        Layout.bottomMargin: 6
-                        hint: "Search capabilities"
-                    }
-
-                    DataTable {
+                    RecordTable {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        model: Session.capabilityModel
+                        Layout.topMargin: 6
+                        rows: root.eventRows
                         columns: [
-                            { title: "CAPABILITY", width: 178 },
-                            { title: "EVIDENCE", width: 94 },
-                            { title: "DEBT", width: 82 }
+                            { title: "CAPABILITY", field: "capability", width: 210 },
+                            { title: "EVIDENCE STATE", field: "evidence", width: 130 },
+                            { title: "VERIFIED AT", field: "checkpoint", width: 150 }
                         ]
                         emptyIcon: Theme.icon("capability")
                         emptyTitle: "No capability model"
-                        emptyDescription: "Import or define a capability taxonomy before Servo can aggregate evidence and calculate Reality Debt."
+                        emptyDescription: "Capability states update only from durable promotion and exam records."
                     }
                 }
             }
@@ -81,59 +112,117 @@ Item {
             SplitView {
                 orientation: Qt.Vertical
                 SplitView.fillWidth: true
-                SplitView.minimumWidth: 680
+                SplitView.minimumWidth: 620
                 handle: SplitHandle { }
-
-                LinePlot {
-                    SplitView.preferredHeight: 280
-                    SplitView.minimumHeight: 220
-                    SplitView.maximumHeight: 390
-                    title: "Reality Debt History"
-                    unit: "selected capability"
-                    values: root.debtSeries
-                    minimum: 0
-                    maximum: 1
-                    lineColor: Theme.textSecondary
-                }
 
                 Panel {
                     SplitView.fillHeight: true
-                    SplitView.minimumHeight: 260
+                    SplitView.minimumHeight: 220
 
                     ColumnLayout {
                         anchors.fill: parent
                         spacing: 0
 
                         PanelHeader {
-                            title: "Evidence Coverage"
-                            subtitle: "No capability selected"
-                            iconSource: Theme.icon("table")
+                            title: "Next Weakness Selection"
+                            subtitle: root.weaknessPayload.taxonomy_id !== undefined
+                                      ? "autonomously selected"
+                                      : "Awaiting a completed campaign"
+                            iconSource: Theme.icon("search")
                             Layout.fillWidth: true
                         }
 
-                        DataTable {
+                        Section {
+                            title: "Autonomous Continuation"
                             Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            model: null
-                            columns: [
-                                { title: "CONDITION", width: 220 },
-                                { title: "REAL EVIDENCE", width: 120 },
-                                { title: "SYNTHETIC EVIDENCE", width: 145 },
-                                { title: "FRESHNESS", width: 110 },
-                                { title: "GAP", width: 90 }
-                            ]
-                            emptyIcon: Theme.icon("capability")
-                            emptyTitle: "No evidence records"
-                            emptyDescription: "Coverage is populated from versioned runs, exams, and real-world acquisition records."
+                            PropertyRow {
+                                label: "Capability"
+                                labelWidth: 112
+                                TextInput { readOnly: true; placeholderText: String(root.weaknessPayload.taxonomy_id) }
+                            }
+                            PropertyRow {
+                                label: "State"
+                                labelWidth: 112
+                                TextInput { readOnly: true; placeholderText: String(root.weaknessPayload.state) }
+                            }
                         }
+
+                        Section {
+                            title: "Missing Reality"
+                            summary: "Acquisition requirement"
+                            visible: Object.keys(root.missionPayload).length > 0
+                            PropertyRow {
+                                label: "Mission"
+                                labelWidth: 112
+                                TextInput { readOnly: true; placeholderText: String(root.missionPayload.mission_id) }
+                            }
+                            PropertyRow {
+                                label: "Capability"
+                                labelWidth: 112
+                                TextInput { readOnly: true; placeholderText: String(root.missionPayload.capability) }
+                            }
+                            Text {
+                                width: parent.width - 24
+                                leftPadding: 12
+                                text: "No authorized world covers this capability, so the agent requested real-world capture evidence instead of training forever."
+                                color: Theme.textMuted
+                                font.family: Theme.uiFont
+                                font.pixelSize: 9
+                                wrapMode: Text.WrapAnywhere
+                            }
+                        }
+
+                        Item { Layout.fillHeight: true }
                     }
                 }
 
-                BottomDrawer {
-                    SplitView.preferredHeight: implicitHeight
-                    SplitView.minimumHeight: 34
-                    SplitView.maximumHeight: 220
-                    tabs: ["Debt Calculation", "Evidence Import", "Provenance"]
+                Panel {
+                    SplitView.preferredHeight: 240
+                    SplitView.minimumHeight: 170
+                    SplitView.maximumHeight: 360
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 0
+
+                        PanelHeader {
+                            title: "Debt Provenance"
+                            subtitle: root.debtPayload.total_debt !== undefined
+                                      ? "reproducible formula over evidence states"
+                                      : "No debt record"
+                            iconSource: Theme.icon("chart")
+                            Layout.fillWidth: true
+                        }
+
+                        EmptyState {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            visible: root.debtPayload.total_debt === undefined
+                            iconSource: Theme.icon("chart")
+                            title: "Debt history not published yet"
+                            description: "Reality Debt is computed by code from capability evidence; it appears here after a campaign commits a snapshot."
+                        }
+
+                        ColumnLayout {
+                            visible: root.debtPayload.total_debt !== undefined
+                            Layout.fillWidth: true
+                            Layout.margins: 10
+                            spacing: 4
+
+                            StatusBadge {
+                                text: "total reality debt " + Number(root.debtPayload.total_debt).toFixed(3)
+                                tone: "info"
+                            }
+                            Text {
+                                text: "Computed from capability severity, evidence state, coverage, confidence, and freshness - never from an LLM score."
+                                color: Theme.textMuted
+                                font.family: Theme.uiFont
+                                font.pixelSize: 9
+                                wrapMode: Text.WrapAnywhere
+                                Layout.fillWidth: true
+                            }
+                        }
+                    }
                 }
             }
 
@@ -148,7 +237,7 @@ Item {
 
                     PanelHeader {
                         title: "Acquisition Inspector"
-                        subtitle: "No selection"
+                        subtitle: Object.keys(root.missionPayload).length > 0 ? "Capture mission active" : "No selection"
                         iconSource: Theme.icon("settings")
                         Layout.fillWidth: true
                     }
@@ -165,47 +254,24 @@ Item {
                             width: inspectorScroll.availableWidth
 
                             Section {
-                                title: "Capability Gap"
-                                PropertyRow { label: "Capability"; labelWidth: 112; TextInput { placeholderText: "No selection"; readOnly: true } }
-                                PropertyRow { label: "Evidence state"; labelWidth: 112; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Debt"; labelWidth: 112; TextInput { placeholderText: "Not calculated"; readOnly: true } }
-                            }
-
-                            Section {
-                                title: "Missing Reality"
-                                summary: "Acquisition requirement"
-                                PropertyRow { label: "Environment"; labelWidth: 112; TextInput { placeholderText: "Unspecified" } }
-                                PropertyRow { label: "Actors"; labelWidth: 112; TextInput { placeholderText: "Unspecified" } }
-                                PropertyRow { label: "Behavior"; labelWidth: 112; TextInput { placeholderText: "Unspecified" } }
-                                PropertyRow { label: "Sensor state"; labelWidth: 112; TextInput { placeholderText: "Unspecified" } }
-                                PropertyRow { label: "Uncertainty"; labelWidth: 112; TextInput { placeholderText: "Unspecified" } }
-                            }
-
-                            Section {
-                                title: "Capture Constraints"
-                                PropertyRow { label: "Location"; labelWidth: 112; TextInput { placeholderText: "No location constraint" } }
-                                PropertyRow { label: "Time / weather"; labelWidth: 112; TextInput { placeholderText: "No condition constraint" } }
-                                PropertyRow { label: "Minimum samples"; labelWidth: 112; TextInput { placeholderText: "No sample target" } }
-                                PropertyRow { label: "Acceptance"; labelWidth: 112; TextInput { placeholderText: "No evidence threshold" } }
-                            }
-
-                            Section {
-                                title: "Provenance"
-                                PropertyRow { label: "Derived from"; labelWidth: 112; TextInput { placeholderText: "No debt record"; readOnly: true } }
-                                PropertyRow { label: "Policy version"; labelWidth: 112; TextInput { placeholderText: "Unavailable"; readOnly: true } }
-                                PropertyRow { label: "Generated"; labelWidth: 112; TextInput { placeholderText: "Unavailable"; readOnly: true } }
+                                title: "Evidence Contract"
+                                PropertyRow {
+                                    label: "Derived from"
+                                    labelWidth: 112
+                                    TextInput { readOnly: true; placeholderText: root.debtPayload.total_debt === undefined ? "No debt record" : "campaign debt snapshot" }
+                                }
+                                PropertyRow {
+                                    label: "Authority"
+                                    labelWidth: 112
+                                    TextInput { readOnly: true; placeholderText: "deterministic eligibility rules select weaknesses" }
+                                }
+                                PropertyRow {
+                                    label: "Generated data"
+                                    labelWidth: 112
+                                    TextInput { readOnly: true; placeholderText: "excluded from collision and metric truth" }
+                                }
                             }
                         }
-                    }
-
-                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.margins: 8
-                        spacing: 6
-                        TextButton { text: "Save Requirement"; iconSource: Theme.icon("check"); enabled: false; Layout.fillWidth: true }
-                        IconButton { iconSource: Theme.icon("export"); toolTip: "Export selected requirement"; enabled: false; buttonSize: Theme.controlHeight }
                     }
                 }
             }

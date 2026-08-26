@@ -1,0 +1,33 @@
+{
+  "scenario-hash": "sha256:35b0a3632152b597d879fbccb22d7a4a37c090c20e65c7aa9d227c7e5dfd1494",
+  "failure-record-id": "fail-0f2a1ab934884993",
+  "failure-json": {
+    "schema_name": "servo.realityci.failure/v1",
+    "record_id": "fail-0f2a1ab934884993",
+    "created_at": "2026-08-24T02:55:17.330449Z",
+    "producer": {
+      "name": "servo-realityci",
+      "version": "0.1.0"
+    },
+    "campaign_id": "cam-d30db72211b74c83",
+    "parent_id": "run-fea59ef166904ccf",
+    "causation_id": "run-fea59ef166904ccf",
+    "content_hash": "sha256:d5f6bc5d3a8f49e8a22e7e6092b18776cfc2a6c67c018faa3c32035a05991168",
+    "failure_id": "fail-0f2a1ab934884993",
+    "run_evidence_id": "run-fea59ef166904ccf",
+    "scenario_hash": "sha256:35b0a3632152b597d879fbccb22d7a4a37c090c20e65c7aa9d227c7e5dfd1494",
+    "policy_checkpoint_sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+    "failure_class": "collision_with_pedestrian",
+    "severity": 3,
+    "detail": "{\"result\": \"collision\", \"collision_time_s\": 5.8999999999999995, \"relative_speed_mps\": 11.931684867697433, \"min_ped_distance_m\": -0.10573954355907744, \"brake_command_s\": null, \"detection_delay_s\": null}",
+    "evaluator_version": "deterministic-evaluators/v1"
+  },
+  "triage-outcome": "failure",
+  "diagnosis-id": "diag-8645d3d0e3d6400c",
+  "candidate-sha256": "sha256:2b0cd6deae1cc8cc01ed05c51c6c328d9f87c8abcdffbcdd1a55fe9502b30dea",
+  "baseline-sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+  "exam-id": "exam-5126e25d0909428b",
+  "regression-id": "regr-10fe29b175554cac",
+  "decision-id": "promo-8b20d94f838d433c",
+  "next-weakness": "visible-pedestrian-crossing/v1"
+}

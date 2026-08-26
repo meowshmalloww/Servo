@@ -19,8 +19,8 @@ QtObject {
     readonly property color panel: dark ? "#202021" : "#f7f6f3"
     readonly property color panelRaised: dark ? "#28282a" : "#ffffff"
     readonly property color panelHover: dark ? "#313134" : "#eceae5"
-    readonly property color field: dark ? "#1b1b1c" : "#ffffff"
-    readonly property color fieldHover: dark ? "#242426" : "#f3f2ef"
+    readonly property color field: dark ? "#1b1b1c" : "#fbfaf7"
+    readonly property color fieldHover: dark ? "#242426" : "#f1efe9"
 
     // The 3D viewport stays dark in both themes - it is a render surface.
     readonly property color viewport: "#101011"

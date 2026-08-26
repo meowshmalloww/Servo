@@ -216,6 +216,7 @@ struct WorldLibraryModel::WorldEntry {
     QString scaleText;
     bool published = true;
     QString failureText;
+    QVariantList recordedFrameUrls;
 };
 
 struct WorldLibraryModel::DeleteResult {
@@ -305,6 +306,10 @@ QVariant WorldLibraryModel::data(const QModelIndex &index, int role) const
         return entry.published;
     case FailureTextRole:
         return entry.failureText;
+    case RecordedFrameUrlsRole:
+        return entry.recordedFrameUrls;
+    case RecordedFrameCountRole:
+        return entry.recordedFrameUrls.size();
     default:
         return {};
     }
@@ -340,6 +345,8 @@ QHash<int, QByteArray> WorldLibraryModel::roleNames() const
         { ScaleTextRole, "scaleText" },
         { PublishedRole, "published" },
         { FailureTextRole, "failureText" },
+        { RecordedFrameUrlsRole, "recordedFrameUrls" },
+        { RecordedFrameCountRole, "recordedFrameCount" },
     };
 }
 
@@ -493,6 +500,23 @@ bool WorldLibraryModel::selectWorld(const QString &worldId)
     }
     setSelectedWorldId(worldId);
     return true;
+}
+
+bool WorldLibraryModel::selectWorldMatching(const QString &query)
+{
+    const QString needle = query.trimmed();
+    if (needle.isEmpty())
+        return false;
+    for (const WorldEntry &entry : std::as_const(m_worlds)) {
+        if (entry.worldId.contains(needle, Qt::CaseInsensitive)
+            || entry.displayName.contains(needle, Qt::CaseInsensitive)
+            || entry.originalName.contains(needle, Qt::CaseInsensitive)) {
+            setSelectedWorldId(entry.worldId);
+            return true;
+        }
+    }
+    setLastError(QStringLiteral("No created world matches \"%1\".").arg(needle));
+    return false;
 }
 
 void WorldLibraryModel::selectWorldPath(const QString &worldPath)
@@ -796,6 +820,51 @@ QVector<WorldLibraryModel::WorldEntry> WorldLibraryModel::scanJobs(
                               .toObject()
                               .value(QStringLiteral("scale"))
                               .toString(QStringLiteral("unknown"));
+        const QString camerasPath = resolveExistingPath(
+            worldPath,
+            artifacts.value(QStringLiteral("cameras")).toString(
+                QStringLiteral("cameras.json")));
+        const QString recordedImagesRoot = canonicalOrAbsolute(
+            QDir(jobPath).filePath(QStringLiteral("stages/pose/training/images")));
+        QJsonObject camerasDocument;
+        if (!camerasPath.isEmpty()
+            && QDir(recordedImagesRoot).exists()
+            && readJsonObject(camerasPath, &camerasDocument)) {
+            const QJsonArray cameras = camerasDocument.value(QStringLiteral("cameras")).toArray();
+            entry.recordedFrameUrls.reserve(cameras.size());
+            for (const QJsonValue &cameraValue : cameras) {
+                const QString relativeImage = cameraValue.toObject()
+                                                  .value(QStringLiteral("image"))
+                                                  .toString();
+                if (relativeImage.isEmpty() || QDir::isAbsolutePath(relativeImage))
+                    continue;
+                const QString candidate = canonicalOrAbsolute(
+                    QDir(recordedImagesRoot).filePath(relativeImage));
+                const QFileInfo image(candidate);
+                if (pathInside(recordedImagesRoot, candidate)
+                    && image.isFile() && image.isReadable()) {
+                    entry.recordedFrameUrls.append(QUrl::fromLocalFile(candidate));
+                }
+            }
+        }
+        if (entry.recordedFrameUrls.isEmpty()) {
+            const QString bundledFramesPath = resolveExistingPath(
+                worldPath,
+                artifacts.value(QStringLiteral("recordedFrames")).toString(
+                    QStringLiteral("recorded-frames")));
+            const QDir bundledFrames(bundledFramesPath);
+            const QFileInfoList frames = bundledFrames.entryInfoList(
+                { QStringLiteral("*.jpg"), QStringLiteral("*.jpeg"),
+                  QStringLiteral("*.png") },
+                QDir::Files | QDir::Readable | QDir::NoSymLinks,
+                QDir::Name);
+            entry.recordedFrameUrls.reserve(frames.size());
+            for (const QFileInfo &frame : frames) {
+                const QString candidate = canonicalOrAbsolute(frame.absoluteFilePath());
+                if (pathInside(worldPath, candidate))
+                    entry.recordedFrameUrls.append(QUrl::fromLocalFile(candidate));
+            }
+        }
         const QString previewPath = firstPreview(worldPath, artifacts);
         if (!previewPath.isEmpty())
             entry.previewUrl = QUrl::fromLocalFile(previewPath);
@@ -891,7 +960,8 @@ QString WorldLibraryModel::qualityLabel(const QString &tier)
         return QStringLiteral("Production");
     if (tier == QStringLiteral("usable"))
         return QStringLiteral("Usable");
-    if (tier == QStringLiteral("degraded-experimental"))
+    if (tier == QStringLiteral("experimental")
+        || tier == QStringLiteral("degraded-experimental"))
         return QStringLiteral("Experimental");
     if (tier == QStringLiteral("failed"))
         return QStringLiteral("Failed");
@@ -908,7 +978,8 @@ QString WorldLibraryModel::qualityTone(const QString &tier)
         return QStringLiteral("success");
     if (tier == QStringLiteral("usable"))
         return QStringLiteral("info");
-    if (tier == QStringLiteral("degraded-experimental"))
+    if (tier == QStringLiteral("experimental")
+        || tier == QStringLiteral("degraded-experimental"))
         return QStringLiteral("warning");
     if (tier == QStringLiteral("failed"))
         return QStringLiteral("error");
@@ -1089,6 +1160,8 @@ QVariantMap WorldLibraryModel::entryMap(const WorldEntry &entry) const
         { QStringLiteral("scaleText"), entry.scaleText },
         { QStringLiteral("published"), entry.published },
         { QStringLiteral("failureText"), entry.failureText },
+        { QStringLiteral("recordedFrameUrls"), entry.recordedFrameUrls },
+        { QStringLiteral("recordedFrameCount"), entry.recordedFrameUrls.size() },
     };
 }
 

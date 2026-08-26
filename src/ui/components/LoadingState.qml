@@ -104,12 +104,32 @@ RowLayout {
     }
 
     Text {
+        id: statusLabel
         text: root.label
         color: Theme.textSecondary
         font.family: Theme.uiFont
         font.pixelSize: 11
         font.weight: Font.DemiBold
         verticalAlignment: Text.AlignVCenter
+        textFormat: Text.PlainText
+
+        SequentialAnimation on color {
+            running: root.running && root.visible && Theme.motionEnabled
+            loops: Animation.Infinite
+
+            ColorAnimation {
+                from: Theme.textSecondary
+                to: Theme.text
+                duration: 700
+                easing.type: Easing.InOutSine
+            }
+            ColorAnimation {
+                from: Theme.text
+                to: Theme.textSecondary
+                duration: 700
+                easing.type: Easing.InOutSine
+            }
+        }
     }
 
     Text {
@@ -120,6 +140,7 @@ RowLayout {
         font.pixelSize: 10
         font.features: {"tnum": 1}
         verticalAlignment: Text.AlignVCenter
+        textFormat: Text.PlainText
     }
 
     Timer {

@@ -50,7 +50,7 @@ observe -> diagnose -> create experience -> train -> hidden exam -> promote or r
 ```
 
 > [!IMPORTANT]
-> The complete autonomous agent loop is not finished. The repository currently delivers its first foundation: a real local media-to-3D-Gaussian pipeline, durable world builds, quality gates, a world library, and native Vulkan exploration. Gemini, Google ADK, Google Cloud orchestration, policy training, and hidden exams are planned work.
+> The local RealityCI loop is implemented and tested end to end: run, deterministic failure evidence, diagnosis, counterfactual experiments, training, hidden exam, regression protection, promotion, and Reality Debt. Cloud deployment and Gemini diagnosis still require the operator's own Google Cloud credentials. Gaussian appearance worlds remain visual evidence, not collision geometry.
 
 ## What works today
 
@@ -62,6 +62,8 @@ observe -> diagnose -> create experience -> train -> hidden exam -> promote or r
 | Quality control | Pose gates, held-out appearance checks, exact exported-PLY rerendering, interpolated-path audits, artifact-tail checks, and consecutive-failure rejection |
 | World management | Automatic handoff after a successful build, search, sort, rename, storage reporting, safe deletion, and bundle access |
 | Exploration | Native QRhi/Vulkan Gaussian rendering, GPU projection and radix sorting, antialiased SH3 splats, HDR composition, a smoothed observed-camera path, and Appearance / inferred Depth / splat Structure / Coverage diagnostics |
+| RealityCI | Durable local control API, deterministic scenario runner, real PyTorch checkpoint updates, causal experiments, hidden-seed isolation, regression gates, promotion/rejection, Reality Debt, and connected Qt records |
+| Servo Assistant | Gemini and OpenAI chat from local `.env` credentials plus safe in-app commands for opening R17, navigating workspaces, and switching clear/rain/snow visual scenario layers |
 
 Servo does not fabricate progress, quality scores, telemetry, missing surfaces, or agent decisions. A world that misses the configured acceptance gates is rejected instead of being presented as finished.
 
@@ -96,6 +98,14 @@ A front-facing monocular video cannot observe every surface beside, behind, or i
 ## Quick start
 
 ### Desktop application
+
+After the existing build and Python runtime are present, start the local API and desktop together (no Docker or installation):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-Servo.ps1
+```
+
+The launcher reuses an already healthy API, otherwise starts it hidden, waits for `/healthz`, and then opens Servo. The desktop reconnects automatically and restores its last campaign for the same API URL.
 
 Requirements:
 
@@ -137,6 +147,8 @@ The setup creates a managed per-user environment under `%LOCALAPPDATA%\Servo\rec
 
 Then open **Create World**, add overlapping images or a mostly static video, choose a profile, and select **Build world**. Successful worlds are added automatically to **Worlds**; select one and choose **Explore**.
 
+For the current hackathon baseline, ask Servo Assistant `open and explore R17`. In Explore, use W/S on the smoothed capture path, A/D for bounded lateral offsets, E/Q vertically, drag to look, and select 1x/3x/6x movement speed. Rain and snow are depthless visual scenario overlays: they never contribute Gaussian support, road geometry, or collision evidence.
+
 ## Verified evidence
 
 | Capture | Result | Interpretation |
@@ -168,7 +180,7 @@ Pinned versions, hashes, and license identifiers are recorded in [`worker-lock.j
 - Servo reconstructs observed evidence; unseen backsides and missing viewpoints are not guaranteed or invented as ground truth.
 - An appearance world is not collision-certified geometry for robotics.
 - Fast motion, rolling shutter, moving vegetation, reflective surfaces, weak parallax, and incomplete coverage can still make a capture unreconstructable.
-- The full Gemini/ADK RealityCI loop remains future work.
+- Gemini and OpenAI chat plus deterministic local app actions are connected. Model-authored arbitrary tool execution and cloud-hosted ADK orchestration remain future work.
 
 ## Documentation
 

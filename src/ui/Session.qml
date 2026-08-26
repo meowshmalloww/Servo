@@ -8,6 +8,7 @@ QtObject {
     property int workspaceIndex: 0
     property bool showPerformanceMetrics: true
     property bool viewportFocusMode: false
+    property string worldWeather: "clear"
 
     property var projectTreeModel: null
     property var worldModel: null
@@ -25,6 +26,7 @@ QtObject {
     signal openProjectRequested
     signal importRecordingRequested
     signal resetWorkspaceLayoutRequested
+    signal assistantActionRequested(string action, string argument)
 
     function fileName(url) {
         const value = decodeURIComponent(url.toString());

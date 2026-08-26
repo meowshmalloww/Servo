@@ -1,4 +1,4 @@
-set_source_files_properties(
+﻿set_source_files_properties(
     Theme.qml
     Session.qml
     PROPERTIES QT_QML_SINGLETON_TYPE TRUE
@@ -41,6 +41,7 @@ qt_add_qml_module(appServo
         components/Panel.qml
         components/PanelHeader.qml
         components/PropertyRow.qml
+        components/RecordTable.qml
         components/SearchField.qml
         components/Section.qml
         components/SelectField.qml
@@ -67,8 +68,12 @@ qt_add_qml_module(appServo
     SOURCES
         chat/AiChatController.cpp
         chat/AiChatController.h
+        chat/AiChatStore.cpp
+        chat/AiChatStore.h
         media/MediaSourceModel.cpp
         media/MediaSourceModel.h
+        realityci/RealityCIController.cpp
+        realityci/RealityCIController.h
         reconstruction/ReconstructionController.cpp
         reconstruction/ReconstructionController.h
     rendering/GaussianSplatView.cpp
@@ -85,6 +90,7 @@ qt_add_qml_module(appServo
     RESOURCES
         assets/servo-logo.png
         icons/assistant.svg
+        icons/arrow-up.svg
         icons/back.svg
         icons/build.svg
         icons/camera.svg
@@ -126,6 +132,7 @@ qt_add_qml_module(appServo
         icons/select.svg
         icons/sensor.svg
         icons/settings.svg
+        icons/sparkle.svg
         icons/stop.svg
         icons/storage.svg
         icons/sun.svg
@@ -141,6 +148,7 @@ qt_add_qml_module(appServo
 target_include_directories(appServo PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/chat
     ${CMAKE_CURRENT_SOURCE_DIR}/media
+    ${CMAKE_CURRENT_SOURCE_DIR}/realityci
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
     ${CMAKE_CURRENT_SOURCE_DIR}/rendering
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
@@ -165,6 +173,7 @@ qt_add_shaders(appServo servo_gaussian_shaders
 )
 
 target_compile_definitions(appServo PRIVATE
+    SERVO_PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     SERVO_RECONSTRUCTION_SOURCE_DIR="${CMAKE_SOURCE_DIR}/tools/reconstruction"
 )
 
@@ -178,6 +187,7 @@ target_link_libraries(appServo
         Qt6::QuickControls2
         Qt6::QuickDialogs2
         Qt6::ShaderTools
+        Qt6::Sql
         Qt6::Svg
 )
 

@@ -209,7 +209,16 @@ class ReconstructionReleaseContractTests(unittest.TestCase):
         self.assertIn(method, worker)
         self.assertIn(method, trainer)
         self.assertIn("def semantic_sky_opacity_loss", trainer)
-        self.assertIn("semantic_sky_opacity_weight * sky_opacity_loss", trainer)
+        # The configured weight scales every frame's sky term through the
+        # deterministic per-frame oversampling multiplier.
+        self.assertIn(
+            "sky_weight_for_frame = semantic_sky_opacity_weight * (",
+            trainer,
+        )
+        self.assertIn(
+            "sky_weight_for_frame * sky_opacity_loss",
+            trainer,
+        )
         self.assertIn("certifiedSkyEvidence", worker)
         self.assertIn("certifiedSkyEvidence", trainer)
         self.assertIn("build_certified_sky_evidence", priors)

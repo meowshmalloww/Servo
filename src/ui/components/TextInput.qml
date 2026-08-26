@@ -10,6 +10,7 @@ T.TextField {
     readonly property bool flatField: readOnly
 
     Layout.fillWidth: true
+    Layout.minimumWidth: 0
     implicitHeight: Theme.controlHeight
     implicitWidth: 180
     leftPadding: flatField ? 0 : 10
@@ -22,6 +23,7 @@ T.TextField {
     font.family: Theme.uiFont
     font.pixelSize: 11
     verticalAlignment: Text.AlignVCenter
+    clip: true
 
     onTextChanged: {
         if (readOnly)

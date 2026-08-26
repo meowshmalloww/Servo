@@ -1,0 +1,32 @@
+{
+  "schema": "servo.realityci.campaign-receipt/v1",
+  "workspace": "D:\\Servo\\demo\\occluded_pedestrian\\campaign-receipted",
+  "terminal_state": "completed_promoted",
+  "status": "PASS",
+  "candidate_sha256": "sha256:120a7f59deda6709a926fb361980b7a32db37b7f3e258e217c970cbb7c5b6e46",
+  "candidate_id": "ckp-86bd09485dd246e9",
+  "hidden_exam_sha256": "sha256:40de7612bb03b5d4cdfd81ced9da45913bd8f9f7d42d1c5a4070b0d2a844c0d5",
+  "hidden_exam_id": "exam-5126e25d0909428b",
+  "regression_report_sha256": "sha256:fb81bc91fb80072588253f133a7528ef956b22feea324f46fe2c9b33175c64e4",
+  "regression_report_id": "regr-10fe29b175554cac",
+  "promotion_decision_sha256": "sha256:9fd2318a39d390a546a146ded8f79946e2e37ed1c645623b20f422d2314e50fb",
+  "promotion_decision_id": "promo-8b20d94f838d433c",
+  "reality_debt_sha256": "sha256:bc3691ae705866c541913fa33453fa39d599c0f224fbe7397cc56ff242718599",
+  "reality_debt_id": "debt-46bbc7a27de64d93",
+  "decision": "promoted",
+  "failed_checks": [],
+  "baseline_hidden_success": {
+    "total": 8,
+    "success": 4,
+    "collision": 4,
+    "near_miss": 0,
+    "timeout_or_other": 0
+  },
+  "candidate_hidden_success": {
+    "total": 8,
+    "success": 7,
+    "collision": 1,
+    "near_miss": 0,
+    "timeout_or_other": 0
+  }
+}

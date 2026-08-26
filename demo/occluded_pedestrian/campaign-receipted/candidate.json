@@ -1,0 +1,82 @@
+{
+  "schema_name": "servo.realityci.checkpoint/v1",
+  "record_id": "ckp-86bd09485dd246e9",
+  "created_at": "2026-08-24T02:55:27.237326Z",
+  "producer": {
+    "name": "servo-realityci",
+    "version": "0.1.0"
+  },
+  "campaign_id": null,
+  "parent_id": null,
+  "causation_id": null,
+  "content_hash": "sha256:120a7f59deda6709a926fb361980b7a32db37b7f3e258e217c970cbb7c5b6e46",
+  "checkpoint_sha256": "sha256:2b0cd6deae1cc8cc01ed05c51c6c328d9f87c8abcdffbcdd1a55fe9502b30dea",
+  "adapter": "torch-behavior-cloning",
+  "format": "torch-state-dict/v1",
+  "size_bytes": 259185,
+  "uri": "D:\\Servo\\demo\\occluded_pedestrian\\campaign-receipted\\candidate-checkpoint.pt",
+  "parent_checkpoint_sha256": "sha256:8b2af1f8730a420354e292f263f1a222ea46d9063112b640279b335aeb8c4bea",
+  "training_job_id": null,
+  "load_verified": true,
+  "weights_differ_from_parent": true,
+  "metrics_history": [
+    {
+      "epoch": 0.0,
+      "train_loss": 0.7485791913100651,
+      "val_loss": 0.439013808965683,
+      "val_accuracy": 0.8705882352941177,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 1.0,
+      "train_loss": 0.7052943302052361,
+      "val_loss": 0.40418872237205505,
+      "val_accuracy": 0.8705882352941177,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 2.0,
+      "train_loss": 0.7030101673943656,
+      "val_loss": 0.42215684056282043,
+      "val_accuracy": 0.8705882352941177,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 3.0,
+      "train_loss": 0.6660853326320648,
+      "val_loss": 0.4309927523136139,
+      "val_accuracy": 0.8705882352941177,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 4.0,
+      "train_loss": 0.6414903913225446,
+      "val_loss": 0.392461359500885,
+      "val_accuracy": 0.8588235294117647,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 5.0,
+      "train_loss": 0.6565556930644172,
+      "val_loss": 0.41292428970336914,
+      "val_accuracy": 0.8352941176470589,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 6.0,
+      "train_loss": 0.6044108314173562,
+      "val_loss": 0.40740618109703064,
+      "val_accuracy": 0.8588235294117647,
+      "learning_rate": 0.001
+    },
+    {
+      "epoch": 7.0,
+      "train_loss": 0.5557891449757985,
+      "val_loss": 0.4820597171783447,
+      "val_accuracy": 0.8,
+      "learning_rate": 0.001
+    }
+  ],
+  "best_val_loss": 0.392461359500885,
+  "best_epoch": 4
+}

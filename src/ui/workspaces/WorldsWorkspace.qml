@@ -19,6 +19,19 @@ Item {
     readonly property string selectedPlyPath: root.selectedWorld
                                                  ? String(root.selectedWorld.plyPath || "")
                                                  : ""
+    readonly property var recordedFrameUrls: root.selectedWorld
+                                               ? (root.selectedWorld.recordedFrameUrls || [])
+                                               : []
+    readonly property int recordedFrameCount: root.recordedFrameUrls.length
+    readonly property int recordedFrameIndex: root.recordedFrameCount > 1
+                                              ? Math.max(0, Math.min(
+                                                  root.recordedFrameCount - 1,
+                                                  Math.round(root.recordedProgress
+                                                             * (root.recordedFrameCount - 1))))
+                                              : 0
+    readonly property url recordedFrameUrl: root.recordedFrameCount > 0
+                                             ? root.recordedFrameUrls[root.recordedFrameIndex]
+                                             : ""
     readonly property bool selectedWorldPublished: root.hasSelection
                                                  && root.selectedWorld.published === true
     property string noticeText: ""
@@ -30,14 +43,23 @@ Item {
     property bool moveUp: false
     property bool moveDown: false
     property int visualizationMode: 0
+    // Explore always means the reconstructed Gaussian world. Recorded frames
+    // are an explicit reference view and must never impersonate 3D output.
+    property bool recordedCorridorMode: false
+    property real recordedProgress: 0
+    property real weatherPhase: 0
     readonly property bool exploreReady: root.exploreMode
-                                        && gaussianView.ready
-                                        && !gaussianView.loading
-                                        && gaussianView.errorString.length === 0
+                                        && ((root.recordedCorridorMode
+                                             && root.recordedFrameCount > 0)
+                                            || (gaussianView.ready
+                                                && !gaussianView.loading
+                                                && gaussianView.errorString.length === 0))
 
     onSelectedPlyPathChanged: {
         if (root.selectedPlyPath.length === 0)
             root.exploreMode = false;
+        root.recordedCorridorMode = false;
+        root.recordedProgress = 0;
     }
     onExploreModeChanged: {
         if (!root.exploreMode)
@@ -47,7 +69,7 @@ Item {
     function resetLayout() {
         Session.viewportFocusMode = false;
         worldLibrary.SplitView.preferredWidth = 330;
-        worldInspector.SplitView.preferredWidth = 320;
+        worldInspector.SplitView.preferredWidth = 360;
     }
 
     function stopMovement() {
@@ -63,10 +85,37 @@ Item {
         if (!root.hasSelection || root.selectedPlyPath.length === 0)
             return;
         root.exploreMode = !root.exploreMode;
-        if (root.exploreMode)
+        if (root.exploreMode) {
+            root.recordedCorridorMode = false;
+            root.recordedProgress = 0;
+            gaussianView.followPath = true;
             gaussianView.forceActiveFocus();
-        else
+        } else {
             root.stopMovement();
+        }
+    }
+
+    Connections {
+        target: Session
+        function onAssistantActionRequested(action, argument) {
+            if (action === "explore-world") {
+                const match = String(argument).toLowerCase();
+                if (WorldLibraryModel.selectWorldMatching(match)) {
+                    root.exploreMode = true;
+                    root.recordedCorridorMode = false;
+                    gaussianView.followPath = true;
+                    gaussianView.forceActiveFocus();
+                }
+            }
+        }
+    }
+
+    NumberAnimation on weatherPhase {
+        from: 0
+        to: 1
+        duration: Session.worldWeather === "rain" ? 900 : 4200
+        loops: Animation.Infinite
+        running: root.exploreReady && Session.worldWeather !== "clear"
     }
 
     function sortIndex(mode) {
@@ -129,11 +178,21 @@ Item {
                  && (root.moveForward || root.moveBackward
                      || root.moveLeft || root.moveRight
                      || root.moveUp || root.moveDown)
-        onTriggered: gaussianView.moveCamera(
-                         (root.moveForward ? 1 : 0) - (root.moveBackward ? 1 : 0),
-                         (root.moveRight ? 1 : 0) - (root.moveLeft ? 1 : 0),
-                         (root.moveUp ? 1 : 0) - (root.moveDown ? 1 : 0),
-                         Math.min(frameTime, 0.05))
+        onTriggered: {
+            const elapsed = Math.min(frameTime, 0.05);
+            const forward = (root.moveForward ? 1 : 0)
+                            - (root.moveBackward ? 1 : 0);
+            if (root.recordedCorridorMode) {
+                root.recordedProgress = Math.max(
+                    0, Math.min(1, root.recordedProgress + forward * elapsed * 0.12));
+            } else {
+                gaussianView.moveCamera(
+                    forward,
+                    (root.moveRight ? 1 : 0) - (root.moveLeft ? 1 : 0),
+                    (root.moveUp ? 1 : 0) - (root.moveDown ? 1 : 0),
+                    elapsed);
+            }
+        }
     }
 
     Shortcut {
@@ -202,6 +261,7 @@ Item {
 
         PageToolbar {
             title: "Worlds"
+            helpText: "Every accepted reconstruction lands here as a durable, hash-verified bundle: Gaussians, cameras, receipts and audit media. Open a world in the native Vulkan viewer or feed it to campaigns as run background."
             subtitle: WorldLibraryModel.busy
                       ? WorldLibraryModel.busyText
                       : (WorldLibraryModel.totalCount + " created · "
@@ -675,7 +735,7 @@ Item {
                                 z: 0
                                 anchors.fill: parent
                                 visible: root.hasSelection && root.exploreMode
-                                source: visible ? root.selectedPlyPath : ""
+                                source: root.hasSelection ? root.selectedPlyPath : ""
                                 visualizationMode: root.visualizationMode
                                 focus: visible
                                 onActiveFocusChanged: {
@@ -696,8 +756,10 @@ Item {
                                         root.moveUp = true;
                                     else if (event.key === Qt.Key_Q || event.key === Qt.Key_Control)
                                         root.moveDown = true;
-                                    else if (event.key === Qt.Key_R)
+                                    else if (event.key === Qt.Key_R) {
+                                        root.recordedProgress = 0;
                                         gaussianView.resetCamera();
+                                    }
                                     else if (event.key === Qt.Key_1)
                                         root.visualizationMode = 0;
                                     else if (event.key === Qt.Key_2)
@@ -738,6 +800,7 @@ Item {
                                     property real previousY: 0
                                     anchors.fill: parent
                                     acceptedButtons: Qt.LeftButton
+                                    enabled: !root.recordedCorridorMode
                                     hoverEnabled: true
                                     cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                                     onPressed: mouse => {
@@ -760,12 +823,86 @@ Item {
                                 }
                             }
 
+                            Item {
+                                id: weatherLayer
+                                z: 1
+                                anchors.fill: parent
+                                visible: root.exploreReady && Session.worldWeather !== "clear"
+                                clip: true
+
+                                Repeater {
+                                    model: Session.worldWeather === "rain" ? 150 : 90
+                                    delegate: Rectangle {
+                                        required property int index
+                                        readonly property real seedX: ((index * 73) % 997) / 997
+                                        readonly property real seedY: ((index * 193) % 991) / 991
+                                        x: seedX * weatherLayer.width
+                                           + (Session.worldWeather === "rain"
+                                              ? -28 * root.weatherPhase : 14 * Math.sin(index + root.weatherPhase * 6.283))
+                                        y: ((seedY + root.weatherPhase * (Session.worldWeather === "rain" ? 1.8 : 0.42)) % 1.0)
+                                           * (weatherLayer.height + 36) - 18
+                                        width: Session.worldWeather === "rain" ? 1 : 3 + (index % 3)
+                                        height: Session.worldWeather === "rain" ? 18 + (index % 14) : width
+                                        radius: Session.worldWeather === "rain" ? 0 : width / 2
+                                        rotation: Session.worldWeather === "rain" ? 12 : 0
+                                        color: Session.worldWeather === "rain" ? "#88b8ddff" : "#dff5ffff"
+                                        opacity: Session.worldWeather === "rain" ? 0.46 : 0.72
+                                    }
+                                }
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: Session.worldWeather === "rain" ? "#0b162033" : "#c7e7ff0d"
+                                }
+                            }
+
+                            Rectangle {
+                                z: 1
+                                anchors.fill: parent
+                                visible: root.exploreReady
+                                         && root.recordedCorridorMode
+                                         && root.recordedFrameCount > 0
+                                color: "black"
+
+                                Image {
+                                    anchors.fill: parent
+                                    source: root.recordedFrameUrl
+                                    asynchronous: true
+                                    cache: true
+                                    fillMode: Image.PreserveAspectFit
+                                    sourceSize.width: 1910
+                                    sourceSize.height: 1074
+                                }
+
+                                Rectangle {
+                                    anchors.top: parent.top
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    anchors.topMargin: 12
+                                    width: sourceFidelityLabel.implicitWidth + 22
+                                    height: 26
+                                    radius: 8
+                                    color: Theme.overlayHud
+                                    Text {
+                                        id: sourceFidelityLabel
+                                        anchors.centerIn: parent
+                                        text: "RECORDED CORRIDOR · SOURCE FIDELITY · FRAME "
+                                              + (root.recordedFrameIndex + 1) + "/"
+                                              + root.recordedFrameCount
+                                        color: Theme.success
+                                        font.family: Theme.monoFont
+                                        font.pixelSize: 9
+                                        font.weight: Font.DemiBold
+                                    }
+                                }
+                            }
+
                             Rectangle {
                                 z: 2
                                 anchors.centerIn: parent
                                 width: Math.min(440, parent.width - 48)
                                 height: Math.max(112, Math.min(190, overlayStatus.implicitHeight + 66))
                                 visible: root.exploreMode
+                                         && !root.recordedCorridorMode
                                          && (gaussianView.loading
                                              || gaussianView.errorString.length > 0)
                                 color: Theme.overlayHud
@@ -859,7 +996,9 @@ Item {
                                         Layout.fillWidth: true
                                         spacing: 2
                                         Text {
-                                            text: gaussianView.followPath
+                                            text: root.recordedCorridorMode
+                                                  ? "EXPLORE / CALIBRATED RECORDED CORRIDOR"
+                                                  : gaussianView.followPath
                                                   ? "EXPLORE / SMOOTHED OBSERVED CAMERA CORRIDOR"
                                                   : "EXPLORE / FREE FLY (OUTSIDE COVERAGE MAY FAIL)"
                                             color: Theme.textSecondary
@@ -881,7 +1020,9 @@ Item {
                                             font.weight: Font.DemiBold
                                         }
                                         Text {
-                                            text: gaussianView.followPath
+                                            text: root.recordedCorridorMode
+                                                  ? "W/S moves through original calibrated frames | source sharpness | lateral view disabled"
+                                                  : gaussianView.followPath
                                                   ? "W/S follow capture | A/D and E/Q bounded offsets | drag to look | R resets"
                                                   : "WASD free fly | E/Q vertical | drag to look | R resets"
                                             color: Theme.textMuted
@@ -891,6 +1032,52 @@ Item {
                                     }
                                     TextButton {
                                         compact: true
+                                        visible: root.recordedFrameCount > 1
+                                        text: root.recordedCorridorMode
+                                              ? "Back to Gaussian 3D" : "Reference frames"
+                                        selected: root.recordedCorridorMode
+                                        toolTip: root.recordedCorridorMode
+                                                 ? "Return to the reconstructed 1.46M-splat world."
+                                                 : "Compare against original calibrated video frames. This is reference media, not reconstruction output."
+                                        onClicked: {
+                                            root.recordedCorridorMode = !root.recordedCorridorMode;
+                                            gaussianView.followPath = true;
+                                            gaussianView.forceActiveFocus();
+                                        }
+                                    }
+                                    RowLayout {
+                                        spacing: 3
+                                        TextButton {
+                                            compact: true
+                                            text: "1×"
+                                            selected: gaussianView.movementSpeed < 1.5
+                                            toolTip: "Precise movement"
+                                            onClicked: { gaussianView.movementSpeed = 0.8; gaussianView.forceActiveFocus(); }
+                                        }
+                                        TextButton {
+                                            compact: true
+                                            text: "3×"
+                                            selected: gaussianView.movementSpeed >= 1.5 && gaussianView.movementSpeed < 4.0
+                                            toolTip: "Road exploration speed"
+                                            onClicked: { gaussianView.movementSpeed = 2.5; gaussianView.forceActiveFocus(); }
+                                        }
+                                        TextButton {
+                                            compact: true
+                                            text: "6×"
+                                            selected: gaussianView.movementSpeed >= 4.0
+                                            toolTip: "Fast traversal"
+                                            onClicked: { gaussianView.movementSpeed = 5.0; gaussianView.forceActiveFocus(); }
+                                        }
+                                    }
+                                    RowLayout {
+                                        spacing: 3
+                                        TextButton { compact: true; text: "Clear"; selected: Session.worldWeather === "clear"; onClicked: Session.worldWeather = "clear" }
+                                        TextButton { compact: true; text: "Rain"; selected: Session.worldWeather === "rain"; onClicked: Session.worldWeather = "rain" }
+                                        TextButton { compact: true; text: "Snow"; selected: Session.worldWeather === "snow"; onClicked: Session.worldWeather = "snow" }
+                                    }
+                                    TextButton {
+                                        compact: true
+                                        visible: !root.recordedCorridorMode
                                         enabled: gaussianView.pathAvailable
                                         text: gaussianView.followPath ? "Smoothed path" : "Free fly"
                                         toolTip: gaussianView.followPath
@@ -904,8 +1091,10 @@ Item {
                                     Text {
                                         text: gaussianView.gaussianCount.toLocaleString()
                                               + " total splats\n"
-                                              + (gaussianView.followPath
-                                                 ? (gaussianView.pathProgress * 100).toFixed(0) + "% path"
+                                              + (root.recordedCorridorMode
+                                                 ? (root.recordedProgress * 100).toFixed(0) + "% source path"
+                                                 : gaussianView.followPath
+                                                   ? (gaussianView.pathProgress * 100).toFixed(0) + "% path"
                                                  : gaussianView.movementSpeed.toFixed(2) + " u/s")
                                         color: Theme.textSecondary
                                         font.family: Theme.monoFont
@@ -934,6 +1123,7 @@ Item {
                                         buttonSize: 28
                                         onClicked: {
                                             gaussianView.resetCamera();
+                                            root.recordedProgress = 0;
                                             gaussianView.forceActiveFocus();
                                         }
                                     }
@@ -949,7 +1139,7 @@ Item {
                                 anchors.leftMargin: 12
                                 width: Math.min(760, parent.width - 24)
                                 height: 72
-                                visible: root.exploreReady
+                                visible: root.exploreReady && !root.recordedCorridorMode
                                 color: Theme.overlayHud
                                 radius: Theme.cornerPopup
 
@@ -1129,9 +1319,9 @@ Item {
             Panel {
                 id: worldInspector
                 visible: !Session.viewportFocusMode
-                SplitView.preferredWidth: 320
-                SplitView.minimumWidth: 270
-                SplitView.maximumWidth: 560
+                SplitView.preferredWidth: 360
+                SplitView.minimumWidth: 320
+                SplitView.maximumWidth: 480
 
                 ColumnLayout {
                     anchors.fill: parent
