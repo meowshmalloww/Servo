@@ -5,7 +5,7 @@
 <h1 align="center">SERVO</h1>
 
 <p align="center">
-  <strong>Scenario Engine for Real-world Vehicle Optimization</strong><br>
+  <strong>Simulation Engine for Real-world Vehicle Optimization</strong><br>
   Agentic simulation, validation, diagnosis, and optimization for autonomous-vehicle policies.
 </p>
 
