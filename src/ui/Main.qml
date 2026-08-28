@@ -754,7 +754,7 @@ ApplicationWindow {
                         font.letterSpacing: 1
                     }
                     Text {
-                        text: "Simulation Environment for Robotic Validation and Optimization"
+                        text: "Scenario Engine for Real-world Vehicle Optimization"
                         color: Theme.textSecondary
                         font.family: Theme.uiFont
                         font.pixelSize: 11
