@@ -59,6 +59,12 @@ venv/
 /campaigns/
 /external/
 /.serena/
+/runtime/
+
+# Local simulation sessions and generated evidence. Simulation source code and
+# checked-in fixtures remain trackable outside these paths.
+/simulations/runtime/
+/simulations/sim-*/
 
 # Generated demo evidence. Keep the compact baseline/checkpoints and receipts,
 # but regenerate per-timestep frame dumps locally.
@@ -85,6 +91,8 @@ venv/
 
 # Temporary files and OS metadata
 /tmp/
+/tmp_*.py
+/ChatGPT Image *.png
 /docs/hackathon_extract.txt
 .DS_Store
 Thumbs.db
