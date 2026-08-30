@@ -21,6 +21,21 @@ Missing exact frames, inadequate Gaussian coverage, invalid alignment, or an
 unvalidated map fail closed as infrastructure-invalid. There is no silent
 renderer or policy fallback.
 
+The desktop exposes three equally explicit evidence views:
+
+- **Native CARLA** is the uncomposited CARLA/Unreal chase camera and is the
+  default live and replay view.
+- **T5 visual** is a synchronized, depth-aware RGB/instance composite of the
+  CARLA actor over reconstructed T5 imagery. It is visual-only and is never
+  described as native CARLA or unified scene geometry.
+- **Compare** places both evidence streams side by side.
+
+Every retained run records a `visual_integration_receipt`. For the current T5
+path it states `gaussian_appearance_loaded_as_carla_geometry=false`,
+`unified_scene=false`, and `collision_validated=false`. A passing physics gate
+therefore proves CARLA contact, gravity, control, and sensor execution only; it
+does not validate the reconstructed Gaussian world as a CARLA map.
+
 Artifacts live under `SERVO_SIMULATION_ROOT` (the desktop launcher defaults to
 `D:\Servo\simulations`) in per-session directories. Manifests are canonical-JSON
 sealed; events are append-only; telemetry, controls, evidence, worker logs,

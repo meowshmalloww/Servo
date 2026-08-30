@@ -114,12 +114,19 @@ int SimulationController::policyFrameRevision() const { return m_policyFrameRevi
 QString SimulationController::policyFrameUrl() const { return m_policyFrameUrl; }
 QString SimulationController::leftPolicyFrameUrl() const { return m_leftPolicyFrameUrl; }
 QString SimulationController::rightPolicyFrameUrl() const { return m_rightPolicyFrameUrl; }
+QString SimulationController::nativeFrameUrl() const { return m_nativeFrameUrl; }
 QString SimulationController::integratedFrameUrl() const { return m_integratedFrameUrl; }
 QString SimulationController::result() const { return m_result; }
 QString SimulationController::failureClass() const { return m_failureClass; }
 QString SimulationController::evidencePath() const { return m_evidencePath; }
 QString SimulationController::artifactPaths() const { return m_artifactPaths; }
 QString SimulationController::replayVideoUrl() const { return m_replayVideoUrl; }
+QString SimulationController::nativeReplayVideoUrl() const { return m_nativeReplayVideoUrl; }
+QString SimulationController::hybridReplayVideoUrl() const { return m_hybridReplayVideoUrl; }
+QString SimulationController::comparisonReplayVideoUrl() const { return m_comparisonReplayVideoUrl; }
+bool SimulationController::physicsGatePassed() const { return m_physicsGatePassed; }
+bool SimulationController::metricRealWorldValidated() const { return m_metricRealWorldValidated; }
+bool SimulationController::collisionValidated() const { return m_collisionValidated; }
 
 void SimulationController::setBaseUrl(const QString &value)
 {
@@ -379,10 +386,17 @@ void SimulationController::startSimulation(const QVariantMap &configuration)
         m_policyFrameUrl.clear();
         m_leftPolicyFrameUrl.clear();
         m_rightPolicyFrameUrl.clear();
+        m_nativeFrameUrl.clear();
         m_integratedFrameUrl.clear();
         m_evidencePath.clear();
         m_artifactPaths.clear();
         m_replayVideoUrl.clear();
+        m_nativeReplayVideoUrl.clear();
+        m_hybridReplayVideoUrl.clear();
+        m_comparisonReplayVideoUrl.clear();
+        m_physicsGatePassed = false;
+        m_metricRealWorldValidated = false;
+        m_collisionValidated = false;
         QSettings settings;
         settings.setValue("simulation/sessionBaseUrl", m_baseUrl);
         settings.setValue("simulation/sessionId", m_sessionId);
@@ -543,10 +557,17 @@ void SimulationController::attachSimulationEntry(const QJsonObject &entry)
     m_policyFrameUrl.clear();
     m_leftPolicyFrameUrl.clear();
     m_rightPolicyFrameUrl.clear();
+    m_nativeFrameUrl.clear();
     m_integratedFrameUrl.clear();
     m_evidencePath.clear();
     m_artifactPaths.clear();
     m_replayVideoUrl.clear();
+    m_nativeReplayVideoUrl.clear();
+    m_hybridReplayVideoUrl.clear();
+    m_comparisonReplayVideoUrl.clear();
+    m_physicsGatePassed = false;
+    m_metricRealWorldValidated = false;
+    m_collisionValidated = false;
     QSettings settings;
     settings.setValue("simulation/sessionBaseUrl", m_baseUrl);
     settings.setValue("simulation/sessionId", m_sessionId);
@@ -584,10 +605,17 @@ void SimulationController::clearAttachedSimulation()
     m_policyFrameUrl.clear();
     m_leftPolicyFrameUrl.clear();
     m_rightPolicyFrameUrl.clear();
+    m_nativeFrameUrl.clear();
     m_integratedFrameUrl.clear();
     m_evidencePath.clear();
     m_artifactPaths.clear();
     m_replayVideoUrl.clear();
+    m_nativeReplayVideoUrl.clear();
+    m_hybridReplayVideoUrl.clear();
+    m_comparisonReplayVideoUrl.clear();
+    m_physicsGatePassed = false;
+    m_metricRealWorldValidated = false;
+    m_collisionValidated = false;
     QSettings settings;
     settings.remove("simulation/sessionBaseUrl");
     settings.remove("simulation/sessionId");
@@ -684,12 +712,15 @@ void SimulationController::applyLive(const QJsonObject &object)
     const qulonglong nextPolicyFrame = object.value(QStringLiteral("policy_frame_id")).toInteger();
     const bool frameChanged = nextPolicyFrame > m_policyFrameId;
     m_policyFrameId = nextPolicyFrame;
-    if (m_sequence == sequence && (m_policyFrameUrl.isEmpty() || m_integratedFrameUrl.isEmpty()))
+    if (m_sequence == sequence
+        && (m_policyFrameUrl.isEmpty() || m_nativeFrameUrl.isEmpty()
+            || m_integratedFrameUrl.isEmpty()))
         qInfo() << "Simulation live frame" << m_sessionId << "sequence" << sequence
                 << "policy frame" << m_policyFrameId;
     emit liveChanged();
     if (frameChanged || (m_policyFrameId > 0
-                         && (m_policyFrameUrl.isEmpty() || m_integratedFrameUrl.isEmpty())))
+                         && (m_policyFrameUrl.isEmpty() || m_nativeFrameUrl.isEmpty()
+                             || m_integratedFrameUrl.isEmpty())))
         fetchPolicyFrame();
 }
 
@@ -746,6 +777,26 @@ void SimulationController::fetchPolicyFrame()
     };
     requestSideCamera(QStringLiteral("front_left"));
     requestSideCamera(QStringLiteral("front_right"));
+    QNetworkReply *nativeReply = get(
+        QStringLiteral("/v1/simulations/%1/native-frame?frame=%2")
+            .arg(m_sessionId).arg(requestedFrame));
+    connect(nativeReply, &QNetworkReply::finished,
+            this, [this, nativeReply, requestedFrame]() {
+        const QByteArray bytes = nativeReply->readAll();
+        nativeReply->deleteLater();
+        if (nativeReply->error() != QNetworkReply::NoError
+            || requestedFrame != m_policyFrameId || !s_frameProvider)
+            return;
+        const QImage image = QImage::fromData(bytes);
+        if (image.isNull())
+            return;
+        const QString key = m_sessionId + QStringLiteral("-native");
+        s_frameProvider->publish(image, key, requestedFrame);
+        ++m_policyFrameRevision;
+        m_nativeFrameUrl = QStringLiteral("image://simulation-policy/%1/%2?revision=%3")
+                               .arg(key).arg(requestedFrame).arg(m_policyFrameRevision);
+        emit policyFrameChanged();
+    });
     QNetworkReply *integratedReply = get(
         QStringLiteral("/v1/simulations/%1/integrated-frame?frame=%2")
             .arg(m_sessionId).arg(requestedFrame));
@@ -795,28 +846,39 @@ void SimulationController::applyEvidence(const QJsonObject &root)
 {
     const QJsonObject evidence = root.value(QStringLiteral("evidence")).toObject();
     const QJsonObject artifacts = root.value(QStringLiteral("artifact_paths")).toObject();
+    const QJsonObject physics = root.value(QStringLiteral("physics_evidence")).toObject();
     m_result = evidence.value(QStringLiteral("outcome")).toString(m_result);
     m_failureClass = evidence.value(QStringLiteral("failure_class")).toString(m_failureClass);
     m_evidencePath = root.value(QStringLiteral("run_evidence_uri")).toString();
     m_artifactPaths = QString::fromUtf8(
         QJsonDocument(artifacts).toJson(QJsonDocument::Compact));
 
-    // Prefer the synchronized CARLA-on-Servo-world evidence.  Falling back to
-    // native CARLA remains truthful: both files were captured from the same
-    // authoritative synchronous physics run, never synthesized by the UI.
-    const QStringList replayCandidates {
-        QStringLiteral("evidence/servo-t5-carla-lincoln-fixed.mp4"),
-        QStringLiteral("evidence/native-and-t5-synchronized.mp4"),
-        QStringLiteral("evidence/carla-native-fixed.mp4"),
-    };
-    m_replayVideoUrl.clear();
-    for (const QString &key : replayCandidates) {
+    const auto artifactUrl = [&artifacts](const QString &key) {
         const QString path = artifacts.value(key).toString();
-        if (!path.isEmpty() && QFileInfo::exists(path)) {
-            m_replayVideoUrl = QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()).toString();
-            break;
-        }
-    }
+        return !path.isEmpty() && QFileInfo::exists(path)
+                   ? QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()).toString()
+                   : QString();
+    };
+    m_nativeReplayVideoUrl = artifactUrl(
+        QStringLiteral("evidence/carla-native-fixed.mp4"));
+    m_hybridReplayVideoUrl = artifactUrl(
+        QStringLiteral("evidence/servo-t5-carla-lincoln-fixed.mp4"));
+    m_comparisonReplayVideoUrl = artifactUrl(
+        QStringLiteral("evidence/native-and-t5-synchronized.mp4"));
+
+    // The default must be the native Unreal capture.  The T5 stream is a
+    // synchronized, depth-aware visual composite and must only be selected
+    // explicitly by the operator.
+    m_replayVideoUrl = !m_nativeReplayVideoUrl.isEmpty()
+                           ? m_nativeReplayVideoUrl
+                           : (!m_comparisonReplayVideoUrl.isEmpty()
+                                  ? m_comparisonReplayVideoUrl
+                                  : m_hybridReplayVideoUrl);
+    m_physicsGatePassed = physics.value(QStringLiteral("physics_gate_pass")).toBool(false);
+    m_metricRealWorldValidated = physics.value(
+        QStringLiteral("metric_real_world_validated")).toBool(false);
+    m_collisionValidated = physics.value(
+        QStringLiteral("collision_validated")).toBool(false);
     emit liveChanged();
     emit evidenceChanged();
 }

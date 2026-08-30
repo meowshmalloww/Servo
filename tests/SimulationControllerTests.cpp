@@ -21,7 +21,7 @@ private slots:
     void rejectsOlderSequence();
     void marksOldHeartbeatStale();
     void policyFrameProviderIsThreadSafeAndMonotonic();
-    void selectsIntegratedCarlaReplayFromEvidence();
+    void defaultsToNativeCarlaReplayAndKeepsCompositeExplicit();
     void keepsExecutionSelectionSeparateFromAttachedSession();
     void clearsStaleAttachedSessionMetadata();
     void reattachesOnlySessionForSelectedExecutionWorld();
@@ -111,15 +111,19 @@ void SimulationControllerTests::policyFrameProviderIsThreadSafeAndMonotonic()
     QCOMPARE(result.pixelColor(0, 0), QColor(Qt::green));
 }
 
-void SimulationControllerTests::selectsIntegratedCarlaReplayFromEvidence()
+void SimulationControllerTests::defaultsToNativeCarlaReplayAndKeepsCompositeExplicit()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
+    const QString native = temporary.filePath(QStringLiteral("native.mp4"));
     const QString integrated = temporary.filePath(QStringLiteral("integrated.mp4"));
-    QFile file(integrated);
-    QVERIFY(file.open(QIODevice::WriteOnly));
-    file.write("recorded-carla-evidence");
-    file.close();
+    const QString comparison = temporary.filePath(QStringLiteral("comparison.mp4"));
+    for (const QString &path : { native, integrated, comparison }) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("recorded-carla-evidence");
+        file.close();
+    }
 
     SimulationController controller;
     controller.applyEvidence(QJsonObject {
@@ -127,13 +131,26 @@ void SimulationControllerTests::selectsIntegratedCarlaReplayFromEvidence()
         { QStringLiteral("evidence"), QJsonObject {
               { QStringLiteral("outcome"), QStringLiteral("success") },
           } },
+        { QStringLiteral("physics_evidence"), QJsonObject {
+              { QStringLiteral("physics_gate_pass"), true },
+              { QStringLiteral("metric_real_world_validated"), false },
+              { QStringLiteral("collision_validated"), false },
+          } },
         { QStringLiteral("artifact_paths"), QJsonObject {
+              { QStringLiteral("evidence/carla-native-fixed.mp4"), native },
               { QStringLiteral("evidence/servo-t5-carla-lincoln-fixed.mp4"), integrated },
+              { QStringLiteral("evidence/native-and-t5-synchronized.mp4"), comparison },
           } },
     });
 
     QCOMPARE(controller.result(), QStringLiteral("success"));
-    QCOMPARE(controller.replayVideoUrl(), QUrl::fromLocalFile(integrated).toString());
+    QCOMPARE(controller.replayVideoUrl(), QUrl::fromLocalFile(native).toString());
+    QCOMPARE(controller.nativeReplayVideoUrl(), QUrl::fromLocalFile(native).toString());
+    QCOMPARE(controller.hybridReplayVideoUrl(), QUrl::fromLocalFile(integrated).toString());
+    QCOMPARE(controller.comparisonReplayVideoUrl(), QUrl::fromLocalFile(comparison).toString());
+    QVERIFY(controller.physicsGatePassed());
+    QVERIFY(!controller.metricRealWorldValidated());
+    QVERIFY(!controller.collisionValidated());
 }
 
 void SimulationControllerTests::keepsExecutionSelectionSeparateFromAttachedSession()

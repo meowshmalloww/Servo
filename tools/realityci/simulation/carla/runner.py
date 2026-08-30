@@ -1484,6 +1484,18 @@ class CarlaSimulationRunner:
                     observation_source=manifest.observation.source, seed=manifest.scenario.seed,
                     weather=manifest.scenario.weather,
                     weather_receipt=weather_receipt,
+                    visual_integration_receipt={
+                        "schema": "servo.carla-gaussian-visual-integration/v1",
+                        "mode": "synchronized-rgb-depth-instance-composite",
+                        "native_carla_capture": True,
+                        "gaussian_appearance_loaded_as_carla_geometry": False,
+                        "depth_aware_dynamic_actor_composite": True,
+                        "unified_scene": False,
+                        "collision_geometry_source": "inferred-opendrive-proxy",
+                        "collision_validated": False,
+                        "visual_only": True,
+                        "terminal_replay_encoded_after_run": True,
+                    },
                     metrics=DrivingRunMetrics(
                         simulation_duration_s=final.simulation_time_s, fixed_delta_seconds=manifest.timing.fixed_delta_seconds,
                         frame_count=sequence, distance_traveled_m=distance, route_completion=final.route_completion,

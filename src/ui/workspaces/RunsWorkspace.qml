@@ -248,12 +248,40 @@ Item {
                                     }
                                 }
                                 PropertyRow {
-                                    label: "Result"
+                                    label: "Drive outcome"
                                     labelWidth: 90
                                     TextInput {
                                         readOnly: true
                                         text: SimulationController.result.length > 0
                                               ? SimulationController.result : SimulationController.sessionState
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Physics"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: SimulationController.physicsGatePassed
+                                              ? "CARLA contact/gravity verified"
+                                              : "Not verified"
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "World safety"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: SimulationController.collisionValidated
+                                              ? "Collision validated"
+                                              : "NOT COLLISION VALIDATED"
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "T5 view"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: "Visual composite, not unified CARLA geometry"
                                     }
                                 }
                                 PropertyRow {

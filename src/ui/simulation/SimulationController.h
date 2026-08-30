@@ -69,12 +69,19 @@ class SimulationController final : public QObject
     Q_PROPERTY(QString policyFrameUrl READ policyFrameUrl NOTIFY policyFrameChanged)
     Q_PROPERTY(QString leftPolicyFrameUrl READ leftPolicyFrameUrl NOTIFY policyFrameChanged)
     Q_PROPERTY(QString rightPolicyFrameUrl READ rightPolicyFrameUrl NOTIFY policyFrameChanged)
+    Q_PROPERTY(QString nativeFrameUrl READ nativeFrameUrl NOTIFY policyFrameChanged)
     Q_PROPERTY(QString integratedFrameUrl READ integratedFrameUrl NOTIFY policyFrameChanged)
     Q_PROPERTY(QString result READ result NOTIFY liveChanged)
     Q_PROPERTY(QString failureClass READ failureClass NOTIFY liveChanged)
     Q_PROPERTY(QString evidencePath READ evidencePath NOTIFY evidenceChanged)
     Q_PROPERTY(QString artifactPaths READ artifactPaths NOTIFY evidenceChanged)
     Q_PROPERTY(QString replayVideoUrl READ replayVideoUrl NOTIFY evidenceChanged)
+    Q_PROPERTY(QString nativeReplayVideoUrl READ nativeReplayVideoUrl NOTIFY evidenceChanged)
+    Q_PROPERTY(QString hybridReplayVideoUrl READ hybridReplayVideoUrl NOTIFY evidenceChanged)
+    Q_PROPERTY(QString comparisonReplayVideoUrl READ comparisonReplayVideoUrl NOTIFY evidenceChanged)
+    Q_PROPERTY(bool physicsGatePassed READ physicsGatePassed NOTIFY evidenceChanged)
+    Q_PROPERTY(bool metricRealWorldValidated READ metricRealWorldValidated NOTIFY evidenceChanged)
+    Q_PROPERTY(bool collisionValidated READ collisionValidated NOTIFY evidenceChanged)
 
 public:
     explicit SimulationController(QObject *parent = nullptr);
@@ -129,12 +136,19 @@ public:
     QString policyFrameUrl() const;
     QString leftPolicyFrameUrl() const;
     QString rightPolicyFrameUrl() const;
+    QString nativeFrameUrl() const;
     QString integratedFrameUrl() const;
     QString result() const;
     QString failureClass() const;
     QString evidencePath() const;
     QString artifactPaths() const;
     QString replayVideoUrl() const;
+    QString nativeReplayVideoUrl() const;
+    QString hybridReplayVideoUrl() const;
+    QString comparisonReplayVideoUrl() const;
+    bool physicsGatePassed() const;
+    bool metricRealWorldValidated() const;
+    bool collisionValidated() const;
 
     Q_INVOKABLE void setBaseUrl(const QString &value);
     Q_INVOKABLE void connectToServer();
@@ -213,12 +227,16 @@ private:
     QString m_policyFrameUrl;
     QString m_leftPolicyFrameUrl;
     QString m_rightPolicyFrameUrl;
+    QString m_nativeFrameUrl;
     QString m_integratedFrameUrl;
     QString m_result;
     QString m_failureClass;
     QString m_evidencePath;
     QString m_artifactPaths;
     QString m_replayVideoUrl;
+    QString m_nativeReplayVideoUrl;
+    QString m_hybridReplayVideoUrl;
+    QString m_comparisonReplayVideoUrl;
     QVector3D m_egoPosition;
     QQuaternion m_egoOrientation;
     QVector3D m_policyCameraPosition;
@@ -247,4 +265,7 @@ private:
     bool m_frameRequestActive = false;
     bool m_executionReady = false;
     bool m_evidenceRequestActive = false;
+    bool m_physicsGatePassed = false;
+    bool m_metricRealWorldValidated = false;
+    bool m_collisionValidated = false;
 };

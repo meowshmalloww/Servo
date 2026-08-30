@@ -2032,6 +2032,24 @@ def simulation_integrated_frame(session_id: str):
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/v1/simulations/{session_id}/native-frame", dependencies=[Depends(require_token)])
+def simulation_native_frame(session_id: str):
+    """Return the uncomposited CARLA/Unreal chase-camera frame.
+
+    This endpoint intentionally stays separate from ``integrated-frame``.  The
+    latter is a synchronized T5 Gaussian visual composite and is not evidence
+    that the Gaussian appearance field exists as CARLA collision geometry.
+    """
+    path = (
+        _session_store(session_id).session_root
+        / "previews"
+        / "latest-carla-native-fixed.jpg"
+    )
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="native CARLA frame is not available")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/v1/simulations/{session_id}/evidence", dependencies=[Depends(require_token)])
 def simulation_evidence(session_id: str) -> dict:
     store = _session_store(session_id)
@@ -2047,7 +2065,19 @@ def simulation_evidence(session_id: str) -> dict:
         if sha256_file(str(candidate)) != expected_hash:
             raise HTTPException(status_code=409, detail=f"evidence artifact hash mismatch: {relative}")
         artifact_paths[relative] = str(candidate)
-    return {"run_evidence_uri": str(evidence_path), "evidence": evidence, "artifact_paths": artifact_paths}
+    physics_evidence: dict = {}
+    physics_path = store.session_root / "physics-evidence.json"
+    if physics_path.is_file():
+        expected_hash = evidence.get("artifact_sha256", {}).get("physics-evidence.json")
+        if not expected_hash or sha256_file(str(physics_path)) != expected_hash:
+            raise HTTPException(status_code=409, detail="physics evidence hash mismatch")
+        physics_evidence = json.loads(physics_path.read_text(encoding="utf-8"))
+    return {
+        "run_evidence_uri": str(evidence_path),
+        "evidence": evidence,
+        "physics_evidence": physics_evidence,
+        "artifact_paths": artifact_paths,
+    }
 
 
 def _simulation_command(session_id: str, command: str) -> dict:

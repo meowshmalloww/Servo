@@ -10,11 +10,26 @@ Item {
     id: root
 
     property bool active: false
-    readonly property bool hasReplay: SimulationController.replayVideoUrl.length > 0
-    readonly property bool showReplay: root.hasReplay && SimulationController.terminal
-    readonly property string liveFrame: SimulationController.integratedFrameUrl.length > 0
-                                               ? SimulationController.integratedFrameUrl
-                                               : SimulationController.policyFrameUrl
+    property string viewMode: "native"
+    readonly property string selectedReplay:
+        root.viewMode === "hybrid" ? SimulationController.hybridReplayVideoUrl
+        : (root.viewMode === "compare" ? SimulationController.comparisonReplayVideoUrl
+                                        : SimulationController.nativeReplayVideoUrl)
+    readonly property bool showReplay: SimulationController.terminal
+                                       && root.selectedReplay.length > 0
+    readonly property string liveFrame:
+        root.viewMode === "hybrid" ? SimulationController.integratedFrameUrl
+                                   : SimulationController.nativeFrameUrl
+    readonly property string viewTitle:
+        root.viewMode === "hybrid" ? "T5 VISUAL COMPOSITE"
+        : (root.viewMode === "compare" ? "SYNCHRONIZED A/B"
+                                        : "NATIVE CARLA")
+    readonly property string viewProvenance:
+        root.viewMode === "hybrid"
+        ? "Depth-aware visual composite · not unified CARLA geometry"
+        : (root.viewMode === "compare"
+           ? "Native CARLA (left) · T5 visual composite (right)"
+           : "Uncomposited CARLA/Unreal physics camera")
     readonly property string activeWeather:
         SimulationController.hasSession
         && SimulationController.scenarioWeather.length > 0
@@ -29,14 +44,30 @@ Item {
     signal closeRequested()
 
     function updatePlayback() {
-        if (root.active && root.showReplay)
+        if (root.active && root.showReplay) {
+            if (replayPlayer.source.toString() !== root.selectedReplay)
+                replayPlayer.source = root.selectedReplay;
             replayPlayer.play();
-        else
+        } else {
             replayPlayer.pause();
+        }
     }
 
     onActiveChanged: Qt.callLater(root.updatePlayback)
     onShowReplayChanged: Qt.callLater(root.updatePlayback)
+    onSelectedReplayChanged: {
+        replayPlayer.stop();
+        replayPlayer.source = root.selectedReplay;
+        Qt.callLater(root.updatePlayback);
+    }
+
+    Connections {
+        target: SimulationController
+        function onSessionChanged() {
+            if (!SimulationController.terminal)
+                root.viewMode = "native";
+        }
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -63,13 +94,19 @@ Item {
 
     MediaPlayer {
         id: replayPlayer
-        source: SimulationController.replayVideoUrl
+        source: ""
         videoOutput: replayOutput
         // Evidence is a finite physical run. Repeating it made a completed
         // vehicle look as though it drove through the route terminus and
         // started again. Hold the final frame instead of looping.
         loops: 1
         onSourceChanged: Qt.callLater(root.updatePlayback)
+        onMediaStatusChanged: {
+            if (root.active && root.showReplay
+                    && (mediaStatus === MediaPlayer.LoadedMedia
+                        || mediaStatus === MediaPlayer.BufferedMedia))
+                play();
+        }
     }
 
     EmptyState {
@@ -78,8 +115,52 @@ Item {
         visible: !root.showReplay && root.liveFrame.length === 0
         iconSource: Theme.icon("run")
         title: SimulationController.busy ? "Starting physical CARLA run"
-                                         : "Waiting for CARLA evidence"
-        description: "Servo is launching CARLA 0.9.16, applying authoritative vehicle controls, and compositing the Lincoln into the selected Gaussian road world."
+                                         : "No " + root.viewTitle.toLowerCase() + " frame"
+        description: root.viewMode === "hybrid"
+                     ? "The T5 view is a synchronized visual composite. Select Native CARLA for the uncomposited physics camera."
+                     : "Servo has not received an uncomposited CARLA/Unreal camera frame for this session."
+    }
+
+    Rectangle {
+        z: 4
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: 12
+        width: viewSelector.implicitWidth + 16
+        height: 38
+        radius: 7
+        color: Theme.overlayHud
+        border.width: 1
+        border.color: Theme.border
+        visible: SimulationController.hasSession
+
+        RowLayout {
+            id: viewSelector
+            anchors.centerIn: parent
+            spacing: 5
+
+            TextButton {
+                compact: true
+                text: "Native CARLA"
+                selected: root.viewMode === "native"
+                onClicked: root.viewMode = "native"
+            }
+            TextButton {
+                compact: true
+                text: "T5 visual"
+                selected: root.viewMode === "hybrid"
+                tone: root.viewMode === "hybrid" ? "primary" : "default"
+                onClicked: root.viewMode = "hybrid"
+            }
+            TextButton {
+                compact: true
+                text: "Compare"
+                visible: SimulationController.terminal
+                         && SimulationController.comparisonReplayVideoUrl.length > 0
+                selected: root.viewMode === "compare"
+                onClicked: root.viewMode = "compare"
+            }
+        }
     }
 
     Rectangle {
@@ -103,10 +184,16 @@ Item {
                 StatusBadge {
                     text: "CARLA 0.9.16"
                     tone: SimulationController.sessionState === "failed" ? "error"
-                          : (SimulationController.terminal ? "success" : "info")
+                          : "info"
+                }
+                StatusBadge {
+                    text: root.viewMode === "hybrid" ? "COMPOSITE"
+                          : (root.viewMode === "compare" ? "A/B" : "NATIVE")
+                    tone: root.viewMode === "native" ? "success" : "warning"
                 }
                 Text {
-                    text: SimulationController.terminal ? "RECORDED PHYSICAL RUN" : "LIVE PHYSICS"
+                    text: (SimulationController.terminal ? "RECORDED " : "LIVE ")
+                          + root.viewTitle
                     color: Theme.text
                     font.family: Theme.monoFont
                     font.pixelSize: 10
@@ -209,6 +296,29 @@ Item {
     }
 
     Rectangle {
+        z: 4
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 70
+        width: Math.min(parent.width - 40, provenanceLabel.implicitWidth + 24)
+        height: 34
+        radius: 7
+        color: Theme.overlayHud
+        border.width: 1
+        border.color: root.viewMode === "native" ? Theme.border : Theme.warning
+
+        Text {
+            id: provenanceLabel
+            anchors.centerIn: parent
+            text: root.viewProvenance
+            color: root.viewMode === "native" ? Theme.textSecondary : Theme.warning
+            font.family: Theme.monoFont
+            font.pixelSize: 9
+            font.weight: Font.DemiBold
+        }
+    }
+
+    Rectangle {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: 12
@@ -285,8 +395,10 @@ Item {
                 text: SimulationController.lastError.length > 0
                       ? SimulationController.lastError
                       : (SimulationController.terminal
-                         ? "Evidence replay from the completed CARLA physics session"
-                         : "Authoritative synchronous CARLA · not the local demo car")
+                         ? (SimulationController.physicsGatePassed
+                            ? "CARLA contact/gravity verified · collision geometry NOT VALIDATED"
+                            : "CARLA physics gate did not pass or is not verified")
+                         : "Authoritative synchronous CARLA · native and composite views are separate")
                 color: SimulationController.lastError.length > 0 ? Theme.error : Theme.textMuted
                 font.family: Theme.uiFont
                 font.pixelSize: 9

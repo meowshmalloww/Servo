@@ -232,6 +232,7 @@ class DrivingRunEvidence(StrictModel):
     seed: int
     weather: Literal["clear", "snow"] = "clear"
     weather_receipt: dict[str, Any] = Field(default_factory=dict)
+    visual_integration_receipt: dict[str, Any] = Field(default_factory=dict)
     autopilot_enabled: Literal[False] = False
     metrics: DrivingRunMetrics
     outcome: DrivingOutcome
