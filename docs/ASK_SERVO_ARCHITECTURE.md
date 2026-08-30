@@ -1,27 +1,37 @@
 # Ask Servo — Full-Control AI Architecture
 
-**Status:** local Gemini control path implemented and visibly verified 2026-08-30
+**Status:** local Gemini control path and bounded agent loop implemented and live-verified 2026-08-30
 **Goal:** One AI world where a single model controls **everything** in Servo — runs, worlds, simulations, vehicles, build, settings, weather — through **structured tools and evidence**, not VLM pixel guessing. Every number comes from a durable record; every mutation is a bounded, hash-verified API call.
 
 > Not VLM-first. VLM may assist for frame preview, but the primary control plane is **MCP / structured tools + event logs + error receipts**. This matches the hackathon's Taskmaster + Architecture scoring: event-driven, idempotent, deterministic gates.
 
 ## Verified implementation update
 
-The desktop `Ask Servo` workspace now sends natural-language requests to the
-local RealityCI control API. Gemini 3.7 Flash selects a bounded tool; the UI
-then renders the deterministic message derived from the durable tool result.
-It does not display a separate synthetic success banner.
+The desktop `Ask Servo` workspace now sends natural-language goals to
+`POST /v1/ask/agent`. Every turn performs four explicit phases: inspect the
+current durable record, let Gemini/OpenAI select one bounded tool, execute it
+through deterministic control-plane code, and verify the resulting state,
+ordered events, and artifacts. The complete campaign tool executes the real
+Google ADK 2.7.1 graph and returns its node trace. Each turn is persisted as a
+hash-sealed `servo.ask-servo-agent-run/v1` receipt. The UI does not display a
+separate synthetic success banner.
 
-Verified from the running desktop on 2026-08-30:
+Live agent verification from 2026-08-30:
 
-- Prompt: latest CARLA result, policy, snow, gravity, and collisions.
-- Selected record: `sim-d8e994ae412a481a`.
-- Returned evidence: 99.2% route completion, zero collisions, DriveMA-2B,
-  90% snow, 9.81 m/s² gravity reference, 9.77 m/s² measured IMU p50, and
-  passing ground contact.
+- Prompt: `Resume the selected campaign and run it through the complete
+  agentic loop to a terminal state. Use run_to_completion.`
+- Receipt: `askrun-0f577c2f7b7443e0`, content hash
+  `sha256:0b63bbb6469d5df8a2075c5aed2aefcf97dd5933b33ddf2c6af6fa59fcdc7d61`.
+- Gemini selected `run_to_completion` for campaign
+  `cam-91c726ae91e94ccd`; Google ADK 2.7.1 executed 12 node events and the
+  verifier re-read 21 ordered domain events plus 80 artifacts.
+- Terminal result was `completed_rejected`. The promotion gate correctly
+  rejected a candidate that did not satisfy the evidence contract.
 - Gemini and OpenAI credentials are read only from the local environment; keys
   are never returned to the UI, logs, or repository.
 - Unwired mutation tools return HTTP 501. They never report fake completion.
+- In the agent endpoint, that same condition becomes a durable `BLOCKED`
+  receipt and no postcondition is presented as successful.
 
 World discovery, execution inspection, simulation listing/state/evidence,
 CARLA status, policy listing, inferred weather control, settings inspection,
@@ -34,7 +44,12 @@ step; the tested service is the identical local FastAPI application.
 
 **Desktop (Qt 6.11/QML, Vulkan):** `src/ui/Main.qml` exposes five primary workspaces — Create, Worlds, Runs, Assistant, Settings — plus hidden diagnostic shells sharing one `RealityCIController` model. `WorldLibraryModel` scans the configured reconstruction root for `servo.gaussian-world/v1` + `cameras.json` + PLY hashes. `GaussianSplatView` uses QRhi/Vulkan compute and radix sorting. `ReconstructionController` owns detached builds and durable `job.json` + `events.jsonl`. `SimulationController` polls decimated live records and replays synchronized CARLA evidence. The local DriveMA-2B checkpoint under `runtime/checkpoints/DriveMA-2B` is hash-verified and has completed real CARLA runs.
 
-**Reconstruction:** `WORLD_RECONSTRUCTION_PLAN.md:26` r6 fidelity (373/373 frames, 23.87 dB, 1.975M SH3) and `Servo_T1...Ledger.md:333` T5 v2 tiled corridor `yosemite-t5-all-full-route-review-v2-20260828` (5×96, 10/12 checks, depth-spread still fails → appearance-only, proven with exact-Ply + off-axis sweeps). 5 layers required, only #1 exists.
+**Reconstruction:** the selected demo artifact is the accepted
+`yosemite-t5-hybrid-full-route-v1-20260828`: 7,720,455 Gaussians, PSNR 24.318,
+SSIM 0.798, and 10/12 visual-route checks. World discovery explicitly rejects
+the lower-ranked Final v2 identity for Hybrid selection. The world is still
+nonmetric, appearance-led, and `collisionValidated=false`; CARLA/OpenDRIVE owns
+the separate physical surface.
 
 **RealityCI genetic loop:** `REALITYCI_BACKEND.md:10` — `tools/realityci/orchestrator.py:344` 12-state durable workflow: `pending→baseline_running→failure_triage→diagnosing→experimenting→root_cause_gate→curriculum_planning→training→hidden_exam→regression_check→promotion_gate→reality_debt_update` → terminal. Every step append-only `events.jsonl` with monotonic sequence + idempotency key, content-hash sealed. Hidden seeds 41M+ vs 87M+ disjoint, sealed before training. Promotion is pure code (target+Wilson+beats-baseline+no-regression+hash identity). `adk_graph.py` Google ADK 2.7 SequentialAgent wraps same 12 states, session persistence. `campaign-receipted` demo promoted `7/8` vs `4/8`.
 
@@ -46,7 +61,7 @@ step; the tested service is the identical local FastAPI application.
 
 ---
 
-## 2. Ask Servo design — one brain, every control
+## 2. Ask Servo design — one bounded control plane
 
 ### 2.1 Principles
 
@@ -108,7 +123,7 @@ MCP prompt `genetic_loop` encodes:
 
 Every branch checks `infrastructure_invalid` vs `policy failure` (`REALITYCI_CARLA_CAMPAIGN.md:3`) — infrastructure failures are never diagnosed as policy gaps.
 
-### 2.5 Connection & architecture — wired everything
+### 2.5 Connection & architecture — implemented and fail-closed boundaries
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -149,6 +164,12 @@ Every branch checks `infrastructure_invalid` vs `policy failure` (`REALITYCI_CAR
 
 *MCP transport:* `tools/realityci/ask_servo/mcp_server.py` runs as `python -m tools.realityci.ask_servo.mcp_server` (stdio). Desktop `Start-Servo.ps1` can launch it alongside `uvicorn` on `SERVO_MCP_ENABLED=1`. Claude/Cursor/Windsurf connect via `mcp.json` pointing to same Python. Both transports call identical `ask_servo/tools.py` implementations — no duplication.
 
+*Agent-turn desktop path:* `AiWorkspace.qml` routes operational goals through
+`RealityCIController.executeAskPrompt` to `/v1/ask/agent`. The returned chat
+bubble contains the plan, every completed/blocked phase, evidence IDs, ADK
+identity when applicable, and the sealed receipt hash. Camera frames remain
+optional read-only resources; decisions come from durable records.
+
 *AI cannot control itself:* `assistant_tools` never exposes `update_tool_registry`, `edit_checkpoint_hash`, `modify_promotion_gate`, or `change_api_token`. `SECURITY_AND_PROVENANCE.md` audit blocks path escape, command injection, and credential leakage.
 
 ### 2.6 Vehicle metrics — complete
@@ -176,19 +197,31 @@ powershell -File .\Start-Servo.ps1   # starts uvicorn on 8000 + optional MCP if 
 curl http://127.0.0.1:8000/v1/ask/tools
 # or MCP: tools/list over stdio
 
-# 3. Ask in natural language (deterministic path needs no keys)
-curl -X POST http://127.0.0.1:8000/v1/ask/plan -H "Content-Type: application/json" -d '{"prompt":"diagnose the last failure and run counterfactuals","campaign_id":"cam-..."}'
+# 3. Run a verified agent turn. Use provider=gemini for the configured Vertex
+# path, provider=openai for OpenAI, or deterministic for a repeatable offline
+# test. Never place credentials in the JSON body.
+curl -X POST http://127.0.0.1:8000/v1/ask/agent -H "Content-Type: application/json" -H "Idempotency-Key: demo-agent-01" -d '{"prompt":"Run the selected campaign through the agentic loop","provider":"gemini","campaign_id":"cam-...","verify":true}'
 
-# 4. MCP config (Claude/Cursor)
+# 4. Read the hash-sealed receipt returned by the previous call.
+curl http://127.0.0.1:8000/v1/ask/agent-runs/askrun-...
+
+# 5. MCP config (Claude/Cursor)
 #  .mcp.json → { "mcpServers": { "ask-servo": { "command": "python", "args": ["-m","tools.realityci.ask_servo.mcp_server"], "env": {"SERVO_RECONSTRUCTION_ROOT":"..."} } } }
 ```
 
 All `POST` mutating calls accept `Idempotency-Key: <uuid>` and return `request_id` for log correlation.
 
+In the desktop, open **Ask Servo**, select Gemini 3.7 Flash, and ask:
+`Run the selected campaign through the agentic loop`. Select a campaign in
+Runs first. If no campaign is selected, Servo stops with a `BLOCKED` receipt
+instead of choosing an unrelated campaign. `New` clears only the chat; it does
+not delete campaign records or agent receipts.
+
 ---
 
 ## 4. Remaining work after the verified local build
 
+* Produce one same-campaign T5 Hybrid → CARLA failure → diagnosis → training → hidden-exam receipt; the current physical and training proofs are separate.
 * Add `per-step training curves` streaming from `tools/realityci/trainers/*` into `TrainWorkspace.qml` (currently placeholder)
 * Qualify a full ClimateNeRF semantic snow checkpoint; current snow is explicitly generated/inferred, not ClimateNeRF-qualified.
 * Add traffic actors and traffic-light scenarios to the real CARLA campaign.

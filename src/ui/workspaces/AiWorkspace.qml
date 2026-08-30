@@ -118,7 +118,7 @@ Item {
                         iconSource: Theme.icon("assistant")
                         title: "What should we work on?"
                         description: AiChatController.configured
-                                     ? "Ask Servo about this project, a world, or the next build step."
+                                     ? "Ask for a goal. Servo inspects durable state, plans bounded tools, executes them, and verifies evidence. Try: Run the selected campaign through the agentic loop."
                                      : "Connect Gemini in Settings to start."
                     }
 
@@ -247,7 +247,7 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 running: AiChatController.busy || RealityCIController.assistantBusy
                                 label: RealityCIController.assistantBusy
-                                       ? "Servo is planning and executing a verified tool"
+                                       ? "Servo is inspecting, planning, executing, and verifying evidence"
                                        : AiChatController.statusText
                                 variant: root.longRunActive ? "Orbit" : "Dots"
                             }
@@ -267,7 +267,7 @@ Item {
                     maxAttachments: AiChatController.maxAttachments
                     busy: AiChatController.busy || RealityCIController.assistantBusy
                     busyLabel: RealityCIController.assistantBusy
-                               ? "Servo is executing a verified campaign tool"
+                               ? "Servo is running a bounded agentic loop"
                                : AiChatController.statusText
                     busyVariant: root.longRunActive ? "Orbit" : "Dots"
                     backendConfigured: AiChatController.configured || RealityCIController.online

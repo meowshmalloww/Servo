@@ -29,3 +29,16 @@ def test_deterministic_clear_weather_does_not_claim_climatenerf() -> None:
     assert call.tool == AskToolName.SET_WEATHER
     assert call.arguments["weather"] == "clear"
     assert call.arguments["engine"] == "none"
+
+
+def test_deterministic_agentic_campaign_goal_uses_durable_graph_tool() -> None:
+    call = deterministic_plan(
+        AskPlanRequest(
+            prompt="Run the selected campaign through the agentic loop",
+            provider="deterministic",
+            campaign_id="cam-0123456789abcdef",
+        )
+    )
+    assert call.tool == AskToolName.RUN_TO_COMPLETION
+    assert call.campaign_id == "cam-0123456789abcdef"
+    assert "Google ADK" in call.explanation

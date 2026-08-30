@@ -718,7 +718,11 @@ void RealityCIController::executeAskPrompt(const QString &prompt,
     if (!simulationId.trimmed().isEmpty())
         body.insert(QLatin1String("simulation_id"), simulationId.trimmed());
 
-    QNetworkReply *reply = post(QStringLiteral("/v1/ask/execute"), body, QUuid::createUuid().toString(QUuid::WithoutBraces));
+    // Ask Servo is an agent turn, not a one-shot chat completion: the API
+    // inspects durable state, plans one allow-listed action, executes it, and
+    // verifies postconditions before this reply is shown as complete.
+    body.insert(QLatin1String("verify"), true);
+    QNetworkReply *reply = post(QStringLiteral("/v1/ask/agent"), body, QUuid::createUuid().toString(QUuid::WithoutBraces));
     m_assistantReply = reply;
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         if (m_assistantReply == reply)
@@ -745,7 +749,13 @@ void RealityCIController::executeAskPrompt(const QString &prompt,
                 + QStringLiteral(" used ") + tool + QStringLiteral(".");
         }
         emit assistantResultChanged();
-        // Refresh campaign/simulation worlds as needed
+        // Refresh campaign/simulation worlds as needed. Agent turns expose a
+        // bounded evidence summary; older one-tool responses remain accepted.
+        const QJsonObject evidence = object.value(QLatin1String("evidence")).toObject();
+        if (evidence.contains(QLatin1String("campaign_id"))
+            || evidence.contains(QLatin1String("state"))) {
+            applyStateJson(evidence);
+        }
         if (object.contains(QLatin1String("result"))) {
             // Ask tools may return campaign state inside result.result
             QJsonObject inner = result.value(QLatin1String("result")).toObject();

@@ -55,6 +55,44 @@ SHOWCASE_SEED_BASE = 55_000_000
 INPUT_SPEC = "rgb-stack-2x96x160+ego-speed"
 
 
+def _causal_gate_required_requests(
+    requested: list[ExperimentRequest],
+) -> list[ExperimentRequest]:
+    """Complete a model proposal with the gate's mandatory evidence arms.
+
+    Gemini proposes useful counterfactuals, but the deterministic causal gate
+    has a fixed minimum evidence contract. Missing arms are executed, never
+    imputed, so an incomplete model proposal cannot crash or weaken the gate.
+    """
+
+    completed = list(requested)
+    present = {request.intervention for request in completed}
+    defaults = (
+        ExperimentRequest(
+            intervention=InterventionName.REMOVE_OCCLUDER,
+            estimated_cost_seconds=6.0,
+        ),
+        ExperimentRequest(
+            intervention=InterventionName.REVEAL_PEDESTRIAN_EARLIER,
+            parameters={"delta_seconds": 1.2},
+            estimated_cost_seconds=6.0,
+        ),
+        ExperimentRequest(
+            intervention=InterventionName.ORACLE_PERCEPTION,
+            estimated_cost_seconds=6.0,
+        ),
+        ExperimentRequest(
+            intervention=InterventionName.ORACLE_PLANNER,
+            estimated_cost_seconds=6.0,
+        ),
+    )
+    for request in defaults:
+        if request.intervention not in present:
+            completed.append(request)
+            present.add(request.intervention)
+    return completed
+
+
 class EventLog:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -445,7 +483,7 @@ class CampaignEngine:
     def _h_experiments(self) -> None:
         _, failure = self._load_baseline_failure()
         proposal = json.loads((self.paths.root / "proposal.json").read_text())
-        requests = [
+        requests = _causal_gate_required_requests([
             ExperimentRequest(
                 intervention=InterventionName(item["intervention"]),
                 parameters={k: float(v) for k, v in item.get("parameters", {}).items()},
@@ -453,7 +491,7 @@ class CampaignEngine:
                 estimated_cost_seconds=float(item.get("estimated_cost_seconds", 6.0)),
             )
             for item in proposal["requested_experiments"]
-        ]
+        ])
 
         showcase = self._showcase_scenario()
         policy = self._baseline_policy()
@@ -485,6 +523,49 @@ class CampaignEngine:
         summary = json.loads((self.paths.root / "arms-summary.json").read_text())
         arms_map = {item["intervention"]: item["outcomes"] for item in summary["arms"]}
         _, failure = self._load_baseline_failure()
+        required = _causal_gate_required_requests([])
+        missing_requests = [
+            request
+            for request in required
+            if request.intervention.value not in arms_map
+        ]
+        if missing_requests:
+            # A campaign may have reached this state with an older build that
+            # trusted a model-proposed subset. Execute the missing real arms on
+            # resume before evaluating the deterministic gate.
+            showcase = self._showcase_scenario()
+            policy = self._baseline_policy()
+            engine = CounterfactualEngine(seeds_per_arm=self.seeds_per_arm)
+            for request in missing_requests:
+                results = engine.execute_request(
+                    showcase,
+                    request,
+                    policy,
+                    failure.record_id,
+                    campaign_id=self.campaign_id,
+                )
+                outcomes = []
+                for result in results:
+                    verify_seal(result.experiment_record)
+                    outcomes.append(result.outcome.value)
+                    self._emit(
+                        EventType.EXPERIMENT_COMPLETED,
+                        {
+                            "experiment_id": result.experiment_record.record_id,
+                            "intervention": request.intervention.value,
+                            "outcome": result.outcome.value,
+                            "derived_scenario_id": result.derived_scenario.scenario_id,
+                            "required_by": "deterministic-causal-gate/v1",
+                        },
+                        "experiments",
+                    )
+                item = {
+                    "intervention": request.intervention.value,
+                    "outcomes": outcomes,
+                }
+                summary["arms"].append(item)
+                arms_map[request.intervention.value] = outcomes
+            _atomic_write_json(self.paths.root / "arms-summary.json", summary)
 
         gate, diagnosis = evaluate_causal_gate(
             arms=GateArmOutcomes(

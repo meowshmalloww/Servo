@@ -2,8 +2,9 @@
 
 The autonomous improvement loop for physical-AI policies, implemented as
 real, verified code under `tools/realityci/`, `tests/realityci/`, and
-`cloud/`.  Every number in every artifact comes from executed code; nothing
-is mocked, simulated as a stand-in for reality, or fabricated.
+`cloud/`. Every number in every artifact comes from executed code. The local
+campaign deliberately uses an executed synthetic scenario runner; it is not a
+claim of measured physical reality and remains separate from CARLA/T5 evidence.
 
 ## The loop
 
@@ -150,8 +151,9 @@ durable event log.
 & $py -m uvicorn cloud.control_api.app.main:app --port 8000
 
 # then in Servo: Runs -> API URL http://127.0.0.1:8000 -> Connect ->
-# Create Campaign -> Start Run. The Assistant can also invoke the same bounded
-# tools using Gemini or OpenAI. Point at Cloud Run later; only the URL changes.
+# Create Campaign -> Start Run. In Ask Servo, select that campaign and request
+# "Run the selected campaign through the agentic loop". Gemini/OpenAI plans;
+# deterministic tools and the Google ADK graph execute and verify the result.
 ```
 
 Control API surface:
@@ -160,6 +162,9 @@ Control API surface:
 - `POST /v1/campaigns/{id}/run`, `/resume`, `/step`, and `/cancel`
 - `GET /v1/campaigns/{id}/artifacts` and hash-bound artifact download
 - `GET /v1/assistant/tools`, `POST /v1/assistant/plan`, and `/execute`
+- `POST /v1/ask/agent`: inspect -> model plan -> bounded execution -> durable
+  verification, returning a hash-sealed agent receipt
+- `GET /v1/ask/agent-runs/{id}`: re-read and verify a stored agent receipt
 - explicit tool execution for create/start/status/explain/counterfactuals/
   training/hidden-exam/comparison/cancel/next-weakness
 
@@ -167,21 +172,22 @@ Control API surface:
 listener, removes stale ownership, and refuses to launch a second unhealthy
 recorded process.
 
-## Verification receipt (2026-08-27)
+## Verification receipt (2026-08-30)
 
-- RealityCI Python suite: **110 passed, 2 optional skips**.
+- RealityCI Python suite: **170 passed, 1 optional skip**.
 - Google ADK environment: **3 passed**, including fresh-process resume,
   byte-stable terminal replay, no duplicate idempotency keys, and recovery
   from an interrupted campaign.
-- Native Qt/QML build: successful; CTest: **10/10 passed**.
-- Live HTTP smoke: one local API listener; a campaign traversed the complete
-  loop and ended `completed_rejected` through the deterministic safety gate;
-  80 artifacts were retrievable.
+- Native Qt/QML build: successful; CTest: **12/12 passed**.
+- Live Gemini/ADK receipt `askrun-0f577c2f7b7443e0`: campaign
+  `cam-91c726ae91e94ccd` traversed the remaining graph and ended
+  `completed_rejected` through the deterministic safety gate; 21 ordered
+  events and 80 artifacts were re-read during verification.
 
 The Gemini and OpenAI structured providers are implemented and schema-tested.
-The receipt above does not claim that a paid external model request was made;
-its live assistant smoke used the deterministic planner so verification was
-repeatable and cost-free.
+The receipt above used the configured Gemini/Vertex path for planning; all
+state transitions, experiments, training, and promotion checks remained
+deterministic tools rather than model-authored claims.
 
 Campaign gates and sizes are stored in the sealed `campaign.json` record at
 create time and are reconstructed from it on every resumed step, so strict

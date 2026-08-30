@@ -227,6 +227,22 @@ VALID_RESPONSE = json.dumps(
     }
 )
 
+TRANSPORT_RESPONSE = json.dumps(
+    {
+        "summary": "late perception under partial occlusion",
+        "hypotheses": [
+            {"hypothesis_id": "H1", "kind": "detected_too_late", "claim": "late"},
+        ],
+        "requested_experiments": [
+            {
+                "intervention": "reveal_pedestrian_earlier",
+                "parameters_json": "{\"delta_seconds\": 0.8}",
+                "hypothesis_ids": ["H1"],
+            }
+        ],
+    }
+)
+
 BAD_INTERVENTION_RESPONSE = json.dumps(
     {
         "summary": "wants teleport portal",
@@ -242,6 +258,27 @@ def _run_gemini(responses: list[str]):
     return diag
 
 
+def test_gemini_default_client_honors_servo_vertex_transport(monkeypatch) -> None:
+    from google import genai
+
+    captured: list[dict] = []
+
+    def fake_client(**kwargs):
+        captured.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(genai, "Client", fake_client)
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-cloud-key")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("SERVO_GOOGLE_API", "vertex")
+
+    GeminiDiagnostician._build_default_client()
+
+    assert captured == [
+        {"vertexai": True, "api_key": "test-google-cloud-key"}
+    ]
+
+
 def test_gemini_valid_response_converted_with_metadata() -> None:
     diag = _run_gemini([VALID_RESPONSE])
     manifest = make_manifest()
@@ -253,6 +290,20 @@ def test_gemini_valid_response_converted_with_metadata() -> None:
     assert proposal.prompt_template_version is not None
     assert proposal.response_sha256.startswith("sha256:")
     assert len(proposal.requested_experiments) == 2
+
+
+def test_gemini_transport_parameters_are_validated_into_canonical_contract() -> None:
+    diag = _run_gemini([TRANSPORT_RESPONSE])
+    manifest = make_manifest()
+    evidence, failure = build_evidence_and_failure(
+        manifest,
+        ScenarioRunner(manifest, NeverProbe()).run(),
+        "sha256:" + "4" * 64,
+    )
+
+    proposal = diag.propose(evidence, failure, DiagnosisContext())
+
+    assert proposal.requested_experiments[0].parameters == {"delta_seconds": 0.8}
 
 
 def test_gemini_rejects_unsupported_intervention_after_retry() -> None:

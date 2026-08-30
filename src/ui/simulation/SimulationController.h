@@ -10,6 +10,7 @@
 #include <QtQmlIntegration>
 
 class QJsonObject;
+class QJsonArray;
 class QNetworkReply;
 class SimulationFrameProvider;
 
@@ -176,6 +177,9 @@ private:
     void applyLive(const QJsonObject &object);
     void applyState(const QJsonObject &object);
     void fetchSimulationList(const QString &preferredSessionId);
+    static QJsonObject selectSimulationEntry(const QJsonArray &sessions,
+                                             const QString &preferredSessionId,
+                                             const QString &requiredWorldId);
     void attachSimulationEntry(const QJsonObject &entry);
     void clearAttachedSimulation();
     void setBusy(bool value);

@@ -140,6 +140,39 @@ def _pydantic_response_schema() -> type:
     return GProposal
 
 
+def _gemini_transport_response_schema() -> type:
+    """Gemini-compatible schema without arbitrary-object properties.
+
+    The Gen AI structured-output dialect rejects JSON Schema
+    ``additionalProperties``. The canonical diagnostic contract deliberately
+    keeps intervention parameters as a dictionary, so the transport carries
+    that one field as JSON text and validates it through the canonical model
+    before any intervention can execute.
+    """
+
+    from pydantic import BaseModel, Field
+
+    class GHypothesisTransport(BaseModel):
+        hypothesis_id: str
+        kind: str
+        claim: str
+
+    class GExperimentTransport(BaseModel):
+        intervention: str
+        parameters_json: str = "{}"
+        hypothesis_ids: tuple[str, ...] = ()
+        estimated_cost_seconds: float = 6.0
+
+    class GProposalTransport(BaseModel):
+        summary: str
+        hypotheses: tuple[GHypothesisTransport, ...]
+        requested_experiments: tuple[GExperimentTransport, ...] = Field(
+            default_factory=tuple
+        )
+
+    return GProposalTransport
+
+
 def _validate_and_convert(parsed: Any, context: DiagnosisContext) -> DiagnosisProposal:
     allowed = set(context.available_interventions)
     schema = _pydantic_response_schema()
@@ -221,9 +254,29 @@ class GeminiDiagnostician(Diagnostician):
                 "google-genai is required for the Gemini diagnostician"
             ) from exc
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        google_api = os.environ.get("SERVO_GOOGLE_API", "").strip().lower()
+        use_vertex = (
+            google_api in {"vertex", "vertex-ai", "aiplatform"}
+            or os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
         if api_key:
-            return genai.Client(api_key=api_key)
+            # Match Ask Servo's planner transport. Vertex AI Express accepts a
+            # Google Cloud API key, while an API key restricted to
+            # aiplatform.googleapis.com is correctly rejected by the separate
+            # generativelanguage.googleapis.com Developer API endpoint.
+            return (
+                genai.Client(vertexai=True, api_key=api_key)
+                if use_vertex
+                else genai.Client(api_key=api_key)
+            )
         if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or os.environ.get("GOOGLE_CLOUD_PROJECT"):
+            if use_vertex:
+                return genai.Client(
+                    vertexai=True,
+                    project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
+                    location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global"),
+                )
             return genai.Client()
         raise GeminiDiagnosticianError(
             "no Gemini credentials: set GEMINI_API_KEY / GOOGLE_API_KEY or "
@@ -283,6 +336,7 @@ class GeminiDiagnostician(Diagnostician):
             "temperature": self.temperature,
             "system_instruction": _SYSTEM_INSTRUCTIONS,
             "response_mime_type": "application/json",
+            "response_schema": _gemini_transport_response_schema(),
         }
         thinking_level = configured_thinking_level()
         if thinking_level is not None:
@@ -318,8 +372,39 @@ class GeminiDiagnostician(Diagnostician):
         schema = _pydantic_response_schema()
         try:
             parsed = schema.model_validate_json(match.group(0))
-        except Exception as exc:
-            raise GeminiDiagnosticianError(f"schema validation failed: {exc}") from exc
+        except Exception as canonical_exc:
+            try:
+                transport = _gemini_transport_response_schema().model_validate_json(
+                    match.group(0)
+                )
+                normalized_experiments = []
+                for experiment in transport.requested_experiments:
+                    parameters = json.loads(experiment.parameters_json or "{}")
+                    if not isinstance(parameters, dict):
+                        raise ValueError("parameters_json must decode to an object")
+                    normalized_experiments.append(
+                        {
+                            "intervention": experiment.intervention,
+                            "parameters": parameters,
+                            "hypothesis_ids": experiment.hypothesis_ids,
+                            "estimated_cost_seconds": experiment.estimated_cost_seconds,
+                        }
+                    )
+                parsed = schema.model_validate(
+                    {
+                        "summary": transport.summary,
+                        "hypotheses": [
+                            hypothesis.model_dump()
+                            for hypothesis in transport.hypotheses
+                        ],
+                        "requested_experiments": normalized_experiments,
+                    }
+                )
+            except Exception as transport_exc:
+                raise GeminiDiagnosticianError(
+                    "schema validation failed: "
+                    f"canonical={canonical_exc}; transport={transport_exc}"
+                ) from transport_exc
         return _validate_and_convert(parsed, context)
 
 

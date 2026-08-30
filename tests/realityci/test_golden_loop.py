@@ -5,9 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from tools.realityci.orchestrator import CampaignEngine, load_events
+from tools.realityci.diagnosis.base import ExperimentRequest
+from tools.realityci.orchestrator import (
+    CampaignEngine,
+    _causal_gate_required_requests,
+    load_events,
+)
 from tools.realityci.schemas.base import verify_seal
 from tools.realityci.schemas.core import EventType
+from tools.realityci.schemas.diagnosis import InterventionName
 from tools.realityci.state_machine import CampaignState
 
 
@@ -24,6 +30,29 @@ EXPECTED_EVENT_CHAIN = [
     EventType.RUN_COMPLETED,
     EventType.FAILURE_DETECTED,
 ]
+
+
+def test_model_experiment_subset_is_completed_with_real_gate_arms() -> None:
+    model_request = ExperimentRequest(
+        intervention=InterventionName.ORACLE_PERCEPTION,
+        hypothesis_ids=("H1",),
+    )
+
+    completed = _causal_gate_required_requests([model_request])
+
+    assert completed[0] is model_request
+    assert [request.intervention for request in completed] == [
+        InterventionName.ORACLE_PERCEPTION,
+        InterventionName.REMOVE_OCCLUDER,
+        InterventionName.REVEAL_PEDESTRIAN_EARLIER,
+        InterventionName.ORACLE_PLANNER,
+    ]
+    reveal = next(
+        request
+        for request in completed
+        if request.intervention == InterventionName.REVEAL_PEDESTRIAN_EARLIER
+    )
+    assert reveal.parameters == {"delta_seconds": 1.2}
 
 
 @requires_baseline

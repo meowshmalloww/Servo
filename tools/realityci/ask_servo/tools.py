@@ -188,8 +188,33 @@ class _GeminiToolSelection(BaseModel):
 
 # ------------------------------------------------------------------ deterministic routing
 def deterministic_plan(request: AskPlanRequest) -> AskToolCall:
-    t = request.prompt.lower()
+    # Agent turns prepend a durable snapshot and planning constraints. Intent
+    # routing must inspect the user's goal only, otherwise words in those
+    # constraints (for example ``run_to_completion``) can select themselves.
+    goal = request.prompt
+    if goal.startswith("User goal: "):
+        goal = goal[len("User goal: ") :].split(
+            "\nDurable pre-action context:", 1
+        )[0]
+    t = goal.lower()
     # Campaign
+    if any(
+        phrase in t
+        for phrase in (
+            "agentic loop",
+            "genetic loop",
+            "taskmaster loop",
+            "run to completion",
+            "complete the campaign",
+            "finish the campaign",
+            "autonomous campaign",
+        )
+    ):
+        return AskToolCall(
+            tool=AskToolName.RUN_TO_COMPLETION,
+            campaign_id=request.campaign_id,
+            explanation="Run the selected campaign through the durable Google ADK graph.",
+        )
     if "cancel" in t and "campaign" in t:
         return AskToolCall(tool=AskToolName.CANCEL_CAMPAIGN, campaign_id=request.campaign_id, explanation="Bounded cancel.")
     if "compare" in t or "checkpoint" in t or "promotion" in t:
@@ -286,6 +311,9 @@ def _planning_prompt(request: AskPlanRequest) -> str:
 Choose exactly one allowed tool. Never invent IDs, paths, hashes, metrics, or tool names.
 Promotion/rejection is deterministic code. Every world_path/simulation_id must be validated.
 Use supplied campaign_id/simulation_id/world_id when needed.
+Match the requested scope: when the user asks to run, finish, or complete a
+campaign or agentic loop, select run_to_completion. Select step_campaign only
+when the user explicitly requests one durable step.
 
 Allowed tools:
 {catalog}

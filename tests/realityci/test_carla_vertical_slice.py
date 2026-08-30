@@ -25,13 +25,17 @@ from tools.realityci.simulation.carla.coordinates import (
     validate_inverse_pair,
 )
 from tools.realityci.simulation.carla.runner import (
+    ROUTE_TERMINAL_ARTIFACT,
     _configure_vehicle_weather_physics,
     _configure_ground_contact_physics,
+    _evidence_artifact_names,
     _opencv_camera_pose_from_carla,
     _route_corridor_guard,
+    _route_end_braking_required,
     _route_goal_reached,
     _route_stabilized_control,
     _route_target_ego,
+    _route_terminal_control,
 )
 from tools.realityci.simulation.carla.discovery import discover_runtime, find_free_port, port_available, port_block_available
 from tools.realityci.simulation.carla.evaluator import classify_infrastructure_invalid, route_metrics
@@ -370,11 +374,35 @@ def test_ground_contact_configuration_enables_and_verifies_swept_wheels() -> Non
 
 
 def test_route_goal_accepts_controlled_stop_inside_behavior_agent_tolerance() -> None:
-    assert _route_goal_reached(0.995, 2.5, 3.0)
+    assert not _route_goal_reached(0.995, 2.5, 3.0)
     assert _route_goal_reached(0.91, 2.7, 0.01)
     assert not _route_goal_reached(0.91, 2.7, 2.0)
     assert not _route_goal_reached(0.89, 2.0, 0.0)
     assert not _route_goal_reached(0.99, 3.1, 0.0)
+
+
+def test_route_end_braking_latches_before_a_moving_vehicle_overruns_goal() -> None:
+    assert not _route_end_braking_required(0.89, 1.0, 4.0)
+    assert _route_end_braking_required(0.91, 3.0, 4.0)
+    assert _route_end_braking_required(0.99, 1.0, 0.2)
+    assert _route_end_braking_required(float("nan"), 1.0, 1.0)
+
+    moving = _route_terminal_control(4.0, 0.35)
+    assert moving.steer == 0.35
+    assert moving.throttle == 0.0
+    assert moving.brake == 1.0
+    assert moving.hand_brake is False
+    stopped = _route_terminal_control(0.05, 2.0)
+    assert stopped.steer == 1.0
+    assert stopped.throttle == 0.0
+    assert stopped.brake == 1.0
+    assert stopped.hand_brake is True
+
+
+def test_route_terminal_receipt_is_in_the_hashed_evidence_set() -> None:
+    artifacts = _evidence_artifact_names(("front_left", "front", "front_right"))
+    assert ROUTE_TERMINAL_ARTIFACT in artifacts
+    assert "evidence/drivema-front.mp4" in artifacts
 
 
 def test_gaussian_snow_deposits_only_on_supported_up_facing_surfaces() -> None:

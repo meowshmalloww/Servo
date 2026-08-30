@@ -1,8 +1,9 @@
 # Servo — RealityCI submission overview (backend build)
 
-> Status: **complete local agentic loop + desktop Ask Servo + real CARLA
-> vertical slice, verified**. Cloud deployment remains a separate deployment
-> step.
+> Status: **complete local agentic campaign loop, desktop Ask Servo, and a
+> separate real CARLA vertical slice, verified locally**. These are not yet one
+> end-to-end T5/CARLA training campaign. Cloud deployment remains a required
+> submission step.
 
 ## 30-second explanation
 
@@ -17,12 +18,20 @@ updates Reality Debt and picks the next weakness autonomously.
 
 ## What actually ran here (real artifacts, not claims)
 
-- T5 Final v2 + DriveMA/CARLA snow session
-  `sim-d8e994ae412a481a`: 99.2% / 30.43 m route, zero collisions, one lane
-  event, 0.472 m max lateral error, three policy cameras, 90% inferred snow,
-  measured gravity/contact pass. The world remains nonmetric and review-only.
-- Ask Servo visibly executed a Gemini 3.7 Flash request and read the durable
-  CARLA result. Unwired mutations return HTTP 501 rather than fake success.
+- Accepted T5 Hybrid + DriveMA/CARLA snow session
+  `sim-6291857fc6c84f13`: 94.26% route completion, zero collisions, one lane
+  event, three policy cameras, measured gravity/contact pass, and a physically
+  applied 12-frame full-brake terminal stop at 0.056 m/s. It is hash-bound to
+  `yosemite-t5-hybrid-full-route-v1-20260828`, not Final v2.
+- Accepted T5 Hybrid pedestrian challenge `sim-40185a19d24e45a9`: a grounded,
+  owned CARLA walker crossed the generated lane and DriveMA collided at 53.86%
+  progress. Servo classified `collision_pedestrian`; cleanup destroyed all
+  nine actors. This is a policy failure artifact, not a pass.
+- Ask Servo live Gemini run `askrun-0f577c2f7b7443e0` inspected campaign
+  `cam-91c726ae91e94ccd`, selected `run_to_completion`, executed Google ADK
+  2.7.1, and verified 21 ordered events and 80 artifacts. The deterministic
+  promotion gate rejected the candidate. Receipt hash:
+  `sha256:0b63bbb6469d5df8a2075c5aed2aefcf97dd5933b33ddf2c6af6fa59fcdc7d61`.
 
 - Trained baseline (`demo/occluded_pedestrian/baseline/baseline.pt`,
   sha256 `3d9785…`) passes ordinary crossings **100%** but drops to **62.5%**
@@ -40,7 +49,7 @@ updates Reality Debt and picks the next weakness autonomously.
 
 ```powershell
 $py = "<path to reconstruction venv>\python.exe"
-& $py -m pytest tests\realityci -q                       # 79+ tests
+& $py -m pytest tests\realityci -q                       # 170 passed, 1 optional skip
 & $py -m tools.realityci.cli run-campaign `
     --output demo\occluded_pedestrian\campaign-x `
     --checkpoint demo\occluded_pedestrian\baseline\baseline.pt
@@ -60,10 +69,10 @@ See `assets/realityci-architecture.svg` and `REALITYCI_BACKEND.md`
 
 | Tech | Role |
 |---|---|
-| Vertex AI / Gemini | structured causal hypotheses + experiment selection via `diagnosis/gemini.py` |
+| Gemini API / Vertex AI-compatible planner | structured causal hypotheses and bounded tool selection; current local credentials use the Gemini API path |
 | Google ADK | durable graph execution of the campaign (`adk_graph.py`) |
-| Cloud Run | control API (`cloud/control_api`) + training/exam job containers |
-| Firestore / Pub/Sub / GCS | state, ordered events, artifacts (interfaces implemented locally; cloud clients in cloud requirements) |
+| Cloud Run target | control API (`cloud/control_api`) plus training/exam job definitions; deployment proof is still required |
+| GCS optional mirror | campaign artifacts when `SERVO_GCS_BUCKET` is configured; Firestore/Pub/Sub remain architectural targets, not current runtime claims |
 
 ## Gates that cannot be gamed
 

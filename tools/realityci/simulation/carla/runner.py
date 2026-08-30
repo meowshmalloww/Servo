@@ -44,13 +44,25 @@ from ..rendering.base import ObservationRenderRequest
 from ..rendering.hybrid_compositor import HybridGaussianCarlaObservationRenderer
 from ..rendering.servo_gaussian import ServoGaussianObservationRenderer
 from ..session_store import SessionStore, atomic_write_json
-from .actors import camera_blueprint, mount_transform, spawn_camera, spawn_ego, spawn_event_sensors
+from .actors import (
+    apply_pedestrian_motion,
+    camera_blueprint,
+    finalize_pedestrian_spawn_receipt,
+    mount_transform,
+    pedestrian_crossing_distance_m,
+    spawn_camera,
+    spawn_ego,
+    spawn_event_sensors,
+    spawn_one_pedestrian,
+)
 from .cleanup import OwnedActors
 from .coordinates import CoordinateTransform, matrix_to_quaternion
 from .discovery import carla_import_path
 from .evaluator import route_metrics
 from .sensor_barrier import SensorBarrier
 from .world_loader import configure_synchronous_world, load_executable_world
+
+ROUTE_TERMINAL_ARTIFACT = "route-terminal.jsonl"
 
 
 def _append_jsonl(path: Path, payload: dict) -> None:
@@ -282,15 +294,74 @@ def _configure_ground_contact_physics(vehicle) -> dict[str, Any]:
 
 
 def _route_goal_reached(progress: float, goal_distance_m: float, speed_mps: float) -> bool:
-    """Accept either a full centerline traversal or a controlled goal stop.
+    """Accept only a controlled stop inside the sealed goal envelope.
 
     CARLA's BehaviorAgent intentionally stops a vehicle within its goal
     tolerance. Requiring 99% projected centerline progress after it has
     already stopped inside that tolerance leaves a valid run braking forever.
+    Conversely, progress alone must never declare success while the vehicle is
+    still moving through the terminus.
     """
-    if goal_distance_m >= 3.0:
+    if not all(math.isfinite(value) for value in (progress, goal_distance_m, speed_mps)):
         return False
-    return progress >= 0.99 or (progress >= 0.90 and speed_mps <= 0.25)
+    if goal_distance_m >= 3.0 or speed_mps > 0.25:
+        return False
+    return progress >= 0.90
+
+
+def _route_end_braking_required(
+    progress: float,
+    goal_distance_m: float,
+    speed_mps: float,
+) -> bool:
+    """Latch deterministic braking before the vehicle can overrun the route.
+
+    The stopping envelope is deliberately conservative and only activates in
+    the final ten percent of the selected route. Once latched by the worker it
+    is never released, so a nearest-segment projection cannot wrap or make the
+    policy accelerate after passing the final centerline point.
+    """
+    if not all(math.isfinite(value) for value in (progress, goal_distance_m, speed_mps)):
+        return True
+    if progress < 0.90:
+        return False
+    stopping_distance_m = (max(0.0, speed_mps) ** 2) / (2.0 * 3.0) + 0.75
+    return goal_distance_m <= max(1.5, stopping_distance_m)
+
+
+def _route_terminal_control(
+    speed_mps: float,
+    route_steer: float = 0.0,
+) -> DirectVehicleControl:
+    """Brake to a stop while retaining deterministic route curvature.
+
+    Zeroing steering during a terminal stop sends the vehicle tangent to a
+    curved route. The longitudinal channel remains exclusively owned by the
+    stop latch, while steering follows the sealed route controller.
+    """
+    return DirectVehicleControl(
+        steer=max(-1.0, min(1.0, float(route_steer))),
+        throttle=0.0,
+        brake=1.0,
+        hand_brake=math.isfinite(speed_mps) and speed_mps <= 0.10,
+        reverse=False,
+    )
+
+
+def _evidence_artifact_names(input_camera_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """Artifacts whose hashes are sealed into ``DrivingRunEvidence``."""
+    return (
+        "telemetry.jsonl", "actions.jsonl", "applied-controls.jsonl",
+        "collisions.jsonl", "lane-invasions.jsonl", "safety-interventions.jsonl",
+        "route-stabilizer.jsonl", ROUTE_TERMINAL_ARTIFACT,
+        "dynamic-actors.json", "dynamic-actor-events.jsonl",
+        "physics-evidence.json", "roadside-detections.jsonl",
+        "previews/latest-policy-frame.jpg", "previews/latest-carla-native-fixed.jpg",
+        "previews/latest-servo-t5-carla-lincoln-fixed.jpg",
+        "evidence/carla-native-fixed.mp4", "evidence/servo-t5-carla-lincoln-fixed.mp4",
+        "evidence/native-and-t5-synchronized.mp4",
+        *(f"evidence/drivema-{sensor_id}.mp4" for sensor_id in input_camera_ids),
+    )
 
 
 def _opencv_camera_pose_from_carla(
@@ -584,7 +655,16 @@ class CarlaSimulationRunner:
                 # disabling call because CARLA routes set_autopilot through
                 # Traffic Manager, which is intentionally not authoritative
                 # for Servo's explicit-control ego.
-                if manifest.scenario.dynamic_actor_profile != "none":
+                dynamic_pedestrian = None
+                if manifest.scenario.dynamic_actor_profile == "one-pedestrian":
+                    dynamic_pedestrian = spawn_one_pedestrian(
+                        world,
+                        carla,
+                        route.centerline_carla,
+                        manifest.scenario.seed,
+                        self.owned,
+                    )
+                elif manifest.scenario.dynamic_actor_profile != "none":
                     raise RuntimeError(
                         f"dynamic actor profile is not enabled in the bounded local runner: {manifest.scenario.dynamic_actor_profile}"
                     )
@@ -763,6 +843,17 @@ class CarlaSimulationRunner:
                 store.transition(SimulationSessionState.WARMING, "deterministic brake-held sensor warmup")
                 ego.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0))
                 for _ in range(10): world.tick()
+                if dynamic_pedestrian is not None:
+                    finalize_pedestrian_spawn_receipt(dynamic_pedestrian)
+                    atomic_write_json(
+                        store.session_root / "dynamic-actors.json",
+                        {
+                            "schema": "servo.carla-dynamic-actors/v1",
+                            "session_id": manifest.session_id,
+                            "profile": manifest.scenario.dynamic_actor_profile,
+                            "actors": [dynamic_pedestrian.receipt],
+                        },
+                    )
                 store.transition(SimulationSessionState.RUNNING, "authoritative synchronous loop started")
                 route_index = 0; sequence = 0; policy_frame_id = 0; deadline_misses = 0
                 policy_control = DirectVehicleControl(steer=0.0, throttle=0.0, brake=1.0)
@@ -779,6 +870,11 @@ class CarlaSimulationRunner:
                 max_frames = math.ceil(manifest.scenario.maximum_duration_s / manifest.timing.fixed_delta_seconds)
                 terminal_result: DrivingOutcome | None = None; failure = ""; latest_rgb = None; latest_coverage = 1.0
                 live: SimulationLiveState | None = None
+                raw_action = None
+                route_end_braking = False
+                terminal_brake_ticks = 0
+                pedestrian_active = False
+                pedestrian_crossing_complete = False
                 recent_poses: list[tuple[float, ...]] = []
                 while sequence < max_frames:
                     stop_after_tick = False
@@ -802,8 +898,17 @@ class CarlaSimulationRunner:
                             break
                         time.sleep(0.05)
                     if terminal_result is not None: break
+                    if dynamic_pedestrian is not None:
+                        if not bool(getattr(dynamic_pedestrian.actor, "is_alive", True)):
+                            raise RuntimeError("owned CARLA pedestrian disappeared before session cleanup")
+                        apply_pedestrian_motion(
+                            carla, dynamic_pedestrian, active=pedestrian_active
+                        )
+                    applied_terminal_control = route_end_braking
                     ego.apply_control(carla.VehicleControl(steer=control.steer, throttle=control.throttle, brake=control.brake, hand_brake=control.hand_brake, reverse=control.reverse))
                     frame = int(world.tick())
+                    if applied_terminal_control:
+                        terminal_brake_ticks += 1
                     snapshot = world.get_snapshot()
                     if int(snapshot.frame) != frame:
                         raise RuntimeError(f"CARLA snapshot mismatch: tick={frame}, snapshot={snapshot.frame}")
@@ -834,6 +939,76 @@ class CarlaSimulationRunner:
                     metrics = route_metrics(centerline, (location.x, location.y, location.z), route_index); route_index = metrics.centerline_index
                     target = _route_target_ego(transform, centerline, route_index)
                     speeds.append(speed); lateral_errors.append(metrics.lateral_error_m)
+                    if dynamic_pedestrian is not None and pedestrian_active:
+                        crossing_distance = pedestrian_crossing_distance_m(dynamic_pedestrian)
+                        target_crossing_distance = float(
+                            dynamic_pedestrian.receipt["motion"]["bounded_crossing_distance_m"]
+                        )
+                        if crossing_distance >= target_crossing_distance:
+                            pedestrian_active = False
+                            pedestrian_crossing_complete = True
+                            apply_pedestrian_motion(carla, dynamic_pedestrian, active=False)
+                            pedestrian_transform = dynamic_pedestrian.actor.get_transform()
+                            _append_jsonl(
+                                store.session_root / "dynamic-actor-events.jsonl",
+                                {
+                                    "schema": "servo.carla-dynamic-actor-event/v1",
+                                    "event": "walker-crossing-complete",
+                                    "frame": frame,
+                                    "actor_id": int(dynamic_pedestrian.actor.id),
+                                    "type_id": str(dynamic_pedestrian.actor.type_id),
+                                    "route_progress": metrics.progress,
+                                    "crossing_distance_m": crossing_distance,
+                                    "target_crossing_distance_m": target_crossing_distance,
+                                    "position_carla": {
+                                        "x": float(pedestrian_transform.location.x),
+                                        "y": float(pedestrian_transform.location.y),
+                                        "z": float(pedestrian_transform.location.z),
+                                    },
+                                    "control": {
+                                        "kind": "carla.WalkerControl",
+                                        "speed_mps": 0.0,
+                                    },
+                                    "teleported": False,
+                                },
+                            )
+                    if (
+                        dynamic_pedestrian is not None
+                        and not pedestrian_active
+                        and not pedestrian_crossing_complete
+                        and metrics.progress >= dynamic_pedestrian.plan.activation_progress
+                    ):
+                        pedestrian_active = True
+                        apply_pedestrian_motion(
+                            carla, dynamic_pedestrian, active=True
+                        )
+                        pedestrian_transform = dynamic_pedestrian.actor.get_transform()
+                        _append_jsonl(
+                            store.session_root / "dynamic-actor-events.jsonl",
+                            {
+                                "schema": "servo.carla-dynamic-actor-event/v1",
+                                "event": "walker-control-activated",
+                                "frame": frame,
+                                "actor_id": int(dynamic_pedestrian.actor.id),
+                                "type_id": str(dynamic_pedestrian.actor.type_id),
+                                "route_progress": metrics.progress,
+                                "position_carla": {
+                                    "x": float(pedestrian_transform.location.x),
+                                    "y": float(pedestrian_transform.location.y),
+                                    "z": float(pedestrian_transform.location.z),
+                                },
+                                "control": {
+                                    "kind": "carla.WalkerControl",
+                                    "speed_mps": dynamic_pedestrian.plan.speed_mps,
+                                    "direction_carla": {
+                                        "x": dynamic_pedestrian.plan.direction[0],
+                                        "y": dynamic_pedestrian.plan.direction[1],
+                                        "z": dynamic_pedestrian.plan.direction[2],
+                                    },
+                                },
+                                "teleported": False,
+                            },
+                        )
                     goal_distance = location.distance(
                         ego.get_location().__class__(
                             x=route.goal_pose_carla.position.x,
@@ -841,10 +1016,28 @@ class CarlaSimulationRunner:
                             z=route.goal_pose_carla.position.z,
                         )
                     )
-                    route_complete = _route_goal_reached(
+                    if not route_end_braking and _route_end_braking_required(
                         metrics.progress, goal_distance, speed
+                    ):
+                        route_end_braking = True
+                        _append_jsonl(
+                            store.session_root / ROUTE_TERMINAL_ARTIFACT,
+                            {
+                                "schema": "servo.route-terminal-braking/v1",
+                                "event": "terminal-braking-latched",
+                                "frame": frame,
+                                "route_progress": metrics.progress,
+                                "goal_distance_m": goal_distance,
+                                "speed_mps": speed,
+                            },
+                        )
+                    route_complete = (
+                        terminal_brake_ticks > 0
+                        and _route_goal_reached(metrics.progress, goal_distance, speed)
                     )
-                    if sequence % policy_interval == 0 and not route_complete:
+                    if (sequence % policy_interval == 0
+                            and not route_complete
+                            and not route_end_braking):
                         policy_frame_id = frame
                         chase_frames = chase_barrier.collect_exact_frame(frame, timeout_s=2.0)
                         chase_raw = chase_frames["evidence-chase"]
@@ -1027,6 +1220,16 @@ class CarlaSimulationRunner:
                         policy_control, route_control.steer,
                         metrics.lateral_error_m, speed,
                     )
+                    if route_end_braking or route_complete:
+                        # This terminal safety state owns longitudinal control
+                        # after the stopping envelope is crossed. It is applied
+                        # through CARLA on the next synchronous physics tick;
+                        # no transform snapping or teleporting is involved.
+                        control = _route_terminal_control(
+                            speed, route_control.steer
+                        )
+                        route_weight = 1.0
+                        last_emergency_braking = True
                     if route_weight > 0.0 and sequence % 5 == 0:
                         _append_jsonl(
                             store.session_root / "route-stabilizer.jsonl",
@@ -1064,7 +1267,13 @@ class CarlaSimulationRunner:
                         policy_camera_pose_servo=policy_camera_pose,
                         speed_mps=speed, acceleration_mps2=accel,
                         steering=control.steer, throttle=control.throttle, brake=control.brake, gear=int(ego.get_control().gear),
-                        target_speed_mps=float(raw_action.desired_speed_mps) if sequence % policy_interval == 0 and isinstance(raw_action, TrajectoryAction) else 0.0,
+                        target_speed_mps=(
+                            0.0 if route_end_braking or route_complete
+                            else float(raw_action.desired_speed_mps)
+                            if sequence % policy_interval == 0
+                            and isinstance(raw_action, TrajectoryAction)
+                            else 0.0
+                        ),
                         route_completion=metrics.progress, lateral_error_m=metrics.lateral_error_m, renderer_coverage=latest_coverage,
                         policy_latency_ms=latencies[-1] if latencies else 0.0, policy_frame_id=policy_frame_id,
                         collision_count=len(self._collisions), lane_invasion_count=len(self._lane_invasions), deadline_miss_count=deadline_misses,
@@ -1081,12 +1290,69 @@ class CarlaSimulationRunner:
                         terminal_result, failure = DrivingOutcome.ROUTE_DEPARTURE, "route departure"
                         break
                     if route_complete:
+                        _append_jsonl(
+                            store.session_root / ROUTE_TERMINAL_ARTIFACT,
+                            {
+                                "schema": "servo.route-terminal-braking/v1",
+                                "event": "terminal-stop-verified",
+                                "frame": frame,
+                                "route_progress": metrics.progress,
+                                "goal_distance_m": goal_distance,
+                                "speed_mps": speed,
+                                "terminal_control_applied_frames": terminal_brake_ticks,
+                                "throttle": control.throttle,
+                                "brake": control.brake,
+                                "hand_brake": control.hand_brake,
+                            },
+                        )
                         terminal_result = DrivingOutcome.SUCCESS
                         break
                     previous_speed = speed
                 if terminal_result is None: terminal_result = DrivingOutcome.TIMEOUT
                 if live is None:
                     raise RuntimeError("simulation stopped before publishing an authoritative physics frame")
+                if dynamic_pedestrian is not None:
+                    pedestrian_transform = dynamic_pedestrian.actor.get_transform()
+                    actual_spawn = dynamic_pedestrian.receipt["spawn_provenance"]["actual_spawn_carla"]
+                    terminal_xyz = (
+                        float(pedestrian_transform.location.x),
+                        float(pedestrian_transform.location.y),
+                        float(pedestrian_transform.location.z),
+                    )
+                    if not all(math.isfinite(value) for value in terminal_xyz):
+                        raise RuntimeError("CARLA pedestrian terminal transform is non-finite")
+                    terminal_vertical_drift = abs(terminal_xyz[2] - float(actual_spawn["z"]))
+                    if terminal_vertical_drift > 0.50:
+                        raise RuntimeError(
+                            "CARLA pedestrian left the supported surface during the run: "
+                            f"vertical drift={terminal_vertical_drift:.3f}m"
+                        )
+                    pedestrian_displacement = math.sqrt(
+                        (terminal_xyz[0] - float(actual_spawn["x"])) ** 2
+                        + (terminal_xyz[1] - float(actual_spawn["y"])) ** 2
+                        + (terminal_xyz[2] - float(actual_spawn["z"])) ** 2
+                    )
+                    _append_jsonl(
+                        store.session_root / "dynamic-actor-events.jsonl",
+                        {
+                            "schema": "servo.carla-dynamic-actor-event/v1",
+                            "event": "terminal-physics-snapshot",
+                            "frame": live.authoritative_frame,
+                            "actor_id": int(dynamic_pedestrian.actor.id),
+                            "type_id": str(dynamic_pedestrian.actor.type_id),
+                            "active": pedestrian_active,
+                            "crossing_complete": pedestrian_crossing_complete,
+                            "position_carla": {
+                                "x": terminal_xyz[0],
+                                "y": terminal_xyz[1],
+                                "z": terminal_xyz[2],
+                            },
+                            "displacement_from_spawn_m": pedestrian_displacement,
+                            "vertical_drift_from_grounded_spawn_m": terminal_vertical_drift,
+                            "surface_gate_pass": True,
+                            "teleported": False,
+                        },
+                    )
                 initial_imu = imu_acceleration_norms[: min(20, len(imu_acceleration_norms))]
                 imu_p50 = float(np.median(initial_imu)) if initial_imu else 0.0
                 gravity_consistent = 8.0 <= imu_p50 <= 12.0
@@ -1179,24 +1445,22 @@ class CarlaSimulationRunner:
                                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             )
                 artifact_hashes = {}
-                for artifact in (
-                    "telemetry.jsonl", "actions.jsonl", "applied-controls.jsonl",
-                    "collisions.jsonl", "lane-invasions.jsonl", "safety-interventions.jsonl",
-                    "route-stabilizer.jsonl",
-                    "physics-evidence.json",
-                    "roadside-detections.jsonl",
-                    "previews/latest-policy-frame.jpg", "previews/latest-carla-native-fixed.jpg",
-                    "previews/latest-servo-t5-carla-lincoln-fixed.jpg",
-                    "evidence/carla-native-fixed.mp4", "evidence/servo-t5-carla-lincoln-fixed.mp4",
-                    "evidence/native-and-t5-synchronized.mp4",
-                    *(f"evidence/drivema-{sensor_id}.mp4" for sensor_id in manifest.policy.input_camera_ids),
+                for artifact in _evidence_artifact_names(
+                    tuple(manifest.policy.input_camera_ids)
                 ):
                     artifact_path = store.session_root / artifact
                     if artifact_path.is_file():
                         artifact_hashes[artifact] = sha256_file(str(artifact_path))
                 failure_class = None
                 if terminal_result == DrivingOutcome.COLLISION:
-                    failure_class = DrivingFailureClass.COLLISION_STATIC
+                    failure_class = (
+                        DrivingFailureClass.COLLISION_PEDESTRIAN
+                        if any(
+                            str(event.get("other_actor", "")).startswith("walker.pedestrian.")
+                            for event in self._collisions
+                        )
+                        else DrivingFailureClass.COLLISION_STATIC
+                    )
                 elif terminal_result == DrivingOutcome.ROUTE_DEPARTURE:
                     failure_class = DrivingFailureClass.ROUTE_DEPARTURE
                 elif terminal_result == DrivingOutcome.TIMEOUT:

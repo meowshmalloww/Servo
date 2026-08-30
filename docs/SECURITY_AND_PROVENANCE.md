@@ -30,7 +30,7 @@ Paths above are runtime-local configuration or documentation of the locked envir
 | pytest | 9.0.3 | MIT (expression) |
 | onnxruntime-gpu | 1.24.4 | MIT License (field) |
 | google-genai | 1.65.0 | Apache-2.0 (expression) |
-| google-adk | not-installed | - (-) |
+| google-adk | 2.7.1 | Apache-2.0 |
 | cloudpickle | 3.1.2 | BSD-3-Clause (field) |
 
 ## Provenance rules honored by this build

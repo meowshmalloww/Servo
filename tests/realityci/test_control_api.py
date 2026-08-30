@@ -272,6 +272,53 @@ def test_ask_servo_weather_is_explicitly_inferred_and_adjustable(tmp_path, monke
     assert "65% accumulation" in response.json()["message"]
 
 
+def test_ask_servo_agent_turn_is_receipted_and_postcondition_verified(tmp_path, monkeypatch) -> None:
+    import cloud.control_api.app.main as api
+
+    monkeypatch.setattr(api, "WORKSPACE_ROOT", tmp_path / "campaigns")
+    monkeypatch.setattr(api, "SIMULATION_ROOT", tmp_path / "simulations")
+    response = TestClient(app).post(
+        "/v1/ask/agent",
+        json={
+            "prompt": "Set inferred snow accumulation to 65%",
+            "provider": "deterministic",
+            "verify": True,
+        },
+        headers={"Idempotency-Key": "agent-weather-65"},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "completed"
+    assert result["call"]["tool"] == "set_weather"
+    assert [entry["phase"] for entry in result["trace"]] == [
+        "inspect",
+        "plan",
+        "execute",
+        "verify",
+    ]
+    assert result["receipt"]["content_hash"].startswith("sha256:")
+    assert "ASK SERVO AGENT RUN" in result["message"]
+    assert "Verified evidence" in result["message"]
+
+    receipt = TestClient(app).get(
+        f"/v1/ask/agent-runs/{result['run_id']}"
+    )
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["content_hash"] == result["receipt"]["content_hash"]
+    assert receipt.json()["goal"] == "Set inferred snow accumulation to 65%"
+
+    replay = TestClient(app).post(
+        "/v1/ask/agent",
+        json={
+            "prompt": "Set inferred snow accumulation to 65%",
+            "provider": "deterministic",
+            "verify": True,
+        },
+        headers={"Idempotency-Key": "agent-weather-65"},
+    )
+    assert replay.json() == result
+
+
 def test_ask_servo_unwired_tools_fail_closed(tmp_path, monkeypatch) -> None:
     import cloud.control_api.app.main as api
 
@@ -295,6 +342,49 @@ def test_world_execution_candidates_prefer_camera_height_v2(tmp_path) -> None:
     v1.write_text("{}", encoding="utf-8")
     v2.write_text("{}", encoding="utf-8")
     assert api._world_execution_candidates(world)[:2] == [v2.resolve(), v1.resolve()]
+
+
+def test_terminal_stop_verification_requires_physical_brake_event(tmp_path) -> None:
+    import cloud.control_api.app.main as api
+
+    assert api._terminal_stop_verified(tmp_path) is False
+    terminal = tmp_path / "route-terminal.jsonl"
+    terminal.write_text(
+        '{"schema":"servo.route-terminal-braking/v1","event":"terminal-stop-verified",'
+        '"terminal_control_applied_frames":12,"brake":1.0}\n',
+        encoding="utf-8",
+    )
+    assert api._terminal_stop_verified(tmp_path) is True
+    terminal.write_text(
+        '{"schema":"servo.route-terminal-braking/v1","event":"terminal-stop-verified",'
+        '"terminal_control_applied_frames":0,"brake":1.0}\n',
+        encoding="utf-8",
+    )
+    assert api._terminal_stop_verified(tmp_path) is False
+
+
+def test_dynamic_actor_evidence_rejects_old_falling_walker_receipt(tmp_path) -> None:
+    import cloud.control_api.app.main as api
+
+    assert api._dynamic_actor_evidence_verified(tmp_path, "none") is True
+    assert api._dynamic_actor_evidence_verified(tmp_path, "one-pedestrian") is False
+    (tmp_path / "dynamic-actors.json").write_text(
+        '{"actors":[{"spawn_provenance":{"warmup_surface_gate_pass":true}}]}',
+        encoding="utf-8",
+    )
+    events = tmp_path / "dynamic-actor-events.jsonl"
+    events.write_text(
+        '{"event":"terminal-physics-snapshot","surface_gate_pass":true,'
+        '"vertical_drift_from_grounded_spawn_m":0.0021}\n',
+        encoding="utf-8",
+    )
+    assert api._dynamic_actor_evidence_verified(tmp_path, "one-pedestrian") is True
+    events.write_text(
+        '{"event":"terminal-physics-snapshot","surface_gate_pass":false,'
+        '"vertical_drift_from_grounded_spawn_m":459.0}\n',
+        encoding="utf-8",
+    )
+    assert api._dynamic_actor_evidence_verified(tmp_path, "one-pedestrian") is False
 
 
 def test_ask_servo_vehicle_summary_reports_policy_weather_and_physics() -> None:
@@ -328,3 +418,29 @@ def test_ask_servo_vehicle_summary_reports_policy_weather_and_physics() -> None:
     assert "Snow accumulation: 90%" in message
     assert "9.81 m/s² reference" in message
     assert "ground-contact pass=true" in message
+
+
+def test_ask_servo_world_summary_names_only_the_accepted_t5_hybrid() -> None:
+    import cloud.control_api.app.main as api
+    from tools.realityci.ask_servo.tools import AskToolName
+
+    message = api._ask_result_message(
+        AskToolName.LIST_WORLDS,
+        {
+            "worlds": [
+                {
+                    "world_id": "yosemite-t5-all-full-route-review-v2-20260828",
+                    "display_name": "Rejected Final v2",
+                    "ready_for_carla": True,
+                },
+                {
+                    "world_id": "yosemite-t5-hybrid-full-route-v1-20260828",
+                    "display_name": "Yosemite T5 — Hybrid Full Route (Accepted)",
+                    "ready_for_carla": True,
+                },
+            ]
+        },
+    )
+
+    assert "Accepted T5 Hybrid is Yosemite T5 — Hybrid Full Route (Accepted)" in message
+    assert "Rejected Final v2" not in message

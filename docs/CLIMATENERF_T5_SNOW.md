@@ -9,11 +9,11 @@ Servo has two deliberately separate snow paths:
    target but remains unavailable until its semantic checkpoint passes the
    image-quality gate.
 
-The working path is not advertised as ClimateNeRF output. In the verified
-session `sim-d8e994ae412a481a`, 90% accumulation produced a 0.478 tire-friction
-multiplier, measured 9.769 m/s² initial IMU acceleration against CARLA's
-9.81 m/s² reference, passed ground contact, completed 99.2% of the route, and
-recorded zero collisions. `weather_receipt.visual_provenance` is
+The working path is not advertised as ClimateNeRF output. In the accepted-T5
+session `sim-6291857fc6c84f13`, 90% accumulation produced a 0.478 tire-friction
+multiplier, measured 9.756 m/s² initial IMU acceleration against CARLA's
+9.81 m/s² reference, passed ground contact, reached the sealed terminal stop,
+and recorded zero collisions. `weather_receipt.visual_provenance` is
 `generated-inferred-surface` and `climatenerf_qualified=false`.
 
 The upstream ClimateNeRF qualification sequence is:
@@ -36,7 +36,8 @@ All required source/runtime inputs are stored under Servo:
 - mmsegmentation config source: `third_party/mmsegmentation`
 - SegFormer checkpoint: `runtime/models/mmseg`
 - T5 COLMAP dataset: `simulations/runtime/t5/climate-dataset`
-- Docker build: `tools/climate/Dockerfile.climatenerf`
+- Native Windows setup: `docs/CLIMATENERF_WINDOWS_SETUP.md` (the optional
+  upstream Docker recipe is not used by Servo's verified Windows path)
 - audited identities: `runtime/vendor-manifest.json`
 
 The semantic base command is:

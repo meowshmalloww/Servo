@@ -236,6 +236,7 @@ void WorldLibraryModelTests::migratesOnceToBestQualifiedVisualRoute()
     const QString catalogPath = QDir(temporary.path()).filePath(QStringLiteral("library.json"));
     const QString oldId = QStringLiteral("old-selected-world");
     const QString t5Id = QStringLiteral("yosemite-t5-hybrid-full-route-v1-20260828");
+    const QString rejectedId = QStringLiteral("yosemite-t5-all-full-route-review-v2-20260828");
     QVERIFY(!createWorld(jobsRoot,
                          oldId,
                          QStringLiteral("Old world"),
@@ -246,6 +247,12 @@ void WorldLibraryModelTests::migratesOnceToBestQualifiedVisualRoute()
                                             QStringLiteral("Yosemite T5 - Hybrid Full Route (Accepted)"),
                                             QStringLiteral("2026-08-28T17:00:00.000Z"));
     QVERIFY(!t5WorldPath.isEmpty());
+    const QString rejectedWorldPath = createWorld(
+        jobsRoot,
+        rejectedId,
+        QStringLiteral("Yosemite T5 - Latest Full Route High Detail v2"),
+        QStringLiteral("2026-08-29T17:00:00.000Z"));
+    QVERIFY(!rejectedWorldPath.isEmpty());
 
     const QString manifestPath = QDir(t5WorldPath).filePath(QStringLiteral("world.json"));
     QFile manifestFile(manifestPath);
@@ -272,10 +279,26 @@ void WorldLibraryModelTests::migratesOnceToBestQualifiedVisualRoute()
     QVERIFY(writeFile(manifestPath,
                       QJsonDocument(manifest).toJson(QJsonDocument::Compact)));
 
+    const QString rejectedManifestPath = QDir(rejectedWorldPath).filePath(
+        QStringLiteral("world.json"));
+    QFile rejectedManifestFile(rejectedManifestPath);
+    QVERIFY(rejectedManifestFile.open(QIODevice::ReadOnly));
+    QJsonObject rejectedManifest = QJsonDocument::fromJson(
+        rejectedManifestFile.readAll()).object();
+    rejectedManifestFile.close();
+    QJsonObject rejectedQuality = rejectedManifest.value(
+        QStringLiteral("quality")).toObject();
+    rejectedQuality.insert(QStringLiteral("tier"), QStringLiteral("review-required"));
+    rejectedQuality.insert(QStringLiteral("psnrMean"), 99.0);
+    rejectedQuality.insert(QStringLiteral("ssimMean"), 0.999);
+    rejectedManifest.insert(QStringLiteral("quality"), rejectedQuality);
+    QVERIFY(writeFile(rejectedManifestPath,
+                      QJsonDocument(rejectedManifest).toJson(QJsonDocument::Compact)));
+
     const QJsonObject legacyCatalog {
         { QStringLiteral("schema"), QStringLiteral("servo.world-library/v1") },
-        { QStringLiteral("selectedWorldId"), oldId },
-        { QStringLiteral("selectionPolicyVersion"), 5 },
+        { QStringLiteral("selectedWorldId"), rejectedId },
+        { QStringLiteral("selectionPolicyVersion"), 6 },
         { QStringLiteral("aliases"), QJsonObject {} },
     };
     QVERIFY(writeFile(catalogPath,

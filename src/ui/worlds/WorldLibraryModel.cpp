@@ -23,10 +23,12 @@
 namespace {
 constexpr auto worldSchema = "servo.gaussian-world/v1";
 constexpr auto catalogSchema = "servo.world-library/v1";
-// Version 6 selects the best published visual-route world by manifest quality
+// Version 7 selects the best published visual-route world by manifest quality
 // instead of naming a map or experiment. This makes the default portable to
-// any future capture while avoiding a newer rejected diagnostic.
-constexpr int latestSelectionPolicyVersion = 6;
+// any future capture while avoiding a newer rejected diagnostic. Version 7
+// reapplies that policy after the short-lived v6 desktop build persisted the
+// newest review-required diagnostic as the user's default.
+constexpr int latestSelectionPolicyVersion = 7;
 constexpr qint64 maximumJsonBytes = 16LL * 1024LL * 1024LL;
 constexpr qint64 maximumEventLogBytes = 32LL * 1024LL * 1024LL;
 constexpr qint64 maximumEventLineBytes = 16LL * 1024LL * 1024LL;

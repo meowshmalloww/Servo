@@ -292,24 +292,38 @@ void SimulationController::prepareWorld(const QVariantMap &configuration)
 
 void SimulationController::refreshWorldExecution(const QString &worldId)
 {
-    m_executionWorldId = worldId;
+    const QString requestedWorldId = worldId.trimmed();
+    m_executionWorldId = requestedWorldId;
     m_executionManifestPath.clear();
     m_executionReady = false;
     emit configurationChanged();
-    if (worldId.trimmed().isEmpty())
+    if (requestedWorldId.isEmpty())
         return;
     QNetworkReply *reply = get(QStringLiteral("/v1/worlds/%1/execution")
-                                   .arg(QString::fromUtf8(QUrl::toPercentEncoding(worldId))));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+                                   .arg(QString::fromUtf8(QUrl::toPercentEncoding(requestedWorldId))));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestedWorldId]() {
         if (reply->error() != QNetworkReply::NoError) {
             reply->deleteLater();
             return;
         }
         const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
+        // A user can select another world while this request is in flight.
+        // Never let a late reply silently pair that selection with another
+        // world's executable bundle.
+        if (m_executionWorldId != requestedWorldId)
+            return;
+        const QJsonObject execution = root.value(QStringLiteral("execution")).toObject();
+        if (execution.value(QStringLiteral("world_id")).toString() != requestedWorldId) {
+            m_executionManifestPath.clear();
+            m_executionReady = false;
+            fail(QStringLiteral("World execution identity mismatch for %1.")
+                     .arg(requestedWorldId));
+            emit configurationChanged();
+            return;
+        }
         m_executionManifestPath = root.value(QStringLiteral("manifest_uri")).toString();
-        m_executionReady = root.value(QStringLiteral("execution")).toObject()
-                               .value(QStringLiteral("validation")).toObject()
+        m_executionReady = execution.value(QStringLiteral("validation")).toObject()
                                .value(QStringLiteral("ready_for_carla")).toBool();
         emit configurationChanged();
     });
@@ -348,6 +362,11 @@ void SimulationController::startSimulation(const QVariantMap &configuration)
         const QByteArray bytes = reply->readAll();
         reply->deleteLater();
         const QJsonObject object = QJsonDocument::fromJson(bytes).object();
+        const QString acceptedWorldId = object.value(QStringLiteral("world_id")).toString();
+        if (acceptedWorldId.isEmpty() || acceptedWorldId != m_executionWorldId) {
+            fail(QStringLiteral("Simulation service accepted a different world than the selected execution bundle."));
+            return;
+        }
         m_sessionId = object.value(QStringLiteral("session_id")).toString();
         m_sessionState = object.value(QStringLiteral("state")).toString(QStringLiteral("created"));
         // Bind the attached session only after the API has accepted the
@@ -420,55 +439,86 @@ void SimulationController::fetchSimulationList(const QString &preferredSessionId
                                         .value(QStringLiteral("simulations")).toArray();
         reply->deleteLater();
         setBusy(false);
-        QString selected;
-        QJsonObject selectedEntry;
-        if (!preferredSessionId.isEmpty()) {
-            for (const QJsonValue &entry : sessions) {
-                const QJsonObject object = entry.toObject();
-                if (object.value(QStringLiteral("session_id")).toString()
-                    == preferredSessionId) {
-                    selected = preferredSessionId;
-                    selectedEntry = object;
-                    break;
-                }
-            }
-            if (selected.isEmpty()) {
-                qWarning() << "Discarding missing persisted simulation"
-                           << preferredSessionId;
-                clearAttachedSimulation();
-            }
-        }
-        for (const QJsonValue &entry : sessions) {
-            if (!selected.isEmpty())
-                break;
-            const QJsonObject object = entry.toObject();
-            if (object.value(QStringLiteral("state")).toString() == QLatin1String("completed")
-                && object.value(QStringLiteral("outcome")).toString() == QLatin1String("success")) {
-                selected = object.value(QStringLiteral("session_id")).toString();
-                selectedEntry = object;
-                break;
-            }
-        }
-        if (selected.isEmpty()) {
-            for (const QJsonValue &entry : sessions) {
-                const QJsonObject object = entry.toObject();
-                if (object.value(QStringLiteral("state")).toString() == QLatin1String("completed")) {
-                    selected = object.value(QStringLiteral("session_id")).toString();
-                    selectedEntry = object;
-                    break;
-                }
-            }
-        }
-        if (selected.isEmpty() && !sessions.isEmpty()) {
-            selectedEntry = sessions.first().toObject();
-            selected = sessions.first().toObject().value(QStringLiteral("session_id")).toString();
-        }
-        if (selected.isEmpty()) {
-            fail(QStringLiteral("No recorded simulation session is available."));
+        const QString requiredWorldId = m_executionWorldId;
+        const QJsonObject selectedEntry = selectSimulationEntry(
+            sessions, preferredSessionId, requiredWorldId);
+        if (selectedEntry.isEmpty()) {
+            if (!preferredSessionId.isEmpty())
+                qWarning() << "Discarding missing or wrong-world persisted simulation"
+                           << preferredSessionId << "for world" << requiredWorldId;
+            clearAttachedSimulation();
+            m_connectionState = QStringLiteral("online");
+            emit connectionChanged();
             return;
         }
         attachSimulationEntry(selectedEntry);
     });
+}
+
+QJsonObject SimulationController::selectSimulationEntry(
+    const QJsonArray &sessions,
+    const QString &preferredSessionId,
+    const QString &requiredWorldId)
+{
+    QString effectiveWorldId = requiredWorldId;
+    // Startup can fetch sessions before Worlds publishes its selection. Keep
+    // the persisted session's world as a migration hint even when that exact
+    // legacy session fails the newer evidence gate.
+    if (effectiveWorldId.isEmpty() && !preferredSessionId.isEmpty()) {
+        for (const QJsonValue &value : sessions) {
+            const QJsonObject entry = value.toObject();
+            if (entry.value(QStringLiteral("session_id")).toString()
+                == preferredSessionId) {
+                effectiveWorldId = entry.value(QStringLiteral("world_id")).toString();
+                break;
+            }
+        }
+    }
+    const auto eligible = [&effectiveWorldId](const QJsonObject &entry) {
+        return effectiveWorldId.isEmpty()
+               || entry.value(QStringLiteral("world_id")).toString() == effectiveWorldId;
+    };
+    const auto verifiedDefault = [&eligible](const QJsonObject &entry) {
+        if (!eligible(entry))
+            return false;
+        const bool completedSuccess =
+            entry.value(QStringLiteral("state")).toString() == QLatin1String("completed")
+            && entry.value(QStringLiteral("outcome")).toString() == QLatin1String("success");
+        return !completedSuccess
+               || entry.value(QStringLiteral("session_evidence_verified")).toBool();
+    };
+    if (!preferredSessionId.isEmpty()) {
+        for (const QJsonValue &value : sessions) {
+            const QJsonObject entry = value.toObject();
+            if (verifiedDefault(entry)
+                && entry.value(QStringLiteral("session_id")).toString()
+                       == preferredSessionId) {
+                return entry;
+            }
+        }
+    }
+    for (const QJsonValue &value : sessions) {
+        const QJsonObject entry = value.toObject();
+        if (eligible(entry)
+            && entry.value(QStringLiteral("state")).toString() == QLatin1String("completed")
+            && entry.value(QStringLiteral("outcome")).toString() == QLatin1String("success")
+            && entry.value(QStringLiteral("session_evidence_verified")).toBool()) {
+            return entry;
+        }
+    }
+    for (const QJsonValue &value : sessions) {
+        const QJsonObject entry = value.toObject();
+        if (eligible(entry)
+            && entry.value(QStringLiteral("state")).toString() == QLatin1String("completed")) {
+            return entry;
+        }
+    }
+    for (const QJsonValue &value : sessions) {
+        const QJsonObject entry = value.toObject();
+        if (eligible(entry))
+            return entry;
+    }
+    return {};
 }
 
 void SimulationController::attachSimulationEntry(const QJsonObject &entry)

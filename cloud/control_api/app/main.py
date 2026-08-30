@@ -79,6 +79,7 @@ from tools.realityci.ask_servo.tools import (
     AskToolName,
     plan_tool as ask_plan_tool,
 )
+from tools.realityci.ask_servo.agent_loop import AskAgentRequest, run_agent_goal
 from tools.realityci.orchestrator import CampaignEngine, load_events
 from tools.realityci.schemas.campaign import Campaign
 from tools.realityci.schemas.core import DomainEvent, EventType
@@ -335,6 +336,67 @@ def _worker_alive(store: SessionStore) -> bool:
         return process_alive(int(record.get("pid", 0)))
     except (OSError, ValueError):
         return False
+
+
+def _terminal_stop_verified(session_root: Path) -> bool:
+    """Return true only for a bounded run with a durable terminal brake event."""
+
+    path = session_root / "route-terminal.jsonl"
+    try:
+        if not path.is_file() or path.stat().st_size > 1024 * 1024:
+            return False
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            return (
+                event.get("schema") == "servo.route-terminal-braking/v1"
+                and event.get("event") == "terminal-stop-verified"
+                and int(event.get("terminal_control_applied_frames", 0)) >= 1
+                and float(event.get("brake", 0.0)) >= 0.99
+            )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    return False
+
+
+def _dynamic_actor_evidence_verified(session_root: Path, profile: str) -> bool:
+    """Verify dynamic actors stayed on the supported physical surface."""
+
+    if profile == "none":
+        return True
+    if profile != "one-pedestrian":
+        return False
+    actors_path = session_root / "dynamic-actors.json"
+    events_path = session_root / "dynamic-actor-events.jsonl"
+    try:
+        if (
+            not actors_path.is_file()
+            or not events_path.is_file()
+            or actors_path.stat().st_size > 1024 * 1024
+            or events_path.stat().st_size > 1024 * 1024
+        ):
+            return False
+        actors = json.loads(actors_path.read_text(encoding="utf-8")).get("actors", [])
+        if not actors or any(
+            actor.get("spawn_provenance", {}).get("warmup_surface_gate_pass") is not True
+            for actor in actors
+        ):
+            return False
+        for line in reversed(events_path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if event.get("event") != "terminal-physics-snapshot":
+                continue
+            return (
+                event.get("surface_gate_pass") is True
+                and float(event.get("vertical_drift_from_grounded_spawn_m", float("inf")))
+                <= 0.50
+            )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    return False
 
 
 def _request_cache_path(scope: str, key: str) -> Path:
@@ -805,13 +867,13 @@ def _ask_result_message(tool: AskToolName, result: dict[str, Any]) -> str:
         worlds = list(result.get("worlds", []))
         ready = [world for world in worlds if world.get("ready_for_carla")]
         t5 = next(
-            (world for world in worlds if "t5-all-full-route-review-v2" in str(world.get("world_id", ""))),
+            (world for world in worlds if "t5-hybrid-full-route-v1" in str(world.get("world_id", ""))),
             None,
         )
         message = f"Found {len(worlds)} reconstructed worlds; {len(ready)} are CARLA-ready."
         if t5:
             message += (
-                f" T5 Final v2 is {t5.get('display_name', t5.get('world_id'))}"
+                f" Accepted T5 Hybrid is {t5.get('display_name', t5.get('world_id'))}"
                 f" and ready_for_carla={str(bool(t5.get('ready_for_carla'))).lower()}."
             )
         return message
@@ -912,11 +974,13 @@ def _ask_execute_tool(call: AskToolCallFull) -> dict:
     if tool in {AskToolName.STEP_CAMPAIGN, AskToolName.RUN_TO_COMPLETION}:
         if not cid:
             raise HTTPException(status_code=400, detail=f"{tool.value} requires campaign_id")
+        if tool == AskToolName.RUN_TO_COMPLETION:
+            # The complete campaign is a real Google ADK graph, not a direct
+            # while-loop hidden behind an assistant success message.
+            return {"tool": tool.value, "result": _run_campaign_with_adk(cid)}
+
         def mutate(engine: CampaignEngine) -> dict:
-            if tool == AskToolName.STEP_CAMPAIGN:
-                engine.step_once()
-            else:
-                engine.run_to_completion()
+            engine.step_once()
             return _state_response(engine)
         result = _mutate_campaign(cid, mutate)
         return {"tool": tool.value, "result": result}
@@ -1229,6 +1293,124 @@ def ask_execute(
     return _idempotent("ask-execute", idempotency_key, fingerprint, execute)
 
 
+def _agent_run_path(run_id: str) -> Path:
+    if not re.fullmatch(r"askrun-[0-9a-f]{16}", run_id):
+        raise HTTPException(status_code=404, detail="Ask Servo agent run not found")
+    return WORKSPACE_ROOT / ".ask-servo" / "runs" / f"{run_id}.json"
+
+
+def _agent_run_message(result: dict[str, Any], receipt_hash: str) -> str:
+    status = str(result.get("status", "unknown")).upper()
+    lines = [f"ASK SERVO AGENT RUN {result.get('run_id')} — {status}", "", "Plan"]
+    for index, item in enumerate(result.get("plan", []), start=1):
+        lines.append(f"{index}. {item}")
+    lines.extend(("", "Progress"))
+    marker = {"completed": "PASS", "blocked": "BLOCKED", "failed": "FAILED"}
+    for entry in result.get("trace", []):
+        phase = str(entry.get("phase", "step")).upper()
+        state = marker.get(str(entry.get("status")), "UNKNOWN")
+        tool = entry.get("tool")
+        label = f" [{tool}]" if tool else ""
+        lines.append(f"{state} {phase}{label}: {entry.get('message', '')}")
+    evidence = result.get("evidence") or {}
+    if evidence:
+        lines.extend(("", "Verified evidence"))
+        for key in (
+            "campaign_id", "simulation_id", "world_id", "state", "terminal",
+            "event_count", "artifact_count", "orchestrator", "adk_event_count",
+            "adk_session_id", "weather", "engine", "snow_accumulation",
+            "climatenerf_qualified", "metric_surface",
+        ):
+            if key in evidence:
+                lines.append(f"{key}: {evidence[key]}")
+        latest = evidence.get("latest_event")
+        if isinstance(latest, dict) and latest:
+            lines.append(
+                "latest_event: "
+                + ", ".join(f"{key}={value}" for key, value in latest.items())
+            )
+        adk_steps = evidence.get("adk_steps")
+        if isinstance(adk_steps, list) and adk_steps:
+            lines.append("ADK node trace:")
+            for step in adk_steps:
+                if isinstance(step, dict):
+                    lines.append(
+                        f"- {step.get('node', 'unknown')} -> {step.get('to', 'unknown')}"
+                    )
+    lines.extend(("", str(result.get("message", "")), f"Receipt: {receipt_hash}"))
+    return "\n".join(lines)
+
+
+def _persist_agent_run(result: dict[str, Any]) -> tuple[Path, str]:
+    payload = {
+        "schema": "servo.ask-servo-agent-run/v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **result,
+    }
+    receipt_hash = sha256_digest(canonical_json_bytes(payload))
+    payload["content_hash"] = receipt_hash
+    path = _agent_run_path(str(result["run_id"]))
+    _atomic_json(path, payload)
+    return path, receipt_hash
+
+
+@app.post("/v1/ask/agent", dependencies=[Depends(require_token)])
+def ask_agent(
+    request: AskAgentRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    """Run one real inspect/plan/execute/verify agent turn.
+
+    The selected model sees only the bounded pre-action snapshot.  All state
+    mutation and postcondition checks remain in deterministic control-plane
+    tools.  Unsupported tools return a sealed ``blocked`` receipt.
+    """
+
+    def execute() -> dict:
+        run_id = new_record_id("askrun")
+        try:
+            result = run_agent_goal(
+                request,
+                run_id=run_id,
+                planner=ask_plan_tool,
+                executor=_ask_execute_with_message,
+            )
+        except Exception as exc:
+            # Planner failures happen before a tool call.  Preserve the
+            # existing HTTP error semantics instead of falling back to a
+            # different provider and pretending the requested model ran.
+            raise HTTPException(status_code=400, detail=f"Ask Servo agent planning failed: {exc}") from exc
+        receipt_path, receipt_hash = _persist_agent_run(result)
+        result["receipt"] = {
+            "schema": "servo.ask-servo-agent-run/v1",
+            "content_hash": receipt_hash,
+            "path": str(receipt_path),
+        }
+        result["message"] = _agent_run_message(result, receipt_hash)
+        return result
+
+    return _idempotent(
+        "ask-agent",
+        idempotency_key,
+        request.model_dump_json(),
+        execute,
+    )
+
+
+@app.get("/v1/ask/agent-runs/{run_id}", dependencies=[Depends(require_token)])
+def get_ask_agent_run(run_id: str) -> dict:
+    path = _agent_run_path(run_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Ask Servo agent run not found")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    sealed = str(payload.pop("content_hash", ""))
+    computed = sha256_digest(canonical_json_bytes(payload))
+    if sealed != computed:
+        raise HTTPException(status_code=409, detail="Ask Servo agent receipt hash mismatch")
+    payload["content_hash"] = sealed
+    return payload
+
+
 @app.post("/v1/ask/tools/{tool_name}", dependencies=[Depends(require_token)])
 def ask_execute_explicit(
     tool_name: AskToolName,
@@ -1366,6 +1548,7 @@ def _run_campaign_with_adk(campaign_id: str) -> dict:
                 "orchestrator": ADK_VERSION_INSTALLED,
                 "adk_event_count": result.adk_event_count,
                 "adk_session_id": result.session_id,
+                "adk_steps": result.steps,
             }
         )
         _persist(campaign_id)
@@ -1650,6 +1833,10 @@ def list_simulations() -> dict:
             if evidence_path.is_file():
                 evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
                 outcome = evidence.get("outcome")
+            terminal_stop_verified = _terminal_stop_verified(store.session_root)
+            dynamic_actor_evidence_verified = _dynamic_actor_evidence_verified(
+                store.session_root, manifest.scenario.dynamic_actor_profile
+            )
             result.append({
                 "session_id": path.name,
                 "state": store.state().value,
@@ -1660,7 +1847,13 @@ def list_simulations() -> dict:
                 "observation_source": manifest.observation.source,
                 "weather": manifest.scenario.weather,
                 "snow_accumulation": manifest.scenario.snow_accumulation,
+                "dynamic_actor_profile": manifest.scenario.dynamic_actor_profile,
                 "worker_alive": _worker_alive(store),
+                "terminal_stop_verified": terminal_stop_verified,
+                "dynamic_actor_evidence_verified": dynamic_actor_evidence_verified,
+                "session_evidence_verified": (
+                    terminal_stop_verified and dynamic_actor_evidence_verified
+                ),
                 "manifest_uri": str(store.manifest_path),
             })
         except (OSError, ValueError):
@@ -1772,7 +1965,12 @@ def _create_simulation(request: SimulationCreateRequest) -> dict:
             shell=False,
         )
     store.record_worker(process.pid, argv)
-    return {"session_id": session_id, "state": "created", "worker_pid": process.pid}
+    return {
+        "session_id": session_id,
+        "state": "created",
+        "worker_pid": process.pid,
+        "world_id": execution.world_id,
+    }
 
 
 @app.get("/v1/simulations/{session_id}/state", dependencies=[Depends(require_token)])

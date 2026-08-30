@@ -65,7 +65,10 @@ Item {
         id: replayPlayer
         source: SimulationController.replayVideoUrl
         videoOutput: replayOutput
-        loops: MediaPlayer.Infinite
+        // Evidence is a finite physical run. Repeating it made a completed
+        // vehicle look as though it drove through the route terminus and
+        // started again. Hold the final frame instead of looping.
+        loops: 1
         onSourceChanged: Qt.callLater(root.updatePlayback)
     }
 

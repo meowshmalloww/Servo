@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QFile>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -23,6 +24,7 @@ private slots:
     void selectsIntegratedCarlaReplayFromEvidence();
     void keepsExecutionSelectionSeparateFromAttachedSession();
     void clearsStaleAttachedSessionMetadata();
+    void reattachesOnlySessionForSelectedExecutionWorld();
 };
 
 static QJsonObject pose(double x, double y, double z)
@@ -169,6 +171,59 @@ void SimulationControllerTests::clearsStaleAttachedSessionMetadata()
     QCOMPARE(controller.sessionState(), QStringLiteral("none"));
     QVERIFY(controller.selectedWorldId().isEmpty());
     QVERIFY(controller.policyName().isEmpty());
+}
+
+void SimulationControllerTests::reattachesOnlySessionForSelectedExecutionWorld()
+{
+    const QJsonObject rejectedLatest {
+        { QStringLiteral("session_id"), QStringLiteral("sim-aaaaaaaaaaaaaaaa") },
+        { QStringLiteral("world_id"),
+          QStringLiteral("yosemite-t5-all-full-route-review-v2-20260828") },
+        { QStringLiteral("state"), QStringLiteral("completed") },
+        { QStringLiteral("outcome"), QStringLiteral("success") },
+        { QStringLiteral("session_evidence_verified"), true },
+    };
+    const QJsonObject acceptedOlder {
+        { QStringLiteral("session_id"), QStringLiteral("sim-bbbbbbbbbbbbbbbb") },
+        { QStringLiteral("world_id"),
+          QStringLiteral("yosemite-t5-hybrid-full-route-v1-20260828") },
+        { QStringLiteral("state"), QStringLiteral("completed") },
+        { QStringLiteral("outcome"), QStringLiteral("success") },
+        { QStringLiteral("session_evidence_verified"), true },
+    };
+    const QJsonArray sessions { rejectedLatest, acceptedOlder };
+
+    const QJsonObject selected = SimulationController::selectSimulationEntry(
+        sessions,
+        rejectedLatest.value(QStringLiteral("session_id")).toString(),
+        acceptedOlder.value(QStringLiteral("world_id")).toString());
+    QCOMPARE(selected.value(QStringLiteral("session_id")).toString(),
+             acceptedOlder.value(QStringLiteral("session_id")).toString());
+
+    const QJsonObject unavailable = SimulationController::selectSimulationEntry(
+        QJsonArray { rejectedLatest },
+        rejectedLatest.value(QStringLiteral("session_id")).toString(),
+        acceptedOlder.value(QStringLiteral("world_id")).toString());
+    QVERIFY(unavailable.isEmpty());
+
+    QJsonObject staleSameWorld = acceptedOlder;
+    staleSameWorld.insert(QStringLiteral("session_id"),
+                          QStringLiteral("sim-cccccccccccccccc"));
+    staleSameWorld.insert(QStringLiteral("session_evidence_verified"), false);
+    const QJsonObject migrated = SimulationController::selectSimulationEntry(
+        QJsonArray { staleSameWorld, acceptedOlder },
+        staleSameWorld.value(QStringLiteral("session_id")).toString(),
+        acceptedOlder.value(QStringLiteral("world_id")).toString());
+    QCOMPARE(migrated.value(QStringLiteral("session_id")).toString(),
+             acceptedOlder.value(QStringLiteral("session_id")).toString());
+
+    const QJsonObject migratedBeforeWorldSelection =
+        SimulationController::selectSimulationEntry(
+            QJsonArray { rejectedLatest, staleSameWorld, acceptedOlder },
+            staleSameWorld.value(QStringLiteral("session_id")).toString(),
+            QString());
+    QCOMPARE(migratedBeforeWorldSelection.value(QStringLiteral("session_id")).toString(),
+             acceptedOlder.value(QStringLiteral("session_id")).toString());
 }
 
 QTEST_GUILESS_MAIN(SimulationControllerTests)
