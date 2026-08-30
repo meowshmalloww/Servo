@@ -37,6 +37,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 WORKER_VERSION = "0.7.0"
 PIPELINE_REVISION = "native-colmap-servo-road-geometry-r7"
 REPRESENTATION_TYPE = "servo-fidelity-3dgs-v1"
+GAUSSIAN_BUDGET_POLICY = "vram-adaptive-preflight-v1"
 CHECKPOINT_BYTES_PER_GAUSSIAN = 768
 PLY_BYTES_PER_GAUSSIAN = 256
 ATOMIC_CHECKPOINT_EQUIVALENTS = 4
@@ -317,8 +318,8 @@ PROFILES: dict[str, Profile] = {
         coarse_factor=2,
         coarse_steps=3_000,
         final_fit_steps=3_000,
-        target_gaussians=2_000_000,
-        max_gaussians=4_000_000,
+        target_gaussians=0,
+        max_gaussians=0,
         appearance_compensation=True,
         appearance_learning_rate=0.001,
         appearance_regularization=0.0001,
@@ -350,8 +351,8 @@ PROFILES: dict[str, Profile] = {
         coarse_factor=2,
         coarse_steps=4_000,
         final_fit_steps=4_000,
-        target_gaussians=2_500_000,
-        max_gaussians=5_000_000,
+        target_gaussians=0,
+        max_gaussians=0,
         appearance_compensation=True,
         appearance_learning_rate=0.001,
         appearance_regularization=0.0001,
@@ -383,8 +384,8 @@ PROFILES: dict[str, Profile] = {
         coarse_factor=2,
         coarse_steps=4_000,
         final_fit_steps=3_000,
-        target_gaussians=1_500_000,
-        max_gaussians=3_000_000,
+        target_gaussians=0,
+        max_gaussians=0,
         appearance_compensation=True,
         appearance_learning_rate=0.001,
         appearance_regularization=0.0001,
@@ -394,7 +395,15 @@ PROFILES: dict[str, Profile] = {
 
 def estimated_derived_bytes(source_bytes: int, profile: Profile) -> int:
     """Conservative peak workspace, including atomic files and resume state."""
-    gaussian_workspace = profile.max_gaussians * (
+    # Adaptive profiles have no fixed primitive ceiling. Reserve disk for one
+    # million serialized/checkpointed Gaussians per configured GiB of VRAM;
+    # runtime growth is governed by CUDA allocation preflight instead.
+    workspace_gaussians = (
+        profile.max_gaussians
+        if profile.max_gaussians > 0
+        else math.ceil(profile.expected_vram_gib * 1_000_000)
+    )
+    gaussian_workspace = workspace_gaussians * (
         CHECKPOINT_BYTES_PER_GAUSSIAN * ATOMIC_CHECKPOINT_EQUIVALENTS
         + PLY_BYTES_PER_GAUSSIAN * ATOMIC_PLY_EQUIVALENTS
     )
@@ -406,6 +415,9 @@ def estimated_derived_bytes(source_bytes: int, profile: Profile) -> int:
 
 
 def local_runtime_root() -> Path:
+    configured = os.environ.get("SERVO_RECONSTRUCTION_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
     root = os.environ.get("LOCALAPPDATA")
     if root:
         return Path(root) / "Servo" / "reconstruction"
@@ -5252,6 +5264,7 @@ def train_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         ),
         "targetGaussians": context.profile.target_gaussians,
         "maxGaussians": context.profile.max_gaussians,
+        "gaussianBudgetPolicy": GAUSSIAN_BUDGET_POLICY,
         "qualityGate": {
             "minimumPsnr": 22.0,
             "minimumSsim": 0.75,
@@ -6108,7 +6121,11 @@ def validate_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         raise WorkerError("artifact_mismatch", "PLY vertex count does not match training metrics.")
     if int(ply_metrics["shDegree"]) != int(training_config.get("shDegree", -1)):
         raise WorkerError("artifact_mismatch", "PLY spherical-harmonic degree does not match training configuration.")
-    if int(ply_metrics["vertexCount"]) > int(training_config.get("maxGaussians", -1)):
+    configured_max_gaussians = int(training_config.get("maxGaussians", -1))
+    if (
+        training_config.get("gaussianBudgetPolicy") != GAUSSIAN_BUDGET_POLICY
+        and int(ply_metrics["vertexCount"]) > configured_max_gaussians
+    ):
         raise WorkerError("artifact_mismatch", "PLY exceeds the configured Gaussian allocation ceiling.")
     world_digest = sha256_file(ply)
     if train_metrics.get("worldSha256") != world_digest:
@@ -6844,6 +6861,7 @@ def publish_stage(context: JobContext) -> tuple[dict[str, Any], list[Path]]:
         "refineScale2dStopIter",
         "targetGaussians",
         "maxGaussians",
+        "gaussianBudgetPolicy",
         "qualityGate",
         "appearanceCompensation",
         "appearanceLearningRate",

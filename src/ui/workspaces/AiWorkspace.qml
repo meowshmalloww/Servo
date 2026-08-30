@@ -10,6 +10,25 @@ Item {
     id: root
 
     readonly property bool longRunActive: AiChatController.statusText.toLowerCase().indexOf("long run") >= 0
+    property bool controlPromptPending: false
+
+    Connections {
+        target: RealityCIController
+
+        function onAssistantResultChanged() {
+            if (!root.controlPromptPending || RealityCIController.assistantResult.length === 0)
+                return
+            AiChatController.recordExternalMessage("assistant", RealityCIController.assistantResult)
+            root.controlPromptPending = false
+        }
+
+        function onLastErrorChanged() {
+            if (!root.controlPromptPending || RealityCIController.lastError.length === 0)
+                return
+            AiChatController.recordExternalMessage("assistant", "Action failed: " + RealityCIController.lastError)
+            root.controlPromptPending = false
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -82,11 +101,11 @@ Item {
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: Math.max(18, (parent.width - 920) / 2)
-                anchors.rightMargin: Math.max(18, (parent.width - 920) / 2)
-                anchors.topMargin: 12
-                anchors.bottomMargin: 14
-                spacing: 12
+                anchors.leftMargin: Math.max(16, Math.min(24, (parent.width - 860) / 2))
+                anchors.rightMargin: Math.max(16, Math.min(24, (parent.width - 860) / 2))
+                anchors.topMargin: 10
+                anchors.bottomMargin: 12
+                spacing: 10
 
                 Item {
                     Layout.fillWidth: true
@@ -220,14 +239,16 @@ Item {
 
                         footer: Item {
                             width: messageList.width
-                            height: AiChatController.busy ? 44 : 0
+                            height: (AiChatController.busy || RealityCIController.assistantBusy) ? 44 : 0
 
                             LoadingState {
                                 anchors.left: parent.left
                                 anchors.leftMargin: 14
                                 anchors.verticalCenter: parent.verticalCenter
-                                running: AiChatController.busy
-                                label: AiChatController.statusText
+                                running: AiChatController.busy || RealityCIController.assistantBusy
+                                label: RealityCIController.assistantBusy
+                                       ? "Servo is planning and executing a verified tool"
+                                       : AiChatController.statusText
                                 variant: root.longRunActive ? "Orbit" : "Dots"
                             }
                         }
@@ -237,24 +258,48 @@ Item {
                 AiChatInput {
                     id: chatInput
                     Layout.fillWidth: true
-                    Layout.maximumWidth: 760
+                    Layout.maximumWidth: 720
+                    Layout.preferredWidth: Math.min(720, parent.width - 8)
                     Layout.alignment: Qt.AlignHCenter
                     modelOptions: AiChatController.modelOptions
                     efforts: AiChatController.effortNames
                     attachments: AiChatController.pendingAttachments
                     maxAttachments: AiChatController.maxAttachments
-                    busy: AiChatController.busy
-                    busyLabel: AiChatController.statusText
+                    busy: AiChatController.busy || RealityCIController.assistantBusy
+                    busyLabel: RealityCIController.assistantBusy
+                               ? "Servo is executing a verified campaign tool"
+                               : AiChatController.statusText
                     busyVariant: root.longRunActive ? "Orbit" : "Dots"
-                    backendConfigured: AiChatController.configured
+                    backendConfigured: AiChatController.configured || RealityCIController.online
 
                     onAttachRequested: attachmentDialog.open()
                     onRemoveAttachmentRequested: index => AiChatController.removeAttachment(index)
-                    onStopRequested: AiChatController.cancel()
+                    onStopRequested: {
+                        if (RealityCIController.assistantBusy)
+                            RealityCIController.cancelAssistantRequest()
+                        else
+                            AiChatController.cancel()
+                    }
                     onSendRequested: (prompt, modelName, effortName) => {
-                        if (AiChatController.runLocalAction(prompt)
-                                || AiChatController.sendMessage(prompt, modelName, effortName))
+                        if (RealityCIController.isAskPrompt(prompt)) {
+                            const provider = modelName.indexOf("GPT") === 0 ? "openai" : "gemini"
+                            // Pass world/simulation context if available
+                            const worldId = typeof SimulationController !== "undefined" ? SimulationController.selectedWorldId : ""
+                            const simId = typeof SimulationController !== "undefined" ? SimulationController.sessionId : ""
+                            AiChatController.recordExternalMessage("user", prompt)
+                            root.controlPromptPending = true
+                            RealityCIController.executeAskPrompt(prompt, provider, modelName, worldId, simId)
+                            chatInput.clearPrompt()
+                        } else if (RealityCIController.isCampaignPrompt(prompt)) {
+                            const provider = modelName.indexOf("GPT") === 0 ? "openai" : "gemini"
+                            AiChatController.recordExternalMessage("user", prompt)
+                            root.controlPromptPending = true
+                            RealityCIController.executeAssistantPrompt(prompt, provider, modelName)
+                            chatInput.clearPrompt()
+                        } else if (AiChatController.runLocalAction(prompt)
+                                   || AiChatController.sendMessage(prompt, modelName, effortName)) {
                             chatInput.clearPrompt();
+                        }
                     }
                 }
             }

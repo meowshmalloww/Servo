@@ -354,11 +354,23 @@ bool AiChatController::runLocalAction(const QString &prompt)
     } else if (lower.contains(QStringLiteral("snow"))) {
         action = QStringLiteral("weather");
         argument = QStringLiteral("snow");
-        response = QStringLiteral("Snow visualization enabled. It is a visual scenario layer and does not alter Gaussian depth, road evidence, or collision state.");
+        response = QStringLiteral("Enabling native snow accumulation. Snow is deposited on inferred up-facing Gaussian surfaces and the physical vehicle, and tyre grip is reduced. The visual snow depth is nonmetric and is not a ClimateNeRF-qualified sensor product.");
     } else if (lower.contains(QStringLiteral("rain"))) {
         action = QStringLiteral("weather");
-        argument = QStringLiteral("rain");
-        response = QStringLiteral("Rain visualization enabled. It is rendered separately from the reconstructed world.");
+        argument = QStringLiteral("clear");
+        response = QStringLiteral("Rain remains disabled. ClimateNeRF does not implement rain, and Servo no longer provides a synthetic rain preview.");
+    } else if (lower.contains(QStringLiteral("fog"))) {
+        action = QStringLiteral("weather");
+        argument = QStringLiteral("clear");
+        response = QStringLiteral("Fog remains disabled. ClimateNeRF provides smog rather than generic fog, and the current T5 smog qualification failed its image-quality gate.");
+    } else if (lower.contains(QStringLiteral("flood"))) {
+        action = QStringLiteral("weather");
+        argument = QStringLiteral("clear");
+        response = QStringLiteral("Flood remains disabled. T5 has no metric scale or scene-qualified water plane, so Servo refuses to fabricate flood water.");
+    } else if (lower.contains(QStringLiteral("wet"))) {
+        action = QStringLiteral("weather");
+        argument = QStringLiteral("clear");
+        response = QStringLiteral("Wet appearance remains disabled. The former presentation-shader preview was removed and no quality-accepted ClimateNeRF bundle is active.");
     } else if ((lower.contains(QStringLiteral("clear weather"))
                 || lower.contains(QStringLiteral("stop weather"))
                 || lower == QStringLiteral("clear"))) {
@@ -542,6 +554,19 @@ bool AiChatController::sendMessage(const QString &prompt,
                  ReplyRealtime);
     }
     return true;
+}
+
+void AiChatController::recordExternalMessage(const QString &author,
+                                             const QString &content)
+{
+    const QString normalizedAuthor = author == QStringLiteral("user")
+        ? QStringLiteral("user") : QStringLiteral("assistant");
+    const QString normalizedContent = content.trimmed();
+    if (normalizedContent.isEmpty())
+        return;
+    appendMessage(normalizedAuthor, normalizedContent);
+    clearError();
+    setStatusText(QStringLiteral("Ready"));
 }
 
 void AiChatController::addAttachments(const QVariantList &urls)

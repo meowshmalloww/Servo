@@ -1,0 +1,7 @@
+FROM servo-climatenerf:official-2023-cu113
+
+# Add only ClimateNeRF's official semantic prerequisite.  The already
+# qualified tiny-cuda-nn/vren/torch-scatter renderer remains unchanged.
+RUN python -m pip install mmcv-full==1.7.1 \
+      -f https://download.openmmlab.com/mmcv/dist/cu113/torch1.11/index.html && \
+    python -m pip install mmsegmentation==0.30.0

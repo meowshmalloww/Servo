@@ -1,0 +1,772 @@
+#include "SimulationController.h"
+#include "SimulationFrameProvider.h"
+
+#include <QDateTime>
+#include <QDebug>
+#include <QFileInfo>
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QSettings>
+#include <QUrl>
+#include <QUuid>
+
+namespace {
+constexpr auto kDefaultBaseUrl = "http://127.0.0.1:8000";
+
+QVector3D vectorFromJson(const QJsonObject &object)
+{
+    return { float(object.value(QStringLiteral("x")).toDouble()),
+             float(object.value(QStringLiteral("y")).toDouble()),
+             float(object.value(QStringLiteral("z")).toDouble()) };
+}
+
+QQuaternion quaternionFromJson(const QJsonObject &object)
+{
+    const QQuaternion value(float(object.value(QStringLiteral("w")).toDouble()),
+                            float(object.value(QStringLiteral("x")).toDouble()),
+                            float(object.value(QStringLiteral("y")).toDouble()),
+                            float(object.value(QStringLiteral("z")).toDouble()));
+    return value.isNull() ? QQuaternion() : value.normalized();
+}
+} // namespace
+
+SimulationFrameProvider *SimulationController::s_frameProvider = nullptr;
+
+SimulationController::SimulationController(QObject *parent)
+    : QObject(parent)
+{
+    m_token = qEnvironmentVariable("SERVO_API_TOKEN");
+    QSettings settings;
+    m_baseUrl = settings.value("simulation/baseUrl", QString::fromLatin1(kDefaultBaseUrl)).toString();
+    if (m_baseUrl.isEmpty())
+        m_baseUrl = QString::fromLatin1(kDefaultBaseUrl);
+    if (settings.value("simulation/sessionBaseUrl").toString() == m_baseUrl) {
+        m_sessionId = settings.value("simulation/sessionId").toString();
+        if (!m_sessionId.isEmpty())
+            m_sessionState = QStringLiteral("reattaching");
+    }
+    m_network.setTransferTimeout(10000);
+    m_pollTimer.setInterval(100);
+    connect(&m_pollTimer, &QTimer::timeout, this, &SimulationController::poll);
+    m_statusTimer.setInterval(5000);
+    connect(&m_statusTimer, &QTimer::timeout, this, &SimulationController::refreshCarlaStatus);
+    m_statusTimer.start();
+    // A persisted session id is only a hint.  It may refer to an interrupted
+    // creation whose durable manifest was never committed.  The first server
+    // connection validates it against /v1/simulations before polling.
+}
+
+void SimulationController::setFrameProvider(SimulationFrameProvider *provider)
+{
+    s_frameProvider = provider;
+}
+
+QString SimulationController::baseUrl() const { return m_baseUrl; }
+QString SimulationController::connectionState() const { return m_connectionState; }
+bool SimulationController::online() const { return m_connectionState == QLatin1String("online"); }
+bool SimulationController::busy() const { return m_busy; }
+QString SimulationController::lastError() const { return m_lastError; }
+QString SimulationController::sessionId() const { return m_sessionId; }
+QString SimulationController::sessionState() const { return m_sessionState; }
+bool SimulationController::hasSession() const { return !m_sessionId.isEmpty(); }
+bool SimulationController::terminal() const { return m_sessionState == QLatin1String("completed") || m_sessionState == QLatin1String("failed") || m_sessionState == QLatin1String("cancelled"); }
+bool SimulationController::stale() const { return m_stale; }
+QString SimulationController::carlaRuntimeState() const { return m_carlaRuntimeState; }
+QString SimulationController::carlaVersion() const { return m_carlaVersion; }
+QString SimulationController::carlaRuntimeRoot() const { return m_carlaRuntimeRoot; }
+QString SimulationController::carlaPreflightState() const { return m_carlaPreflightState; }
+double SimulationController::carlaPhysicalDisplacementM() const { return m_carlaPhysicalDisplacementM; }
+int SimulationController::carlaSensorFrameBytes() const { return m_carlaSensorFrameBytes; }
+QString SimulationController::selectedWorldId() const { return m_selectedWorldId; }
+QString SimulationController::executionWorldId() const { return m_executionWorldId; }
+QString SimulationController::selectedRouteId() const { return m_selectedRouteId; }
+QString SimulationController::policyName() const { return m_policyName; }
+QString SimulationController::observationSource() const { return m_observationSource; }
+QString SimulationController::scenarioWeather() const { return m_scenarioWeather; }
+double SimulationController::scenarioSnowAccumulation() const { return m_scenarioSnowAccumulation; }
+QString SimulationController::executionManifestPath() const { return m_executionManifestPath; }
+bool SimulationController::executionReady() const { return m_executionReady; }
+qulonglong SimulationController::frameId() const { return m_frameId; }
+double SimulationController::simulationTimeS() const { return m_simulationTimeS; }
+double SimulationController::speedMps() const { return m_speedMps; }
+double SimulationController::accelerationMps2() const { return m_accelerationMps2; }
+double SimulationController::steering() const { return m_steering; }
+double SimulationController::throttle() const { return m_throttle; }
+double SimulationController::brake() const { return m_brake; }
+double SimulationController::targetSpeedMps() const { return m_targetSpeedMps; }
+double SimulationController::routeCompletion() const { return m_routeCompletion; }
+double SimulationController::lateralErrorM() const { return m_lateralErrorM; }
+double SimulationController::rendererCoverage() const { return m_rendererCoverage; }
+double SimulationController::policyLatencyMs() const { return m_policyLatencyMs; }
+qulonglong SimulationController::policyFrameId() const { return m_policyFrameId; }
+int SimulationController::collisionCount() const { return m_collisionCount; }
+int SimulationController::laneInvasionCount() const { return m_laneInvasionCount; }
+int SimulationController::deadlineMissCount() const { return m_deadlineMissCount; }
+QVector3D SimulationController::egoPosition() const { return m_egoPosition; }
+QQuaternion SimulationController::egoOrientation() const { return m_egoOrientation; }
+QVector3D SimulationController::policyCameraPosition() const { return m_policyCameraPosition; }
+QQuaternion SimulationController::policyCameraOrientation() const { return m_policyCameraOrientation; }
+int SimulationController::policyFrameRevision() const { return m_policyFrameRevision; }
+QString SimulationController::policyFrameUrl() const { return m_policyFrameUrl; }
+QString SimulationController::leftPolicyFrameUrl() const { return m_leftPolicyFrameUrl; }
+QString SimulationController::rightPolicyFrameUrl() const { return m_rightPolicyFrameUrl; }
+QString SimulationController::integratedFrameUrl() const { return m_integratedFrameUrl; }
+QString SimulationController::result() const { return m_result; }
+QString SimulationController::failureClass() const { return m_failureClass; }
+QString SimulationController::evidencePath() const { return m_evidencePath; }
+QString SimulationController::artifactPaths() const { return m_artifactPaths; }
+QString SimulationController::replayVideoUrl() const { return m_replayVideoUrl; }
+
+void SimulationController::setBaseUrl(const QString &value)
+{
+    QString normalized = value.trimmed();
+    while (normalized.endsWith(QLatin1Char('/')))
+        normalized.chop(1);
+    if (normalized == m_baseUrl)
+        return;
+    m_baseUrl = normalized;
+    QSettings().setValue("simulation/baseUrl", normalized);
+    m_connectionState = QStringLiteral("offline");
+    emit baseUrlChanged();
+    emit connectionChanged();
+}
+
+void SimulationController::setBusy(bool value)
+{
+    if (m_busy == value)
+        return;
+    m_busy = value;
+    emit busyChanged();
+}
+
+void SimulationController::fail(const QString &message)
+{
+    m_lastError = message;
+    m_connectionState = QStringLiteral("error");
+    setBusy(false);
+    emit lastErrorChanged();
+    emit connectionChanged();
+}
+
+void SimulationController::clearError()
+{
+    if (m_lastError.isEmpty())
+        return;
+    m_lastError.clear();
+    emit lastErrorChanged();
+}
+
+QNetworkReply *SimulationController::get(const QString &path)
+{
+    QNetworkRequest request{ QUrl(m_baseUrl + path) };
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setRawHeader("Cache-Control", "no-store");
+    if (!m_token.isEmpty())
+        request.setRawHeader("Authorization", "Bearer " + m_token.toUtf8());
+    return m_network.get(request);
+}
+
+QNetworkReply *SimulationController::post(const QString &path,
+                                          const QJsonObject &body,
+                                          const QString &idempotencyKey)
+{
+    QNetworkRequest request{ QUrl(m_baseUrl + path) };
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    if (!m_token.isEmpty())
+        request.setRawHeader("Authorization", "Bearer " + m_token.toUtf8());
+    if (!idempotencyKey.isEmpty())
+        request.setRawHeader("Idempotency-Key", idempotencyKey.toUtf8());
+    return m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+}
+
+QString SimulationController::replyError(QNetworkReply *reply, const QString &fallback) const
+{
+    const QByteArray bytes = reply->readAll();
+    const QJsonObject root = QJsonDocument::fromJson(bytes).object();
+    const QString message = root.value(QStringLiteral("error")).toObject()
+                                .value(QStringLiteral("message")).toString();
+    return message.isEmpty() ? fallback : message;
+}
+
+void SimulationController::connectToServer()
+{
+    QNetworkReply *reply = get(QStringLiteral("/healthz"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(replyError(reply, reply->errorString()));
+            return;
+        }
+        m_connectionState = QStringLiteral("online");
+        emit connectionChanged();
+        refreshCarlaStatus();
+        fetchSimulationList(m_sessionId);
+    });
+}
+
+void SimulationController::refreshCarlaStatus()
+{
+    QNetworkReply *reply = get(QStringLiteral("/v1/carla/status"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray bytes = reply->readAll();
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject object = QJsonDocument::fromJson(bytes).object();
+        m_carlaRuntimeState = object.value(QStringLiteral("status")).toString(QStringLiteral("unknown"));
+        m_carlaVersion = object.value(QStringLiteral("client_version")).toString();
+        m_carlaRuntimeRoot = object.value(QStringLiteral("root")).toString();
+        const QJsonObject receipt = object.value(QStringLiteral("full_preflight")).toObject();
+        const QJsonObject result = receipt.value(QStringLiteral("result")).toObject();
+        const bool verified = result.value(QStringLiteral("ready")).toBool(false);
+        m_carlaPreflightState = verified ? QStringLiteral("verified") : QStringLiteral("not-run");
+        m_carlaPhysicalDisplacementM = result.value(QStringLiteral("distance_moved_m")).toDouble();
+        m_carlaSensorFrameBytes = result.value(QStringLiteral("sensor_frame_bytes")).toInt();
+        m_connectionState = QStringLiteral("online");
+        emit runtimeChanged();
+        emit connectionChanged();
+    });
+}
+
+void SimulationController::verifyCarlaIntegration()
+{
+    if (m_busy)
+        return;
+    setBusy(true);
+    m_carlaPreflightState = QStringLiteral("running");
+    emit runtimeChanged();
+    QNetworkReply *reply = post(QStringLiteral("/v1/carla/preflight"),
+                                QJsonObject{{QStringLiteral("full"), true},
+                                            {QStringLiteral("rendering"), true}});
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        setBusy(false);
+        if (reply->error() != QNetworkReply::NoError) {
+            m_carlaPreflightState = QStringLiteral("failed");
+            emit runtimeChanged();
+            fail(replyError(reply, reply->errorString()));
+            reply->deleteLater();
+            return;
+        }
+        const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        const QJsonObject result = object.value(QStringLiteral("full_preflight")).toObject()
+                                       .value(QStringLiteral("result")).toObject();
+        m_carlaPreflightState = result.value(QStringLiteral("ready")).toBool(false)
+                                    ? QStringLiteral("verified") : QStringLiteral("failed");
+        m_carlaPhysicalDisplacementM = result.value(QStringLiteral("distance_moved_m")).toDouble();
+        m_carlaSensorFrameBytes = result.value(QStringLiteral("sensor_frame_bytes")).toInt();
+        emit runtimeChanged();
+    });
+}
+
+void SimulationController::prepareWorld(const QVariantMap &configuration)
+{
+    setBusy(true);
+    QNetworkReply *reply = post(QStringLiteral("/v1/worlds/prepare-carla"),
+                                QJsonObject::fromVariantMap(configuration));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        setBusy(false);
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(replyError(reply, reply->errorString()));
+            reply->deleteLater();
+            return;
+        }
+        const QByteArray bytes = reply->readAll();
+        reply->deleteLater();
+        const QJsonObject object = QJsonDocument::fromJson(bytes).object();
+        m_executionWorldId = object.value(QStringLiteral("world_id")).toString();
+        m_executionManifestPath = object.value(QStringLiteral("execution_manifest")).toString();
+        m_executionReady = object.value(QStringLiteral("ready_for_carla")).toBool();
+        emit configurationChanged();
+        emit worldPrepared(m_executionWorldId,
+                           object.value(QStringLiteral("execution_manifest")).toString());
+    });
+}
+
+void SimulationController::refreshWorldExecution(const QString &worldId)
+{
+    m_executionWorldId = worldId;
+    m_executionManifestPath.clear();
+    m_executionReady = false;
+    emit configurationChanged();
+    if (worldId.trimmed().isEmpty())
+        return;
+    QNetworkReply *reply = get(QStringLiteral("/v1/worlds/%1/execution")
+                                   .arg(QString::fromUtf8(QUrl::toPercentEncoding(worldId))));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            reply->deleteLater();
+            return;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        m_executionManifestPath = root.value(QStringLiteral("manifest_uri")).toString();
+        m_executionReady = root.value(QStringLiteral("execution")).toObject()
+                               .value(QStringLiteral("validation")).toObject()
+                               .value(QStringLiteral("ready_for_carla")).toBool();
+        emit configurationChanged();
+    });
+}
+
+void SimulationController::startSimulation(const QVariantMap &configuration)
+{
+    if (hasSession() && !terminal()) {
+        fail(QStringLiteral("A non-terminal simulation session is already attached."));
+        return;
+    }
+    const QJsonObject body = QJsonObject::fromVariantMap(configuration);
+    m_selectedRouteId = body.value(QStringLiteral("route_id")).toString(QStringLiteral("primary"));
+    const QJsonObject policy = body.value(QStringLiteral("policy")).toObject();
+    m_policyName = policy.value(QStringLiteral("name")).toString(
+        policy.value(QStringLiteral("adapter")).toString());
+    m_observationSource = body.value(QStringLiteral("observation")).toObject()
+                              .value(QStringLiteral("source")).toString();
+    const QJsonObject scenario = body.value(QStringLiteral("scenario")).toObject();
+    m_scenarioWeather = scenario.value(QStringLiteral("weather")).toString(
+        QStringLiteral("clear"));
+    m_scenarioSnowAccumulation = scenario.value(
+        QStringLiteral("snow_accumulation")).toDouble();
+    emit configurationChanged();
+    setBusy(true);
+    const QString idempotencyKey = QStringLiteral("servo-ui-%1").arg(
+        QUuid::createUuid().toString(QUuid::WithoutBraces));
+    QNetworkReply *reply = post(QStringLiteral("/v1/simulations"), body, idempotencyKey);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        setBusy(false);
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(replyError(reply, reply->errorString()));
+            reply->deleteLater();
+            return;
+        }
+        const QByteArray bytes = reply->readAll();
+        reply->deleteLater();
+        const QJsonObject object = QJsonDocument::fromJson(bytes).object();
+        m_sessionId = object.value(QStringLiteral("session_id")).toString();
+        m_sessionState = object.value(QStringLiteral("state")).toString(QStringLiteral("created"));
+        // Bind the attached session only after the API has accepted the
+        // executable-world request.  Merely inspecting another world must not
+        // make an unrelated or stale session appear to match it.
+        m_selectedWorldId = m_executionWorldId;
+        m_policyFrameId = 0;
+        m_policyFrameRevision = 0;
+        m_frameRequestActive = false;
+        m_policyFrameUrl.clear();
+        m_leftPolicyFrameUrl.clear();
+        m_rightPolicyFrameUrl.clear();
+        m_integratedFrameUrl.clear();
+        m_evidencePath.clear();
+        m_artifactPaths.clear();
+        m_replayVideoUrl.clear();
+        QSettings settings;
+        settings.setValue("simulation/sessionBaseUrl", m_baseUrl);
+        settings.setValue("simulation/sessionId", m_sessionId);
+        m_pollTimer.start();
+        emit sessionChanged();
+        emit policyFrameChanged();
+    });
+}
+
+void SimulationController::command(const QString &name)
+{
+    if (!hasSession())
+        return;
+    QNetworkReply *reply = post(QStringLiteral("/v1/simulations/%1/%2").arg(m_sessionId, name), {});
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            fail(replyError(reply, reply->errorString()));
+    });
+}
+
+void SimulationController::pauseSimulation() { command(QStringLiteral("pause")); }
+void SimulationController::resumeSimulation() { command(QStringLiteral("resume")); }
+void SimulationController::stopSimulation() { command(QStringLiteral("stop")); }
+void SimulationController::resetSimulation() { stopSimulation(); }
+
+void SimulationController::reattachSimulation(const QString &sessionId)
+{
+    const QString normalized = sessionId.trimmed();
+    if (normalized.isEmpty())
+        return;
+    fetchSimulationList(normalized);
+}
+
+void SimulationController::reattachLatestSimulation()
+{
+    fetchSimulationList({});
+}
+
+void SimulationController::fetchSimulationList(const QString &preferredSessionId)
+{
+    if (m_busy)
+        return;
+    setBusy(true);
+    QNetworkReply *reply = get(QStringLiteral("/v1/simulations"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, preferredSessionId]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            const QString message = replyError(reply, reply->errorString());
+            reply->deleteLater();
+            fail(message);
+            return;
+        }
+        const QJsonArray sessions = QJsonDocument::fromJson(reply->readAll()).object()
+                                        .value(QStringLiteral("simulations")).toArray();
+        reply->deleteLater();
+        setBusy(false);
+        QString selected;
+        QJsonObject selectedEntry;
+        if (!preferredSessionId.isEmpty()) {
+            for (const QJsonValue &entry : sessions) {
+                const QJsonObject object = entry.toObject();
+                if (object.value(QStringLiteral("session_id")).toString()
+                    == preferredSessionId) {
+                    selected = preferredSessionId;
+                    selectedEntry = object;
+                    break;
+                }
+            }
+            if (selected.isEmpty()) {
+                qWarning() << "Discarding missing persisted simulation"
+                           << preferredSessionId;
+                clearAttachedSimulation();
+            }
+        }
+        for (const QJsonValue &entry : sessions) {
+            if (!selected.isEmpty())
+                break;
+            const QJsonObject object = entry.toObject();
+            if (object.value(QStringLiteral("state")).toString() == QLatin1String("completed")
+                && object.value(QStringLiteral("outcome")).toString() == QLatin1String("success")) {
+                selected = object.value(QStringLiteral("session_id")).toString();
+                selectedEntry = object;
+                break;
+            }
+        }
+        if (selected.isEmpty()) {
+            for (const QJsonValue &entry : sessions) {
+                const QJsonObject object = entry.toObject();
+                if (object.value(QStringLiteral("state")).toString() == QLatin1String("completed")) {
+                    selected = object.value(QStringLiteral("session_id")).toString();
+                    selectedEntry = object;
+                    break;
+                }
+            }
+        }
+        if (selected.isEmpty() && !sessions.isEmpty()) {
+            selectedEntry = sessions.first().toObject();
+            selected = sessions.first().toObject().value(QStringLiteral("session_id")).toString();
+        }
+        if (selected.isEmpty()) {
+            fail(QStringLiteral("No recorded simulation session is available."));
+            return;
+        }
+        attachSimulationEntry(selectedEntry);
+    });
+}
+
+void SimulationController::attachSimulationEntry(const QJsonObject &entry)
+{
+    m_sessionId = entry.value(QStringLiteral("session_id")).toString();
+    if (m_sessionId.isEmpty()) {
+        fail(QStringLiteral("Simulation list entry is missing session_id."));
+        return;
+    }
+    m_sessionState = QStringLiteral("reattaching");
+    m_selectedWorldId = entry.value(QStringLiteral("world_id")).toString();
+    m_selectedRouteId = entry.value(QStringLiteral("route_id")).toString();
+    m_policyName = entry.value(QStringLiteral("policy_name")).toString();
+    m_observationSource = entry.value(QStringLiteral("observation_source")).toString();
+    m_scenarioWeather = entry.value(QStringLiteral("weather")).toString();
+    m_scenarioSnowAccumulation = entry.value(
+        QStringLiteral("snow_accumulation")).toDouble();
+    m_sequence = 0;
+    m_policyFrameId = 0;
+    m_policyFrameRevision = 0;
+    m_frameRequestActive = false;
+    m_policyFrameUrl.clear();
+    m_leftPolicyFrameUrl.clear();
+    m_rightPolicyFrameUrl.clear();
+    m_integratedFrameUrl.clear();
+    m_evidencePath.clear();
+    m_artifactPaths.clear();
+    m_replayVideoUrl.clear();
+    QSettings settings;
+    settings.setValue("simulation/sessionBaseUrl", m_baseUrl);
+    settings.setValue("simulation/sessionId", m_sessionId);
+    m_pollTimer.start();
+    emit configurationChanged();
+    emit sessionChanged();
+    emit policyFrameChanged();
+}
+
+void SimulationController::forgetSimulation()
+{
+    if (hasSession() && !terminal()) {
+        fail(QStringLiteral("Stop the active simulation before forgetting it."));
+        return;
+    }
+    clearAttachedSimulation();
+}
+
+void SimulationController::clearAttachedSimulation()
+{
+    m_pollTimer.stop();
+    m_sessionId.clear();
+    m_sessionState = QStringLiteral("none");
+    m_selectedWorldId.clear();
+    m_selectedRouteId.clear();
+    m_policyName.clear();
+    m_observationSource.clear();
+    m_scenarioWeather.clear();
+    m_scenarioSnowAccumulation = 0.0;
+    m_sequence = 0;
+    m_frameId = 0;
+    m_policyFrameId = 0;
+    m_policyFrameRevision = 0;
+    m_frameRequestActive = false;
+    m_policyFrameUrl.clear();
+    m_leftPolicyFrameUrl.clear();
+    m_rightPolicyFrameUrl.clear();
+    m_integratedFrameUrl.clear();
+    m_evidencePath.clear();
+    m_artifactPaths.clear();
+    m_replayVideoUrl.clear();
+    QSettings settings;
+    settings.remove("simulation/sessionBaseUrl");
+    settings.remove("simulation/sessionId");
+    emit configurationChanged();
+    emit sessionChanged();
+    emit policyFrameChanged();
+}
+
+void SimulationController::poll()
+{
+    if (!hasSession() || m_liveRequestActive)
+        return;
+    m_liveRequestActive = true;
+    const QString requestedSession = m_sessionId;
+    QNetworkReply *stateReply = get(QStringLiteral("/v1/simulations/%1/state").arg(requestedSession));
+    connect(stateReply, &QNetworkReply::finished, this, [this, stateReply, requestedSession]() {
+        const QByteArray bytes = stateReply->readAll();
+        const int status = stateReply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool missing = stateReply->error() != QNetworkReply::NoError
+                             && status == 404;
+        stateReply->deleteLater();
+        if (!missing && stateReply->error() == QNetworkReply::NoError)
+            applyState(QJsonDocument::fromJson(bytes).object());
+        else if (missing && m_sessionId == requestedSession) {
+            qWarning() << "Attached simulation disappeared from durable storage"
+                       << requestedSession;
+            clearAttachedSimulation();
+            QTimer::singleShot(0, this,
+                               [this]() { fetchSimulationList({}); });
+        }
+    });
+    QNetworkReply *liveReply = get(QStringLiteral("/v1/simulations/%1/live").arg(requestedSession));
+    connect(liveReply, &QNetworkReply::finished, this, [this, liveReply, requestedSession]() {
+        const QByteArray bytes = liveReply->readAll();
+        liveReply->deleteLater();
+        m_liveRequestActive = false;
+        if (liveReply->error() == QNetworkReply::NoError
+            && m_sessionId == requestedSession) {
+            applyLive(QJsonDocument::fromJson(bytes).object());
+            m_connectionState = QStringLiteral("online");
+            emit connectionChanged();
+        }
+    });
+}
+
+void SimulationController::applyState(const QJsonObject &object)
+{
+    const QString next = object.value(QStringLiteral("state")).toString();
+    if (!next.isEmpty() && next != m_sessionState) {
+        m_sessionState = next;
+        if (next == QLatin1String("failed"))
+            m_failureClass = object.value(QStringLiteral("detail")).toString();
+        emit sessionChanged();
+        emit liveChanged();
+    }
+    if (terminal() && m_evidencePath.isEmpty())
+        fetchEvidence();
+}
+
+void SimulationController::applyLive(const QJsonObject &object)
+{
+    const qulonglong sequence = object.value(QStringLiteral("sequence")).toInteger();
+    if (sequence < m_sequence)
+        return;
+    m_sequence = sequence;
+    m_frameId = object.value(QStringLiteral("authoritative_frame")).toInteger();
+    m_simulationTimeS = object.value(QStringLiteral("simulation_time_s")).toDouble();
+    m_speedMps = object.value(QStringLiteral("speed_mps")).toDouble();
+    m_accelerationMps2 = object.value(QStringLiteral("acceleration_mps2")).toDouble();
+    m_steering = object.value(QStringLiteral("steering")).toDouble();
+    m_throttle = object.value(QStringLiteral("throttle")).toDouble();
+    m_brake = object.value(QStringLiteral("brake")).toDouble();
+    m_targetSpeedMps = object.value(QStringLiteral("target_speed_mps")).toDouble();
+    m_routeCompletion = object.value(QStringLiteral("route_completion")).toDouble();
+    m_lateralErrorM = object.value(QStringLiteral("lateral_error_m")).toDouble();
+    m_rendererCoverage = object.value(QStringLiteral("renderer_coverage")).toDouble();
+    m_policyLatencyMs = object.value(QStringLiteral("policy_latency_ms")).toDouble();
+    m_collisionCount = object.value(QStringLiteral("collision_count")).toInt();
+    m_laneInvasionCount = object.value(QStringLiteral("lane_invasion_count")).toInt();
+    m_deadlineMissCount = object.value(QStringLiteral("deadline_miss_count")).toInt();
+    const QJsonObject servoPose = object.value(QStringLiteral("ego_pose_servo")).toObject();
+    m_egoPosition = vectorFromJson(servoPose.value(QStringLiteral("position")).toObject());
+    m_egoOrientation = quaternionFromJson(servoPose.value(QStringLiteral("orientation")).toObject());
+    const QJsonObject policyCameraPose = object.value(QStringLiteral("policy_camera_pose_servo")).toObject();
+    m_policyCameraPosition = vectorFromJson(policyCameraPose.value(QStringLiteral("position")).toObject());
+    m_policyCameraOrientation = quaternionFromJson(policyCameraPose.value(QStringLiteral("orientation")).toObject());
+    m_result = object.value(QStringLiteral("current_result")).toString();
+    m_failureClass = object.value(QStringLiteral("last_failure")).toString();
+    const QDateTime updated = QDateTime::fromString(
+        object.value(QStringLiteral("wall_clock_updated_at")).toString(), Qt::ISODateWithMs);
+    const bool nextStale = !updated.isValid() || updated.msecsTo(QDateTime::currentDateTimeUtc()) > 3000;
+    m_stale = nextStale;
+    const qulonglong nextPolicyFrame = object.value(QStringLiteral("policy_frame_id")).toInteger();
+    const bool frameChanged = nextPolicyFrame > m_policyFrameId;
+    m_policyFrameId = nextPolicyFrame;
+    if (m_sequence == sequence && (m_policyFrameUrl.isEmpty() || m_integratedFrameUrl.isEmpty()))
+        qInfo() << "Simulation live frame" << m_sessionId << "sequence" << sequence
+                << "policy frame" << m_policyFrameId;
+    emit liveChanged();
+    if (frameChanged || (m_policyFrameId > 0
+                         && (m_policyFrameUrl.isEmpty() || m_integratedFrameUrl.isEmpty())))
+        fetchPolicyFrame();
+}
+
+void SimulationController::fetchPolicyFrame()
+{
+    if (!hasSession() || m_policyFrameId == 0 || m_frameRequestActive)
+        return;
+    m_frameRequestActive = true;
+    const qulonglong requestedFrame = m_policyFrameId;
+    QNetworkReply *reply = get(QStringLiteral("/v1/simulations/%1/policy-frame?frame=%2")
+                                   .arg(m_sessionId)
+                                   .arg(requestedFrame));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestedFrame]() {
+        const QByteArray bytes = reply->readAll();
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError || requestedFrame != m_policyFrameId)
+            return;
+        const QImage image = QImage::fromData(bytes);
+        if (image.isNull() || !s_frameProvider)
+            return;
+        s_frameProvider->publish(image, m_sessionId, requestedFrame);
+        ++m_policyFrameRevision;
+        m_policyFrameUrl = QStringLiteral("image://simulation-policy/%1/%2?revision=%3")
+                               .arg(m_sessionId)
+                               .arg(requestedFrame)
+                               .arg(m_policyFrameRevision);
+        emit policyFrameChanged();
+    });
+    const auto requestSideCamera = [this, requestedFrame](const QString &cameraId) {
+        QNetworkReply *cameraReply = get(
+            QStringLiteral("/v1/simulations/%1/policy-frame/%2?frame=%3")
+                .arg(m_sessionId, cameraId).arg(requestedFrame));
+        connect(cameraReply, &QNetworkReply::finished, this,
+                [this, cameraReply, requestedFrame, cameraId]() {
+            const QByteArray bytes = cameraReply->readAll();
+            cameraReply->deleteLater();
+            if (cameraReply->error() != QNetworkReply::NoError
+                || requestedFrame != m_policyFrameId || !s_frameProvider)
+                return;
+            const QImage image = QImage::fromData(bytes);
+            if (image.isNull())
+                return;
+            const QString key = m_sessionId + QLatin1Char('-') + cameraId;
+            s_frameProvider->publish(image, key, requestedFrame);
+            ++m_policyFrameRevision;
+            const QString url = QStringLiteral("image://simulation-policy/%1/%2?revision=%3")
+                                    .arg(key).arg(requestedFrame).arg(m_policyFrameRevision);
+            if (cameraId == QLatin1String("front_left"))
+                m_leftPolicyFrameUrl = url;
+            else
+                m_rightPolicyFrameUrl = url;
+            emit policyFrameChanged();
+        });
+    };
+    requestSideCamera(QStringLiteral("front_left"));
+    requestSideCamera(QStringLiteral("front_right"));
+    QNetworkReply *integratedReply = get(
+        QStringLiteral("/v1/simulations/%1/integrated-frame?frame=%2")
+            .arg(m_sessionId).arg(requestedFrame));
+    connect(integratedReply, &QNetworkReply::finished,
+            this, [this, integratedReply, requestedFrame]() {
+        const QByteArray bytes = integratedReply->readAll();
+        integratedReply->deleteLater();
+        m_frameRequestActive = false;
+        if (integratedReply->error() != QNetworkReply::NoError
+            || requestedFrame != m_policyFrameId || !s_frameProvider) {
+            qWarning() << "Integrated simulation frame unavailable" << requestedFrame
+                       << integratedReply->errorString();
+            return;
+        }
+        const QImage image = QImage::fromData(bytes);
+        if (image.isNull())
+            return;
+        const QString key = m_sessionId + QStringLiteral("-integrated");
+        s_frameProvider->publish(image, key, requestedFrame);
+        ++m_policyFrameRevision;
+        m_integratedFrameUrl = QStringLiteral("image://simulation-policy/%1/%2?revision=%3")
+                                   .arg(key).arg(requestedFrame).arg(m_policyFrameRevision);
+        emit policyFrameChanged();
+    });
+}
+
+void SimulationController::fetchEvidence()
+{
+    if (!hasSession() || m_evidenceRequestActive)
+        return;
+    m_evidenceRequestActive = true;
+    QNetworkReply *reply = get(QStringLiteral("/v1/simulations/%1/evidence").arg(m_sessionId));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray bytes = reply->readAll();
+        m_evidenceRequestActive = false;
+        if (reply->error() != QNetworkReply::NoError) {
+            reply->deleteLater();
+            return;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(bytes).object();
+        reply->deleteLater();
+        applyEvidence(root);
+    });
+}
+
+void SimulationController::applyEvidence(const QJsonObject &root)
+{
+    const QJsonObject evidence = root.value(QStringLiteral("evidence")).toObject();
+    const QJsonObject artifacts = root.value(QStringLiteral("artifact_paths")).toObject();
+    m_result = evidence.value(QStringLiteral("outcome")).toString(m_result);
+    m_failureClass = evidence.value(QStringLiteral("failure_class")).toString(m_failureClass);
+    m_evidencePath = root.value(QStringLiteral("run_evidence_uri")).toString();
+    m_artifactPaths = QString::fromUtf8(
+        QJsonDocument(artifacts).toJson(QJsonDocument::Compact));
+
+    // Prefer the synchronized CARLA-on-Servo-world evidence.  Falling back to
+    // native CARLA remains truthful: both files were captured from the same
+    // authoritative synchronous physics run, never synthesized by the UI.
+    const QStringList replayCandidates {
+        QStringLiteral("evidence/servo-t5-carla-lincoln-fixed.mp4"),
+        QStringLiteral("evidence/native-and-t5-synchronized.mp4"),
+        QStringLiteral("evidence/carla-native-fixed.mp4"),
+    };
+    m_replayVideoUrl.clear();
+    for (const QString &key : replayCandidates) {
+        const QString path = artifacts.value(key).toString();
+        if (!path.isEmpty() && QFileInfo::exists(path)) {
+            m_replayVideoUrl = QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()).toString();
+            break;
+        }
+    }
+    emit liveChanged();
+    emit evidenceChanged();
+}

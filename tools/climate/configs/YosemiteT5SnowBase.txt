@@ -1,0 +1,26 @@
+dataset_name = colmap
+exp_name = yosemite-t5-snow-base-v1
+batch_size = 512
+scale = 8.0
+num_epochs = 80
+downsample = 0.25
+
+render_traj = False
+render_train = False
+render_rgb = True
+render_depth = True
+render_depth_raw = True
+render_normal = True
+render_semantic = True
+sem_conf_path = /servo/mmseg-configs/segformer/segformer_mit-b5_8x1_1024x1024_160k_cityscapes.py
+sem_ckpt_path = /servo/semantic/checkpoint.pth
+
+embed_a = True
+embed_a_len = 4
+embed_msk = False
+random_bg = True
+use_skybox = False
+
+depth_bound = 0.9
+sigma = 0.5
+rgb_smog = [0.925, 0.906, 0.758]

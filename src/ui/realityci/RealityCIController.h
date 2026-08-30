@@ -4,6 +4,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
+#include <QPointer>
+#include <QTimer>
 #include <QStringList>
 #include <QUrl>
 #include <QVariantList>
@@ -31,11 +33,15 @@ class RealityCIController final : public QAbstractTableModel
     Q_PROPERTY(QString connectionState READ connectionState NOTIFY connectionStateChanged)
     Q_PROPERTY(bool online READ online NOTIFY connectionStateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    Q_PROPERTY(bool assistantBusy READ assistantBusy NOTIFY assistantBusyChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(QString campaignId READ campaignId NOTIFY campaignChanged)
     Q_PROPERTY(QString campaignState READ campaignState NOTIFY campaignChanged)
     Q_PROPERTY(bool terminal READ terminal NOTIFY campaignChanged)
     Q_PROPERTY(bool hasCampaign READ hasCampaign NOTIFY campaignChanged)
+    Q_PROPERTY(QVariantList campaigns READ campaigns NOTIFY campaignsChanged)
+    Q_PROPERTY(QVariantList artifacts READ artifacts NOTIFY artifactsChanged)
+    Q_PROPERTY(QString assistantResult READ assistantResult NOTIFY assistantResultChanged)
 
 public:
     enum Column {
@@ -73,11 +79,15 @@ public:
     QString connectionState() const;
     bool online() const;
     bool busy() const;
+    bool assistantBusy() const;
     QString lastError() const;
     QString campaignId() const;
     QString campaignState() const;
     bool terminal() const;
     bool hasCampaign() const;
+    QVariantList campaigns() const;
+    QVariantList artifacts() const;
+    QString assistantResult() const;
 
     Q_INVOKABLE void setBaseUrl(const QString &baseUrl);
     Q_INVOKABLE void connectToServer();
@@ -90,6 +100,21 @@ public:
                                     double promotionFloor);
     Q_INVOKABLE void stepCampaign();
     Q_INVOKABLE void runCampaign();
+    Q_INVOKABLE void cancelCampaign(const QString &reason = QStringLiteral("cancelled by operator"));
+    Q_INVOKABLE void listCampaigns();
+    Q_INVOKABLE void selectCampaign(const QString &campaignId);
+    Q_INVOKABLE void fetchArtifacts();
+    Q_INVOKABLE void executeAssistantPrompt(const QString &prompt,
+                                            const QString &provider = QStringLiteral("auto"),
+                                            const QString &model = {});
+    Q_INVOKABLE void executeAskPrompt(const QString &prompt,
+                                      const QString &provider = QStringLiteral("auto"),
+                                      const QString &model = {},
+                                      const QString &worldId = {},
+                                      const QString &simulationId = {});
+    Q_INVOKABLE void cancelAssistantRequest();
+    Q_INVOKABLE bool isCampaignPrompt(const QString &prompt) const;
+    Q_INVOKABLE bool isAskPrompt(const QString &prompt) const;
     Q_INVOKABLE void forgetCampaign();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void clearError();
@@ -104,8 +129,12 @@ signals:
     void baseUrlChanged();
     void connectionStateChanged();
     void busyChanged();
+    void assistantBusyChanged();
     void lastErrorChanged();
     void campaignChanged();
+    void campaignsChanged();
+    void artifactsChanged();
+    void assistantResultChanged();
 
 private:
     struct EventRow {
@@ -120,6 +149,7 @@ private:
 
     void setConnectionState(const QString &state);
     void setBusy(bool value);
+    void setAssistantBusy(bool value);
     void fail(const QString &message);
     void resetCampaign();
     void applyEventsJson(const QJsonDocument &document);
@@ -127,9 +157,12 @@ private:
     static QString summarize(const QString &eventType, const QVariantMap &payload);
 
     QNetworkReply *get(const QString &path);
-    QNetworkReply *post(const QString &path, const QJsonObject &body);
+    QNetworkReply *post(const QString &path, const QJsonObject &body,
+                        const QString &idempotencyKey = {});
+    static QString replyError(QNetworkReply *reply, const QString &fallback);
 
     QNetworkAccessManager m_network;
+    QPointer<QNetworkReply> m_assistantReply;
     QVector<EventRow> m_events;
     QString m_baseUrl;
     QString m_token;
@@ -137,5 +170,10 @@ private:
     QString m_lastError;
     QString m_campaignId;
     QString m_campaignState = QStringLiteral("unknown");
+    QVariantList m_campaigns;
+    QVariantList m_artifacts;
+    QString m_assistantResult;
+    QTimer m_reconnectTimer;
     bool m_busy = false;
+    bool m_assistantBusy = false;
 };

@@ -5,12 +5,12 @@ import "."
 Menu {
     id: control
 
-    implicitWidth: 226
-    topPadding: 5
-    bottomPadding: 5
+    implicitWidth: 240
+    topPadding: 6
+    bottomPadding: 6
     leftPadding: 4
     rightPadding: 4
-    overlap: 1
+    overlap: 2
 
     delegate: EditorMenuItem {}
 
@@ -20,6 +20,7 @@ Menu {
         currentIndex: control.currentIndex
         boundsBehavior: Flickable.StopAtBounds
         clip: true
+        spacing: 1
     }
 
     background: Rectangle {
@@ -30,28 +31,38 @@ Menu {
     }
 
     enter: Transition {
-        NumberAnimation {
-            property: "opacity"
-            from: 0
-            to: 1
-            duration: Theme.animFast
-            easing.type: Easing.OutCubic
-        }
-        NumberAnimation {
-            property: "scale"
-            from: 0.96
-            to: 1
-            duration: Theme.animBase
-            easing.type: Easing.OutCubic
+        ParallelAnimation {
+            NumberAnimation {
+                property: "opacity"
+                from: 0
+                to: 1
+                duration: Theme.animFast
+                easing.type: Easing.OutCubic
+            }
+            NumberAnimation {
+                property: "y"
+                from: 4
+                to: 0
+                duration: Theme.animMove
+                easing.type: Easing.OutCubic
+            }
         }
     }
 
     exit: Transition {
-        NumberAnimation {
-            property: "opacity"
-            to: 0
-            duration: Theme.animFast
-            easing.type: Easing.InCubic
+        ParallelAnimation {
+            NumberAnimation {
+                property: "opacity"
+                to: 0
+                duration: Theme.animFast
+                easing.type: Easing.InCubic
+            }
+            NumberAnimation {
+                property: "y"
+                to: 3
+                duration: Theme.animFast
+                easing.type: Easing.InCubic
+            }
         }
     }
 }

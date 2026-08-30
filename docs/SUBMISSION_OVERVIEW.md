@@ -1,8 +1,8 @@
 # Servo — RealityCI submission overview (backend build)
 
-> Status: **complete local agentic loop, verified**. Cloud deployment and the
-> desktop client wiring are prepared but require external credentials / UI
-> work as noted at the end.
+> Status: **complete local agentic loop + desktop Ask Servo + real CARLA
+> vertical slice, verified**. Cloud deployment remains a separate deployment
+> step.
 
 ## 30-second explanation
 
@@ -16,6 +16,13 @@ capabilities with regression suites, promotes or rejects by pure code, then
 updates Reality Debt and picks the next weakness autonomously.
 
 ## What actually ran here (real artifacts, not claims)
+
+- T5 Final v2 + DriveMA/CARLA snow session
+  `sim-d8e994ae412a481a`: 99.2% / 30.43 m route, zero collisions, one lane
+  event, 0.472 m max lateral error, three policy cameras, 90% inferred snow,
+  measured gravity/contact pass. The world remains nonmetric and review-only.
+- Ask Servo visibly executed a Gemini 3.7 Flash request and read the durable
+  CARLA result. Unwired mutations return HTTP 501 rather than fake success.
 
 - Trained baseline (`demo/occluded_pedestrian/baseline/baseline.pt`,
   sha256 `3d9785…`) passes ordinary crossings **100%** but drops to **62.5%**
@@ -70,15 +77,15 @@ See `assets/realityci-architecture.svg` and `REALITYCI_BACKEND.md`
 
 ## Honest limitations
 
-- Gemini live calls need `GEMINI_API_KEY` on this machine; until then the
-  deterministic diagnostician runs so nothing is faked. The code path is
-  complete and gated (`--diagnostician gemini`, or `auto` which upgrades
-  itself when a key exists).
-- Cloud deployment is scripted (`cloud/infra/deploy.ps1`) and the desktop
-  client speaks to the same API, but a GCP project/credentials are required
-  to execute it; locally the identical FastAPI service runs via uvicorn.
+- Gemini live calls are configured and verified locally. Credentials remain
+  environment-only and are not committed. The deterministic diagnostician is
+  still the fail-closed fallback when a provider is unavailable.
+- Cloud deployment is scripted and the desktop speaks to the same API, but the
+  current verified run is local uvicorn + local CARLA/DriveMA; Cloud Run has
+  not yet been claimed as deployed.
 - Firestore/Pub/Sub are not wired yet: durable state is the sealed campaign
   workspace, mirrored to GCS when `SERVO_GCS_BUCKET` is set.
-- Scenario world is a straight-road virtual scene with procedural or
-  observed-frame backgrounds; collision truth is deterministic scenario
-  state, never Gaussian geometry. No metric-scale or safety claims.
+- The CARLA corridor and scale are inferred from T5 camera evidence. Collision
+  truth belongs to CARLA/OpenDRIVE, never Gaussian opacity. The Gaussian world
+  still contains off-axis blur/fiberglass artifacts and is not metric,
+  collision-validated, or autonomous-driving-ready.

@@ -231,6 +231,7 @@ class CampaignEngine:
             baseline_policy=descriptor,
             config=CampaignConfig(
                 diagnostician=self.diagnostician_kind,
+                diagnostician_model=self.diagnostician_model,
                 training_seed_pool_size=self.training_scenarios,
                 hidden_exam_size=self.hidden_exam_size,
                 protected_suite_size=self.protected_suite_size,
@@ -320,6 +321,25 @@ class CampaignEngine:
             if state in TERMINAL_STATES:
                 return state
         raise RuntimeError("orchestrator exceeded max steps")
+
+    def cancel(self, reason: str = "cancelled by operator") -> CampaignState:
+        """Durably cancel an active campaign.
+
+        Cancellation is idempotent: retries return the existing terminal
+        state and never append a second event.  Long-running job adapters are
+        expected to poll the durable state between bounded work units.
+        """
+
+        state = self.current_state()
+        if state in TERMINAL_STATES:
+            return state
+        self._emit(
+            EventType.CAMPAIGN_CANCELLED,
+            {"reason": reason, "previous_state": state.value},
+            "cancel",
+        )
+        self._write_state(CampaignState.CANCELLED)
+        return CampaignState.CANCELLED
 
     def _handlers(self) -> dict[CampaignState, Callable[[], None]]:
         return {

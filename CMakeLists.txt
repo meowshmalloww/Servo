@@ -19,6 +19,7 @@ include(CTest)
 find_package(Qt6 6.11 REQUIRED COMPONENTS
     Concurrent
     GuiPrivate
+    Multimedia
     Network
     Quick
     Quick3D
@@ -49,3 +50,14 @@ install(TARGETS appServo
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# Package the Qt/QML runtime used by the desktop application.  A plain copy of
+# appServo.exe is not sufficient on Windows because Quick 3D also needs its
+# import plugins and Assimp runtime.  Keep deployment tied to CMake's resolved
+# Qt installation so release bundles cannot silently mix Qt versions.
+qt_generate_deploy_qml_app_script(
+    TARGET appServo
+    OUTPUT_SCRIPT servo_deploy_script
+    NO_UNSUPPORTED_PLATFORM_ERROR
+)
+install(SCRIPT ${servo_deploy_script})

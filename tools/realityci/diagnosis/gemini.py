@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -323,6 +324,13 @@ class GeminiDiagnostician(Diagnostician):
 
 
 def build_diagnostician(kind: str, **kwargs: Any) -> Diagnostician:
+    if kind == "auto":
+        has_credentials = bool(
+            os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        )
+        kind = "gemini" if has_credentials else "deterministic"
     if kind == "deterministic":
         from .deterministic import DeterministicDiagnostician
 

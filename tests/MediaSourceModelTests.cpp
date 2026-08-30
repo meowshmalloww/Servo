@@ -106,6 +106,8 @@ void MediaSourceModelTests::probesVideoWithFfprobe()
 
 void MediaSourceModelTests::scansSupportedMediaRecursively()
 {
+    const int initialCount = m_model->count();
+    const int initialReadyCount = m_model->readyCount();
     const QString folder = m_sources.filePath(QStringLiteral("nested sources"));
     const QString nested = folder + QStringLiteral("/camera A");
     QVERIFY(QDir().mkpath(nested));
@@ -114,8 +116,8 @@ void MediaSourceModelTests::scansSupportedMediaRecursively()
 
     m_model->addUrl(QUrl::fromLocalFile(folder));
     QTRY_VERIFY_WITH_TIMEOUT(!m_model->busy(), 15000);
-    QCOMPARE(m_model->count(), 4);
-    QCOMPARE(m_model->readyCount(), 4);
+    QCOMPARE(m_model->count(), initialCount + 2);
+    QCOMPARE(m_model->readyCount(), initialReadyCount + 2);
     QCOMPARE(m_model->errorCount(), 0);
 }
 

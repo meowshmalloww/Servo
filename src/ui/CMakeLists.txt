@@ -37,6 +37,11 @@ qt_add_qml_module(appServo
         components/LoadingState.qml
         components/MediaSourceDelegate.qml
         components/MetricReadout.qml
+        components/DrivingHud.qml
+        components/CarlaDriveView.qml
+        components/LiveDriveView.qml
+        components/PolicyFrameMonitor.qml
+        components/SimulationReadiness.qml
         components/PageToolbar.qml
         components/Panel.qml
         components/PanelHeader.qml
@@ -61,6 +66,7 @@ qt_add_qml_module(appServo
         workspaces/DiagnoseWorkspace.qml
         workspaces/PrepareWorkspace.qml
         workspaces/RunsWorkspace.qml
+        workspaces/SettingsWorkspace.qml
         workspaces/TrainWorkspace.qml
         workspaces/VerifyWorkspace.qml
         workspaces/WorldsWorkspace.qml
@@ -74,6 +80,12 @@ qt_add_qml_module(appServo
         media/MediaSourceModel.h
         realityci/RealityCIController.cpp
         realityci/RealityCIController.h
+        simulation/SimulationController.cpp
+        simulation/SimulationController.h
+        simulation/NativeVehicleController.cpp
+        simulation/NativeVehicleController.h
+        simulation/SimulationFrameProvider.cpp
+        simulation/SimulationFrameProvider.h
         reconstruction/ReconstructionController.cpp
         reconstruction/ReconstructionController.h
     rendering/GaussianSplatView.cpp
@@ -89,6 +101,14 @@ qt_add_qml_module(appServo
 
     RESOURCES
         assets/servo-logo.png
+        assets/vehicles/CarConcept.glb
+        assets/vehicles/CarConcept.LICENSE.md
+        assets/vehicles/CarlaChronoSedan.glb
+        assets/vehicles/CarlaChronoSedan.LICENSE.md
+        assets/vehicles/OpenXVolvoEX30.glb
+        assets/vehicles/OpenXVolvoEX30.LICENSE.md
+        assets/vehicles/ToyCarServo.glb
+        assets/vehicles/ToyCar.LICENSE.md
         icons/assistant.svg
         icons/arrow-up.svg
         icons/back.svg
@@ -151,6 +171,7 @@ target_include_directories(appServo PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/realityci
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction
     ${CMAKE_CURRENT_SOURCE_DIR}/rendering
+    ${CMAKE_CURRENT_SOURCE_DIR}/simulation
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime
     ${CMAKE_CURRENT_SOURCE_DIR}/worlds
 )
@@ -181,6 +202,7 @@ target_link_libraries(appServo
     PRIVATE
         Qt6::Concurrent
         Qt6::GuiPrivate
+        Qt6::Multimedia
         Qt6::Network
         Qt6::Quick
         Qt6::Quick3D
@@ -198,6 +220,7 @@ endif()
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/tools/reconstruction/
     DESTINATION reconstruction
     FILES_MATCHING
+        PATTERN "__pycache__" EXCLUDE
         PATTERN "*.py"
         PATTERN "*.json"
         PATTERN "*.txt"

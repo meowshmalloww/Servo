@@ -1,6 +1,7 @@
-"""Minimal read-only COLMAP binary model adapter used by Servo training.
+"""Minimal read-only COLMAP model adapter used by Servo training.
 
-This intentionally implements only the stable cameras/images/points3D fields
+This intentionally implements only the stable cameras/images/points3D binary
+and text fields
 consumed by ``servo_train.py``. It is not a replacement for COLMAP or pycolmap.
 """
 
@@ -162,9 +163,20 @@ class Point3D:
 class Reconstruction:
     def __init__(self, root: str | Path) -> None:
         root = Path(root)
-        self.cameras = self._read_cameras(root / "cameras.bin")
-        self.images = self._read_images(root / "images.bin")
-        self.points3D = self._read_points(root / "points3D.bin")
+        binary = all((root / name).is_file() for name in ("cameras.bin", "images.bin", "points3D.bin"))
+        text = all((root / name).is_file() for name in ("cameras.txt", "images.txt", "points3D.txt"))
+        if binary:
+            self.cameras = self._read_cameras(root / "cameras.bin")
+            self.images = self._read_images(root / "images.bin")
+            self.points3D = self._read_points(root / "points3D.bin")
+        elif text:
+            self.cameras = self._read_cameras_text(root / "cameras.txt")
+            self.images = self._read_images_text(root / "images.txt")
+            self.points3D = self._read_points_text(root / "points3D.txt")
+        else:
+            raise FileNotFoundError(
+                f"COLMAP model at {root} must contain a complete binary or text model."
+            )
         missing = {
             image.camera_id for image in self.images.values()
         }.difference(self.cameras)
@@ -242,4 +254,109 @@ class Reconstruction:
                     float(values[7]),
                     Track(elements),
                 )
+        return points
+
+    @staticmethod
+    def _read_cameras_text(path: Path) -> dict[int, Camera]:
+        cameras: dict[int, Camera] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            fields = stripped.split()
+            if len(fields) < 5:
+                raise ColmapFormatError(f"Malformed COLMAP camera row: {line}")
+            camera_id = int(fields[0])
+            model_name = fields[1]
+            model = next(
+                (item for item in CAMERA_MODELS.values() if item[0] == model_name),
+                None,
+            )
+            if model is None:
+                raise ColmapFormatError(f"Unsupported COLMAP camera model: {model_name}")
+            parameter_count = model[1]
+            if len(fields) != 4 + parameter_count:
+                raise ColmapFormatError(
+                    f"COLMAP {model_name} camera requires {parameter_count} parameters."
+                )
+            cameras[camera_id] = Camera(
+                camera_id,
+                model_name,
+                int(fields[2]),
+                int(fields[3]),
+                tuple(float(value) for value in fields[4:]),
+            )
+        return cameras
+
+    @staticmethod
+    def _read_images_text(path: Path) -> dict[int, Image]:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+        images: dict[int, Image] = {}
+        index = 0
+        while index < len(raw_lines):
+            header = raw_lines[index].strip()
+            index += 1
+            if not header or header.startswith("#"):
+                continue
+            fields = header.split()
+            if len(fields) < 10:
+                raise ColmapFormatError(f"Malformed COLMAP image row: {header}")
+            while index < len(raw_lines) and raw_lines[index].lstrip().startswith("#"):
+                index += 1
+            points_line = raw_lines[index].strip() if index < len(raw_lines) else ""
+            index += 1
+            point_fields = points_line.split()
+            if len(point_fields) % 3:
+                raise ColmapFormatError(
+                    f"Malformed COLMAP image observations for image {fields[0]}."
+                )
+            points = tuple(
+                Point2D(
+                    np.asarray(
+                        [float(point_fields[offset]), float(point_fields[offset + 1])],
+                        dtype=np.float64,
+                    ),
+                    int(point_fields[offset + 2]),
+                )
+                for offset in range(0, len(point_fields), 3)
+            )
+            matrix = np.eye(4, dtype=np.float64)
+            matrix[:3, :3] = _rotation_from_qvec(
+                tuple(float(value) for value in fields[1:5])
+            )
+            matrix[:3, 3] = np.asarray(
+                [float(value) for value in fields[5:8]], dtype=np.float64
+            )
+            image_id = int(fields[0])
+            images[image_id] = Image(
+                image_id,
+                int(fields[8]),
+                " ".join(fields[9:]),
+                Rigid3d(matrix),
+                points,
+            )
+        return images
+
+    @staticmethod
+    def _read_points_text(path: Path) -> dict[int, Point3D]:
+        points: dict[int, Point3D] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            fields = stripped.split()
+            if len(fields) < 8 or (len(fields) - 8) % 2:
+                raise ColmapFormatError(f"Malformed COLMAP point row: {line}")
+            point_id = int(fields[0])
+            elements = tuple(
+                TrackElement(int(fields[offset]), int(fields[offset + 1]))
+                for offset in range(8, len(fields), 2)
+            )
+            points[point_id] = Point3D(
+                point_id,
+                np.asarray([float(value) for value in fields[1:4]], dtype=np.float64),
+                np.asarray([int(value) for value in fields[4:7]], dtype=np.uint8),
+                float(fields[7]),
+                Track(elements),
+            )
         return points

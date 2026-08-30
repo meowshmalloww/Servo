@@ -59,6 +59,17 @@ media / simulator / vehicle sensors
 
 The desktop application is a native Qt/C++ workbench. The local RealityCI services provide durable campaign records, scenario execution, training and evaluation contracts, while the Vulkan renderer provides interactive Gaussian-world exploration and diagnostic visualization.
 
+## What works today
+
+- Published Gaussian worlds load in the native Vulkan viewer and retain explicit reconstruction provenance.
+- The RealityCI control API and deterministic occluded-pedestrian golden campaign run locally with durable records.
+- The CARLA 0.9.16 integration includes fail-closed packaged-runtime discovery, owned process/session management, inferred-corridor OpenDRIVE companions, synchronous explicit-control workers, CARLA/3DGS/hybrid observation adapters, a real three-camera DriveMA-2B policy endpoint, and native live-drive UI/controller plumbing.
+- The packaged CARLA 0.9.16 runtime registered in `simulations/runtime/carla/settings.json` has passed Servo's real Town01 physics/RGB preflight and generated-OpenDRIVE displacement test. CARLA source checkouts are neither discovered nor required at runtime.
+- The latest retained T5/DriveMA snow run completed 99.2% of its 30.5 m inferred corridor with zero collisions. Its evidence records 90% snow accumulation, a 9.81 m/s² CARLA gravity reference, 9.77 m/s² median measured IMU magnitude, and passing ground contact. T5 remains review-required and explicitly not collision validated because its monocular scale and off-path Gaussian geometry are not trustworthy enough for that claim.
+- Servo Assistant uses the real local control plane and configured Gemini/Vertex AI or OpenAI provider to inspect durable worlds, runs, weather, logs, and evidence. Unsupported actions fail closed instead of returning simulated success.
+
+See [local CARLA setup](docs/LOCAL_WINDOWS_CARLA_SETUP.md) and [integration architecture](docs/CARLA_INTEGRATION.md).
+
 ## Reconstruction demos
 
 ### Yosemite road
@@ -85,7 +96,7 @@ images / video
 
 Published world bundles contain the Gaussian PLY, camera solution, reconstruction configuration, sanitized source provenance, metrics, validation media, and SHA-256 artifact hashes. Completed worlds appear automatically in the **Worlds** workspace.
 
-The Explore view supports free look, recorded-route movement, bounded lateral and vertical motion, configurable movement speed, and Appearance, Depth, Structure, and Coverage views. Clear, rain, snow, fog, and wet-road presentation modes are available for scenario visualization.
+The Explore view supports free look, recorded-route movement, bounded lateral and vertical motion, configurable movement speed, and Appearance, Depth, Structure, and Coverage views. Clear, rain, snow, fog, and wet-road presentation modes are available for scenario visualization. Generated or inferred weather is labeled separately from measured geometry and never upgrades a world to collision validated.
 
 ## Quick start
 

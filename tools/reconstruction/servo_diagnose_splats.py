@@ -116,7 +116,8 @@ def selected_pose_cases(cameras: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def audit(
-    training_output: Path,
+    training_output: Path | None,
+    world: Path | None,
     output: Path,
     width: int,
     fps: int,
@@ -124,7 +125,7 @@ def audit(
     if output.exists():
         raise AuditError(f"Refusing to overwrite existing diagnostic output: {output}")
     output.mkdir(parents=True)
-    source = resolve_audit_source(None, training_output)
+    source = resolve_audit_source(world, training_output)
     cameras = camera_records(source.cameras_path)
     if width < 160 or width > 1280:
         raise AuditError("Diagnostic width must be within [160, 1280].")
@@ -273,14 +274,22 @@ def audit(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--diagnostic-training-output", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--diagnostic-training-output", type=Path)
+    source.add_argument("--world", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--width", type=int, default=480)
     parser.add_argument("--fps", type=int, default=2)
     arguments = parser.parse_args()
     try:
         started = time.perf_counter()
-        result = audit(arguments.diagnostic_training_output, arguments.output, arguments.width, arguments.fps)
+        result = audit(
+            arguments.diagnostic_training_output,
+            arguments.world,
+            arguments.output,
+            arguments.width,
+            arguments.fps,
+        )
     except (AuditError, OSError, RuntimeError, ValueError) as error:
         print(json.dumps({"event": "splat_forensics_failed", "error": str(error)}, separators=(",", ":")))
         return 1

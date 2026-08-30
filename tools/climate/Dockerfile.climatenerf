@@ -1,0 +1,35 @@
+FROM nvidia/cuda:11.3.1-devel-ubuntu20.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TORCH_CUDA_ARCH_LIST=8.6 \
+    TCNN_CUDA_ARCHITECTURES=86
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3.8 python3.8-dev python3-pip git build-essential gcc-9 g++-9 \
+      ninja-build cmake libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/* && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.8 1
+
+RUN python -m pip install --upgrade "pip<24" setuptools wheel && \
+    python -m pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 \
+      --extra-index-url https://download.pytorch.org/whl/cu113 && \
+    python -m pip install torch-scatter \
+      -f https://data.pyg.org/whl/torch-1.11.0+cu113.html
+
+RUN python -m pip install \
+      einops kornia==0.6.12 pytorch-lightning==1.7.7 torchmetrics==0.11.4 \
+      opencv-python-headless==4.8.1.78 imageio imageio-ffmpeg scipy==1.10.1 \
+      matplotlib ConfigArgParse plyfile scikit-image==0.19.3 trimesh tqdm pillow==9.5.0
+
+RUN git -c http.version=HTTP/1.1 clone --depth 1 --branch v1.6 \
+      https://github.com/NVlabs/tiny-cuda-nn.git /opt/tiny-cuda-nn && \
+    git -C /opt/tiny-cuda-nn -c http.version=HTTP/1.1 \
+      submodule update --init --recursive --depth 1 && \
+    cd /opt/tiny-cuda-nn/bindings/torch && CC=gcc-9 CXX=g++-9 python -m pip install .
+
+COPY . /opt/climatenerf
+WORKDIR /opt/climatenerf
+RUN CC=gcc-9 CXX=g++-9 python -m pip install ./models/csrc --no-build-isolation
+
+ENTRYPOINT ["python"]

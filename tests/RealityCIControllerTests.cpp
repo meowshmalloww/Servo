@@ -64,6 +64,20 @@ private slots:
         QCOMPARE(controller.campaignState(), QStringLiteral("unknown"));
     }
 
+    void routesOnlyExplicitCampaignPrompts()
+    {
+        RealityCIController controller;
+
+        QVERIFY(controller.isCampaignPrompt(QStringLiteral("Diagnose the failure in this campaign")));
+        QVERIFY(controller.isCampaignPrompt(QStringLiteral("Run the hidden exam")));
+        QVERIFY(controller.isCampaignPrompt(QStringLiteral("Select the next weakness")));
+        QVERIFY(controller.isCampaignPrompt(QStringLiteral("Cancel the run")));
+
+        QVERIFY(!controller.isCampaignPrompt(QStringLiteral("Explain Gaussian splatting")));
+        QVERIFY(!controller.isCampaignPrompt(QStringLiteral("Hello Servo")));
+        QVERIFY(!controller.isCampaignPrompt(QString()));
+    }
+
 private:
     QTemporaryDir m_settingsRoot;
 };

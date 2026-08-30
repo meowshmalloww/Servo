@@ -75,6 +75,13 @@ _TRANSITIONS: dict[CampaignState, frozenset[CampaignState]] = {
     ),
 }
 
+# Cancellation is a control-plane transition, not a workflow-owned step.  A
+# user must be able to stop any non-terminal campaign, including while a
+# resumed API process is between durable steps.  Keep this policy centralized
+# so the orchestrator, ADK adapter, and HTTP API cannot disagree.
+for _state in tuple(_TRANSITIONS):
+    _TRANSITIONS[_state] = frozenset((*_TRANSITIONS[_state], CampaignState.CANCELLED))
+
 
 class InvalidTransition(ValueError):
     def __init__(self, current: CampaignState, target: CampaignState) -> None:

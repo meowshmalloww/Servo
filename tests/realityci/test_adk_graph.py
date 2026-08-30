@@ -66,6 +66,45 @@ def test_adk_rerun_on_terminal_campaign_is_noop(tmp_path: Path) -> None:
     ).read_text() == workspace_events
 
 
+@requires_baseline
+def test_adk_resumes_after_process_loss_without_duplicate_work(tmp_path: Path) -> None:
+    """The sealed engine workspace, not ADK memory, owns workflow truth."""
+
+    from google.adk.sessions import InMemorySessionService
+    from tools.realityci.orchestrator import CampaignEngine, load_events
+
+    root = tmp_path / "campaign"
+    kwargs = {"root": root, "baseline_checkpoint_path": BASELINE, **SMALL}
+
+    # Simulate work completed by a process that then disappears.
+    first_process = CampaignEngine(**kwargs)
+    for _ in range(4):
+        first_process.step_once()
+    state_before_restart = first_process.current_state()
+    events_before_restart = load_events(root / "events.jsonl")
+    assert state_before_restart == CampaignState.EXPERIMENTING
+
+    # A brand-new ADK session and new engine objects recover entirely from
+    # state.json + the append-only event/artifact records.
+    fresh_service = InMemorySessionService()
+    resumed = asyncio_run_wrapper(kwargs, session_service=fresh_service)
+    assert resumed.terminal_state == CampaignState.COMPLETED_PROMOTED
+    assert resumed.steps[0]["node"].endswith("experimenting")
+
+    events = load_events(root / "events.jsonl")
+    keys = [event.idempotency_key for event in events]
+    assert len(keys) == len(set(keys))
+    assert [event.record_id for event in events[: len(events_before_restart)]] == [
+        event.record_id for event in events_before_restart
+    ]
+
+    # A second fresh process is a terminal no-op and cannot duplicate jobs.
+    event_bytes = (root / "events.jsonl").read_bytes()
+    again = asyncio_run_wrapper(kwargs, session_service=InMemorySessionService())
+    assert again.terminal_state == CampaignState.COMPLETED_PROMOTED
+    assert (root / "events.jsonl").read_bytes() == event_bytes
+
+
 def asyncio_run_wrapper(kwargs, session_service=None):
     import asyncio
 

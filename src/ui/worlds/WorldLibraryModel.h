@@ -151,6 +151,7 @@ private:
     QString m_pendingWorldPath;
     QString m_lastError;
     QString m_deletingWorldName;
+    int m_selectionPolicyVersion = 0;
     bool m_refreshBusy = false;
     bool m_deleteBusy = false;
     bool m_refreshPending = false;

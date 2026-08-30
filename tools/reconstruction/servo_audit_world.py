@@ -111,11 +111,19 @@ def resolve_audit_source(
         if not isinstance(environment, dict):
             raise AuditError("The diagnostic output has no environment provenance.")
         geometry_root_value = config.get("geometryRoot")
-        if not isinstance(geometry_root_value, str):
-            raise AuditError("The diagnostic output has no geometry-prior root.")
-        environment_root = Path(geometry_root_value).resolve()
-        if not environment_root.is_dir():
-            raise AuditError("The diagnostic geometry-prior root no longer exists.")
+        # Appearance-only diagnostics (for example an external dense-depth
+        # initializer followed by RGB 3DGS fitting) intentionally have no
+        # Servo geometry-prior bundle.  They still need exact-Ply appearance,
+        # motion, support, and layer-spread auditing.  Driving evidence remains
+        # unavailable and therefore fails closed later in the audit.
+        if geometry_root_value is None:
+            environment_root = root
+        elif isinstance(geometry_root_value, str):
+            environment_root = Path(geometry_root_value).resolve()
+            if not environment_root.is_dir():
+                raise AuditError("The diagnostic geometry-prior root no longer exists.")
+        else:
+            raise AuditError("The diagnostic geometry-prior root is malformed.")
         return AuditSource(
             root=root,
             ply_path=ply_path,
@@ -1183,7 +1191,7 @@ def audit(
             raise AuditError(
                 f"Published directional sky evidence is invalid: {error}"
             ) from error
-    elif environment.get("backgroundSource") == (
+    elif not source.non_publishable and environment.get("backgroundSource") == (
         "observed-oneformer-sky-equirectangular-plus-mean-fallback-srgb-v1"
     ):
         raise AuditError(
@@ -1793,10 +1801,10 @@ def audit(
     )
     atomic_json(output / "observed-coverage-envelope.json", coverage_envelope)
     ambiguity = np.concatenate(ambiguity_samples) if ambiguity_samples else np.empty(0, dtype=np.float32)
+    expected_heldout = sum(bool(camera["validation"]) for camera in cameras)
     if reference_images is not None and (
         len(registered_psnr) != len(cameras)
-        or len(heldout_psnr) != sum(bool(camera["validation"]) for camera in cameras)
-        or not heldout_psnr
+        or len(heldout_psnr) != expected_heldout
     ):
         raise AuditError(
             "Exact-Ply appearance audit did not cover every registered and held-out camera."

@@ -205,6 +205,7 @@ Rectangle {
 
             TextArea {
                 id: promptArea
+                Accessible.name: "Message Servo"
                 placeholderText: root.backendConfigured
                                  ? "Message Servo"
                                  : "Connect Gemini in Settings"
@@ -623,6 +624,8 @@ Rectangle {
 
             AbstractButton {
                 id: actionButton
+                Accessible.role: Accessible.Button
+                Accessible.name: root.busy ? "Stop response" : "Send message"
                 Layout.preferredWidth: 32
                 Layout.preferredHeight: 32
                 enabled: root.busy
@@ -681,13 +684,13 @@ Rectangle {
         id: highChargeGlow
         anchors.fill: parent
         visible: root.highChargeActive
-        opacity: root.highChargeOpacity * 0.16
+        opacity: root.highChargeOpacity * 0.52
         preferredRendererType: Shape.CurveRenderer
 
         ShapePath {
             fillColor: "transparent"
-            strokeColor: "#166fd1"
-            strokeWidth: 3.2
+            strokeColor: "#1ea0ff"
+            strokeWidth: 5.0
             cosmeticStroke: true
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
@@ -704,8 +707,8 @@ Rectangle {
 
         ShapePath {
             fillColor: "transparent"
-            strokeColor: "#166fd1"
-            strokeWidth: 3.2
+            strokeColor: "#1ea0ff"
+            strokeWidth: 5.0
             cosmeticStroke: true
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
@@ -730,8 +733,8 @@ Rectangle {
 
         ShapePath {
             fillColor: "transparent"
-            strokeColor: "#62aef5"
-            strokeWidth: 1.05
+            strokeColor: "#9ad8ff"
+            strokeWidth: 2.0
             cosmeticStroke: true
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
@@ -748,8 +751,8 @@ Rectangle {
 
         ShapePath {
             fillColor: "transparent"
-            strokeColor: "#62aef5"
-            strokeWidth: 1.05
+            strokeColor: "#9ad8ff"
+            strokeWidth: 2.0
             cosmeticStroke: true
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
@@ -770,11 +773,11 @@ Rectangle {
         z: 2
         anchors.horizontalCenter: parent.horizontalCenter
         y: 0.5
-        width: 8 + 34 * root.highChargeImpact
-        height: 3
-        radius: 1.5
-        color: "#166fd1"
-        opacity: root.highChargeImpact * 0.16
+        width: 12 + 44 * root.highChargeImpact
+        height: 5
+        radius: 2.5
+        color: "#1ea0ff"
+        opacity: root.highChargeImpact * 0.45
         visible: opacity > 0.01
     }
 
@@ -783,10 +786,10 @@ Rectangle {
         z: 3
         anchors.horizontalCenter: parent.horizontalCenter
         y: 1.5
-        width: 3 + 23 * root.highChargeImpact
-        height: 1
-        radius: 0.5
-        color: "#62aef5"
+        width: 6 + 28 * root.highChargeImpact
+        height: 2
+        radius: 1
+        color: "#9ad8ff"
         opacity: root.highChargeImpact
         visible: opacity > 0.01
     }

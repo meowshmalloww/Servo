@@ -6,18 +6,18 @@ import "."
 T.MenuItem {
     id: control
 
-    implicitWidth: 226
-    implicitHeight: 32
+    implicitWidth: 232
+    implicitHeight: 34
     leftPadding: 9
     rightPadding: 9
     hoverEnabled: true
 
     contentItem: RowLayout {
-        spacing: 8
+        spacing: 9
 
         Item {
-            Layout.preferredWidth: 15
-            Layout.preferredHeight: 15
+            Layout.preferredWidth: 16
+            Layout.preferredHeight: 16
 
             SvgIcon {
                 anchors.centerIn: parent
@@ -32,11 +32,13 @@ T.MenuItem {
             visible: control.icon.source.toString().length > 0
             source: control.icon.source
             iconSize: Theme.iconSm
-            color: control.enabled ? (control.highlighted ? Theme.accent : Theme.textSecondary) : Theme.textDisabled
+            color: control.enabled ? (control.highlighted ? Theme.text : Theme.textSecondary) : Theme.textDisabled
 
             Behavior on color {
+                enabled: Theme.motionEnabled
                 ColorAnimation {
                     duration: Theme.animFast
+                    easing.type: Easing.OutCubic
                 }
             }
         }
@@ -44,11 +46,28 @@ T.MenuItem {
         Text {
             Layout.fillWidth: true
             text: control.text
-            color: control.enabled ? Theme.text : Theme.textDisabled
+            color: control.enabled ? (control.highlighted ? Theme.text : Theme.textSecondary) : Theme.textDisabled
             font.family: Theme.uiFont
             font.pixelSize: 11
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
+
+            Behavior on color {
+                enabled: Theme.motionEnabled
+                ColorAnimation {
+                    duration: Theme.animFast
+                    easing.type: Easing.OutCubic
+                }
+            }
+        }
+
+        Text {
+            visible: control.shortcut !== undefined && control.shortcut.toString().length > 0
+            text: control.shortcut ? control.shortcut.toString() : ""
+            color: Theme.textMuted
+            font.family: Theme.monoFont
+            font.pixelSize: 9
+            Layout.alignment: Qt.AlignVCenter
         }
     }
 
@@ -57,11 +76,15 @@ T.MenuItem {
         anchors.fill: parent
         anchors.leftMargin: 4
         anchors.rightMargin: 4
-        color: control.highlighted || control.hovered ? Theme.selection : "transparent"
+        color: control.highlighted ? Theme.selection : "transparent"
+        border.width: control.highlighted ? 1 : 0
+        border.color: Theme.borderSoft
 
         Behavior on color {
+            enabled: Theme.motionEnabled
             ColorAnimation {
                 duration: Theme.animFast
+                easing.type: Easing.OutCubic
             }
         }
     }

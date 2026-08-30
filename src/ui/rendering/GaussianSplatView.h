@@ -2,10 +2,12 @@
 
 #include <QColor>
 #include <QImage>
+#include <QQuaternion>
 #include <QQuickRhiItem>
 #include <QString>
 #include <QUrl>
 #include <QVector3D>
+#include <QVariantList>
 #include <QtQmlIntegration>
 
 #include <memory>
@@ -73,6 +75,20 @@ class GaussianSplatView : public QQuickRhiItem
     Q_PROPERTY(double captureEnvelopeScore READ captureEnvelopeScore NOTIFY captureEnvelopeChanged)
     Q_PROPERTY(QString captureEnvelopeStatus READ captureEnvelopeStatus NOTIFY captureEnvelopeChanged)
     Q_PROPERTY(int visualizationMode READ visualizationMode WRITE setVisualizationMode NOTIFY visualizationModeChanged)
+    Q_PROPERTY(double snowAccumulation READ snowAccumulation WRITE setSnowAccumulation NOTIFY weatherChanged)
+    Q_PROPERTY(bool externalCameraEnabled READ externalCameraEnabled WRITE setExternalCameraEnabled NOTIFY simulationViewChanged)
+    Q_PROPERTY(QVector3D externalCameraPosition READ externalCameraPosition WRITE setExternalCameraPosition NOTIFY simulationViewChanged)
+    Q_PROPERTY(QQuaternion externalCameraOrientation READ externalCameraOrientation WRITE setExternalCameraOrientation NOTIFY simulationViewChanged)
+    Q_PROPERTY(double externalVerticalFieldOfView READ externalVerticalFieldOfView WRITE setExternalVerticalFieldOfView NOTIFY simulationViewChanged)
+    Q_PROPERTY(QVector3D egoVehiclePosition READ egoVehiclePosition WRITE setEgoVehiclePosition NOTIFY simulationViewChanged)
+    Q_PROPERTY(QQuaternion egoVehicleOrientation READ egoVehicleOrientation WRITE setEgoVehicleOrientation NOTIFY simulationViewChanged)
+    Q_PROPERTY(int simulationCameraMode READ simulationCameraMode WRITE setSimulationCameraMode NOTIFY simulationViewChanged)
+    Q_PROPERTY(double chaseDistance READ chaseDistance WRITE setChaseDistance NOTIFY simulationViewChanged)
+    Q_PROPERTY(double chaseHeight READ chaseHeight WRITE setChaseHeight NOTIFY simulationViewChanged)
+    Q_PROPERTY(double chaseLookAhead READ chaseLookAhead WRITE setChaseLookAhead NOTIFY simulationViewChanged)
+    Q_PROPERTY(QVariantList dynamicActorTransforms READ dynamicActorTransforms WRITE setDynamicActorTransforms NOTIFY simulationViewChanged)
+    Q_PROPERTY(QVariantList routePolyline READ routePolyline WRITE setRoutePolyline NOTIFY simulationViewChanged)
+    Q_PROPERTY(qulonglong simulationFrameId READ simulationFrameId WRITE setSimulationFrameId NOTIFY simulationViewChanged)
 
 public:
     explicit GaussianSplatView(QQuickItem *parent = nullptr);
@@ -103,11 +119,41 @@ public:
     QString captureEnvelopeStatus() const;
     int visualizationMode() const;
     void setVisualizationMode(int value);
+    double snowAccumulation() const;
+    void setSnowAccumulation(double value);
+    bool externalCameraEnabled() const;
+    void setExternalCameraEnabled(bool value);
+    QVector3D externalCameraPosition() const;
+    void setExternalCameraPosition(const QVector3D &value);
+    QQuaternion externalCameraOrientation() const;
+    void setExternalCameraOrientation(const QQuaternion &value);
+    double externalVerticalFieldOfView() const;
+    void setExternalVerticalFieldOfView(double value);
+    QVector3D egoVehiclePosition() const;
+    void setEgoVehiclePosition(const QVector3D &value);
+    QQuaternion egoVehicleOrientation() const;
+    void setEgoVehicleOrientation(const QQuaternion &value);
+    int simulationCameraMode() const;
+    void setSimulationCameraMode(int value);
+    double chaseDistance() const;
+    void setChaseDistance(double value);
+    double chaseHeight() const;
+    void setChaseHeight(double value);
+    double chaseLookAhead() const;
+    void setChaseLookAhead(double value);
+    QVariantList dynamicActorTransforms() const;
+    void setDynamicActorTransforms(const QVariantList &value);
+    QVariantList routePolyline() const;
+    void setRoutePolyline(const QVariantList &value);
+    qulonglong simulationFrameId() const;
+    void setSimulationFrameId(qulonglong value);
 
     Q_INVOKABLE void resetCamera();
+    Q_INVOKABLE void setPathProgress(double progress);
     Q_INVOKABLE void look(double deltaX, double deltaY);
     Q_INVOKABLE void moveCamera(double forward, double right, double up, double elapsedSeconds);
     Q_INVOKABLE void changeMovementSpeed(double wheelSteps);
+    Q_INVOKABLE void preloadSource(const QUrl &source);
 
 signals:
     void sourceChanged();
@@ -121,6 +167,8 @@ signals:
     void pathProgressChanged();
     void captureEnvelopeChanged();
     void visualizationModeChanged();
+    void weatherChanged();
+    void simulationViewChanged();
 
 protected:
     QQuickRhiItemRenderer *createRenderer() override;
@@ -150,6 +198,7 @@ private:
     void updateCameraVectors();
     void updatePathCamera();
     void updateCaptureEnvelope();
+    void updateSimulationCamera();
 
     QUrl m_source;
     std::shared_ptr<const GaussianSceneData> m_scene;
@@ -184,6 +233,20 @@ private:
     quint64 m_loadGeneration = 0;
     quint64 m_cameraRevision = 1;
     int m_visualizationMode = 0;
+    double m_snowAccumulation = 0.0;
     bool m_loading = false;
     bool m_followPath = true;
+    bool m_externalCameraEnabled = false;
+    QVector3D m_externalCameraPosition;
+    QQuaternion m_externalCameraOrientation;
+    double m_externalVerticalFieldOfView = 52.0;
+    QVector3D m_egoVehiclePosition;
+    QQuaternion m_egoVehicleOrientation;
+    int m_simulationCameraMode = 1;
+    double m_chaseDistance = 7.0;
+    double m_chaseHeight = 3.0;
+    double m_chaseLookAhead = 4.0;
+    QVariantList m_dynamicActorTransforms;
+    QVariantList m_routePolyline;
+    qulonglong m_simulationFrameId = 0;
 };

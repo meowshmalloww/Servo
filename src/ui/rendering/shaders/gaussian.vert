@@ -3,6 +3,7 @@
 layout(location = 0) out vec2 localCoordinate;
 layout(location = 1) out vec3 gaussianColor;
 layout(location = 2) out float gaussianOpacity;
+layout(location = 3) out float gaussianDepth;
 
 layout(std140, binding = 0) uniform CameraUniforms {
     mat4 viewMatrix;
@@ -11,6 +12,8 @@ layout(std140, binding = 0) uniform CameraUniforms {
     vec4 viewportFocal;
     vec4 parameters;
     vec4 environmentFallback;
+    vec4 stabilization;
+    vec4 weather;
 };
 
 layout(std430, binding = 1) readonly buffer ProjectedGaussians {
@@ -42,6 +45,7 @@ void main()
         localCoordinate = vec2(99.0);
         gaussianColor = vec3(0.0);
         gaussianOpacity = 0.0;
+        gaussianDepth = 0.0;
         return;
     }
 
@@ -57,4 +61,5 @@ void main()
     localCoordinate = corner * metadata.x;
     gaussianColor = colorOpacity.rgb;
     gaussianOpacity = colorOpacity.a;
+    gaussianDepth = metadata.z;
 }

@@ -7,20 +7,36 @@ Item {
 
     readonly property bool verticalDivider: width < height
 
-    implicitWidth: 8
-    implicitHeight: 8
+    implicitWidth: 7
+    implicitHeight: 7
+
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.borderSoft
+        opacity: hover.hovered || dragHandler.active ? 0 : 0.55
+        visible: root.verticalDivider
+    }
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        height: 1
+        color: Theme.borderSoft
+        opacity: hover.hovered || dragHandler.active ? 0 : 0.55
+        visible: !root.verticalDivider
+    }
 
     Rectangle {
         anchors.centerIn: parent
-        width: root.verticalDivider ? 2 : 22
-        height: root.verticalDivider ? 22 : 2
+        width: root.verticalDivider ? 2 : 28
+        height: root.verticalDivider ? 28 : 2
         radius: 1
-        color: hover.hovered ? Theme.accent : "transparent"
+        color: Theme.accent
+        opacity: hover.hovered || dragHandler.active ? 1 : 0
 
-        Behavior on color {
-            ColorAnimation {
-                duration: Theme.animFast
-            }
+        Behavior on opacity {
+            enabled: Theme.motionEnabled
+            NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
         }
     }
 
@@ -28,6 +44,7 @@ Item {
         id: hover
         cursorShape: root.verticalDivider ? Qt.SplitHCursor : Qt.SplitVCursor
     }
+    DragHandler { id: dragHandler; target: null }
 
     T.ToolTip.visible: hover.hovered
     T.ToolTip.text: "Drag to resize"

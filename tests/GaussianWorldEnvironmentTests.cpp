@@ -83,6 +83,8 @@ private slots:
     void malformedBackgroundFailsClosed_data();
     void malformedBackgroundFailsClosed();
     void diagnosticsAlwaysClearToBlack();
+    void simulationCameraModesUseAuthoritativePose();
+    void configuredPublishedWorldLoads();
 };
 
 void GaussianWorldEnvironmentTests::standalonePlyUsesBlackFallback()
@@ -293,6 +295,44 @@ void GaussianWorldEnvironmentTests::diagnosticsAlwaysClearToBlack()
             visualizationMode);
         QCOMPARE(clear, QColor::fromRgbF(0.0f, 0.0f, 0.0f, 1.0f));
     }
+}
+
+void GaussianWorldEnvironmentTests::configuredPublishedWorldLoads()
+{
+    const QString plyPath = qEnvironmentVariable("SERVO_TEST_WORLD_PLY");
+    if (plyPath.isEmpty())
+        QSKIP("SERVO_TEST_WORLD_PLY is not configured for this run.");
+
+    GaussianSplatView view;
+    view.setSource(QUrl::fromLocalFile(plyPath));
+    QTRY_VERIFY_WITH_TIMEOUT(!view.loading(), 60'000);
+    QVERIFY2(view.ready(), qPrintable(view.errorString()));
+    QVERIFY(view.gaussianCount() > 0);
+}
+
+void GaussianWorldEnvironmentTests::simulationCameraModesUseAuthoritativePose()
+{
+    GaussianSplatView view;
+    view.setExternalCameraEnabled(true);
+    view.setEgoVehiclePosition(QVector3D(10.0f, 2.0f, -3.0f));
+    view.setEgoVehicleOrientation(QQuaternion(1.0f, 0.0f, 0.0f, 0.0f));
+    view.setExternalCameraPosition(QVector3D(9.0f, 4.0f, -1.0f));
+    view.setExternalCameraOrientation(QQuaternion::fromEulerAngles(0.0f, 25.0f, 0.0f));
+    view.setSimulationCameraMode(1);
+    QCOMPARE(view.simulationCameraMode(), 1);
+    QCOMPARE(view.egoVehiclePosition(), QVector3D(10.0f, 2.0f, -3.0f));
+
+    view.setSimulationCameraMode(2);
+    QCOMPARE(view.simulationCameraMode(), 2);
+    view.setSimulationCameraMode(3);
+    QCOMPARE(view.simulationCameraMode(), 3);
+    QCOMPARE(view.externalCameraPosition(), QVector3D(9.0f, 4.0f, -1.0f));
+
+    view.setSimulationCameraMode(99);
+    QCOMPARE(view.simulationCameraMode(), 3);
+    view.setSimulationFrameId(42);
+    QCOMPARE(view.simulationFrameId(), quint64(42));
+    QVERIFY(!view.followPath());
 }
 
 QTEST_GUILESS_MAIN(GaussianWorldEnvironmentTests)

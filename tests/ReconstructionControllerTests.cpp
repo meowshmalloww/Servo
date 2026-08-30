@@ -126,6 +126,10 @@ void ReconstructionControllerTests::sharesWorkerRuntimeRoot()
     QCOMPARE(Servo::ReconstructionPaths::localRuntimeRootFor(
                  QStringLiteral("C:/Servo-test/AppData/Local")),
              QStringLiteral("C:/Servo-test/AppData/Local/Servo/reconstruction"));
+    QCOMPARE(Servo::ReconstructionPaths::localRuntimeRootFor(
+                 QStringLiteral("C:/Servo-test/AppData/Local"),
+                 QStringLiteral("D:/Servo-data/reconstruction")),
+             QStringLiteral("D:/Servo-data/reconstruction"));
 }
 
 ReconstructionControllerTests::BundleFixture

@@ -22,10 +22,10 @@ ApplicationWindow {
     // Keep primary navigation task-shaped. The disconnected diagnostic,
     // training, verification, and capability shells remain available to the
     // backend workbench, but no longer compete with the hackathon flow.
-    readonly property var workspaceNames: ["Create", "Worlds", "Runs", "Assistant"]
-    readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/AiWorkspace.qml"]
+    readonly property var workspaceNames: ["Create", "Worlds", "Runs", "Assistant", "Settings"]
+    readonly property var workspaceFiles: ["workspaces/PrepareWorkspace.qml", "workspaces/WorldsWorkspace.qml", "workspaces/RunsWorkspace.qml", "workspaces/AiWorkspace.qml", "workspaces/SettingsWorkspace.qml"]
 
-    readonly property var workspaceIcons: ["build", "world", "run", "assistant"]
+    readonly property var workspaceIcons: ["build", "world", "run", "assistant", "settings"]
 
     function showDebugTab(index) {
         debugDrawer.showTab(index);
@@ -65,6 +65,7 @@ ApplicationWindow {
         Session.worldModel = WorldLibraryModel;
         RuntimeMetrics.attachWindow(window);
         RealityCIController.connectToServer();
+        SimulationController.connectToServer();
     }
 
     Connections {
@@ -129,7 +130,7 @@ ApplicationWindow {
             else if (action === "open-runs")
                 Session.workspaceIndex = 2;
             if (action === "weather")
-                Session.worldWeather = argument;
+                Session.worldWeather = argument === "snow" ? "snow" : "clear";
             Session.assistantActionRequested(action, argument);
         }
     }
@@ -163,6 +164,14 @@ ApplicationWindow {
         sequence: "Ctrl+4"
         onActivated: Session.workspaceIndex = 3
     }
+    Shortcut {
+        sequence: "Ctrl+5"
+        onActivated: Session.workspaceIndex = 4
+    }
+    Shortcut {
+        sequence: "Ctrl+,"
+        onActivated: Session.workspaceIndex = 4
+    }
 
     menuBar: MenuBar {
         id: mainMenu
@@ -170,26 +179,34 @@ ApplicationWindow {
 
         background: Rectangle {
             color: Theme.chrome
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 1
+                color: Theme.borderSoft
+                opacity: 0.5
+            }
         }
 
         delegate: MenuBarItem {
             id: menuItem
             implicitHeight: Theme.menuHeight
-            leftPadding: 11
-            rightPadding: 11
+            leftPadding: 10
+            rightPadding: 10
 
             contentItem: Text {
                 text: menuItem.text
-                color: menuItem.enabled ? (menuItem.highlighted ? Theme.accent : Theme.textSecondary) : Theme.textDisabled
+                color: menuItem.enabled ? (menuItem.highlighted ? Theme.text : Theme.textSecondary) : Theme.textDisabled
                 font.family: Theme.uiFont
-                font.pixelSize: 10
+                font.pixelSize: 11
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
 
                 Behavior on color {
-                    ColorAnimation {
-                        duration: Theme.animFast
-                    }
+                    enabled: Theme.motionEnabled
+                    ColorAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
                 }
             }
 
@@ -198,11 +215,15 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.margins: 3
                 color: menuItem.highlighted ? Theme.panelHover : "transparent"
+                opacity: menuItem.highlighted ? 1 : 0
 
+                Behavior on opacity {
+                    enabled: Theme.motionEnabled
+                    NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
+                }
                 Behavior on color {
-                    ColorAnimation {
-                        duration: Theme.animFast
-                    }
+                    enabled: Theme.motionEnabled
+                    ColorAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
                 }
             }
         }
@@ -319,10 +340,20 @@ ApplicationWindow {
             Layout.preferredWidth: Theme.railWidth
             color: Theme.chrome
 
+            Rectangle {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                width: 1
+                color: Theme.borderSoft
+                opacity: 0.55
+            }
+
             ColumnLayout {
                 anchors.fill: parent
-                anchors.topMargin: 8
-                spacing: 3
+                anchors.topMargin: 10
+                anchors.bottomMargin: 10
+                spacing: 2
 
                 Repeater {
                     model: window.workspaceNames
@@ -333,21 +364,27 @@ ApplicationWindow {
                         required property string modelData
 
                         readonly property bool active: Session.workspaceIndex === railItem.index
+                        readonly property bool hovered: railHover.containsMouse
 
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 40
+                        Layout.preferredHeight: 46
 
                         Rectangle {
                             anchors.fill: parent
-                            anchors.margins: 5
-                            radius: Theme.cornerCard - 2
-                            color: railItem.active ? Theme.selection : (railHover.containsMouse ? Theme.panelRaised : "transparent")
+                            anchors.margins: 4
+                            radius: 8
+                            color: railItem.active ? Theme.selection : (railItem.hovered ? Theme.panelHover : "transparent")
+                            border.width: railItem.active ? 1 : 0
+                            border.color: Theme.borderSoft
+                            opacity: railItem.active ? 1 : (railItem.hovered ? 0.85 : 0)
 
+                            Behavior on opacity {
+                                enabled: Theme.motionEnabled
+                                NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
+                            }
                             Behavior on color {
-                                ColorAnimation {
-                                    duration: Theme.animFast
-                                    easing.type: Easing.OutCubic
-                                }
+                                enabled: Theme.motionEnabled
+                                ColorAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
                             }
                         }
 
@@ -355,16 +392,19 @@ ApplicationWindow {
                             anchors.left: parent.left
                             anchors.leftMargin: 2
                             anchors.verticalCenter: parent.verticalCenter
-                            width: railItem.active ? 3 : 0
-                            height: 16
+                            width: 3
+                            height: railItem.active ? 20 : 0
                             radius: 1.5
                             color: Theme.accent
+                            opacity: railItem.active ? 1 : 0
 
-                            Behavior on width {
-                                NumberAnimation {
-                                    duration: Theme.animMove
-                                    easing.type: Easing.OutCubic
-                                }
+                            Behavior on height {
+                                enabled: Theme.motionEnabled
+                                NumberAnimation { duration: Theme.animMove; easing.type: Easing.OutCubic }
+                            }
+                            Behavior on opacity {
+                                enabled: Theme.motionEnabled
+                                NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
                             }
                         }
 
@@ -372,20 +412,11 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             source: Theme.icon(window.workspaceIcons[railItem.index])
                             iconSize: Theme.iconXl
-                            color: railItem.active ? Theme.accent : (railHover.containsMouse ? Theme.text : Theme.textMuted)
-                            scale: railHover.pressed ? 0.9 : 1.0
+                            color: railItem.active ? Theme.text : (railItem.hovered ? Theme.text : Theme.textMuted)
 
                             Behavior on color {
-                                ColorAnimation {
-                                    duration: Theme.animFast
-                                }
-                            }
-
-                            Behavior on scale {
-                                NumberAnimation {
-                                    duration: Theme.animFast
-                                    easing.type: Easing.OutCubic
-                                }
+                                enabled: Theme.motionEnabled
+                                ColorAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
                             }
                         }
 
@@ -407,6 +438,16 @@ ApplicationWindow {
 
                 Item {
                     Layout.fillHeight: true
+                    Layout.minimumHeight: 12
+                }
+
+                Rectangle {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.preferredWidth: 22
+                    Layout.preferredHeight: 1
+                    color: Theme.borderSoft
+                    opacity: 0.6
+                    Layout.bottomMargin: 6
                 }
             }
         }
@@ -422,20 +463,30 @@ ApplicationWindow {
                 Layout.preferredHeight: Theme.topBarHeight
                 color: Theme.chrome
 
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: Theme.borderSoft
+                    opacity: 0.55
+                }
+
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 7
-                    spacing: 7
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    spacing: 8
 
                     Image {
-                        Layout.preferredWidth: 24
-                        Layout.preferredHeight: 24
+                        Layout.preferredWidth: 22
+                        Layout.preferredHeight: 22
                         source: Theme.appLogo
-                        sourceSize: Qt.size(48, 48)
+                        sourceSize: Qt.size(44, 44)
                         fillMode: Image.PreserveAspectFit
                         smooth: true
                         mipmap: true
+                        Layout.alignment: Qt.AlignVCenter
                     }
 
                     Text {
@@ -443,18 +494,29 @@ ApplicationWindow {
                         color: Theme.text
                         font.family: Theme.uiFont
                         font.pixelSize: 13
-                        font.weight: Font.Bold
-                        font.letterSpacing: 0.9
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: 0.7
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 16
+                        Layout.leftMargin: 4
+                        Layout.rightMargin: 2
+                        color: Theme.borderSoft
+                        opacity: 0.7
+                        Layout.alignment: Qt.AlignVCenter
                     }
 
                     Text {
-                        Layout.leftMargin: 6
-                        Layout.maximumWidth: 270
+                        Layout.maximumWidth: Math.min(260, Math.max(120, topBar.width - 560))
                         text: Session.projectOpen ? Session.projectName : "No project"
                         color: Session.projectOpen ? Theme.textSecondary : Theme.textMuted
                         font.family: Theme.uiFont
                         font.pixelSize: 11
                         elide: Text.ElideMiddle
+                        Layout.alignment: Qt.AlignVCenter
                     }
 
                     TextButton {
@@ -462,6 +524,7 @@ ApplicationWindow {
                         text: "Open Project"
                         iconSource: Theme.icon("open")
                         compact: true
+                        Layout.alignment: Qt.AlignVCenter
                         onClicked: projectDialog.open()
                     }
 
@@ -474,12 +537,21 @@ ApplicationWindow {
                         iconSource: Theme.icon("assistant")
                         selected: Session.workspaceIndex === 3
                         compact: true
+                        Layout.alignment: Qt.AlignVCenter
                         onClicked: Session.workspaceIndex = 3
                     }
 
                     RowLayout {
-                        visible: Session.showPerformanceMetrics && window.width >= 1180
-                        spacing: 9
+                        id: perfRow
+                        spacing: 10
+                        Layout.alignment: Qt.AlignVCenter
+                        visible: Session.showPerformanceMetrics
+                        opacity: window.width >= 1200 ? 1 : (window.width >= 1060 ? 0.9 : 0)
+
+                        Behavior on opacity {
+                            enabled: Theme.motionEnabled
+                            NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutCubic }
+                        }
 
                         MetricReadout {
                             label: "FPS"
@@ -487,6 +559,9 @@ ApplicationWindow {
                             toolTip: "Frames actually presented by Servo. The active monitor can refresh at "
                                      + RuntimeMetrics.displayRefreshText
                                      + "; that refresh rate is a ceiling, not render performance."
+                            opacity: window.width >= 980 ? 1 : 0
+                            visible: opacity > 0
+                            Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
                         }
                         MetricReadout {
                             label: "CPU"
@@ -497,39 +572,43 @@ ApplicationWindow {
                             label: "RAM"
                             value: RuntimeMetrics.residentMemoryText
                             toolTip: "Current Servo process working set"
+                            opacity: window.width >= 1120 ? 1 : 0
+                            visible: opacity > 0
+                            Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
                         }
                         MetricReadout {
                             label: "RHI"
                             value: RuntimeMetrics.graphicsApi
                             toolTip: RuntimeMetrics.graphicsDevice + " (" + RuntimeMetrics.graphicsDeviceType + ")"
+                            opacity: window.width >= 1200 ? 1 : 0
+                            visible: opacity > 0
+                            Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
                         }
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 16
+                        color: Theme.borderSoft
+                        opacity: 0.5
+                        Layout.alignment: Qt.AlignVCenter
                     }
 
                     IconButton {
                         iconSource: Theme.icon(Theme.dark ? "sun" : "moon")
                         toolTip: Theme.dark ? "Switch to light theme" : "Switch to dark theme"
-                        buttonSize: 27
+                        buttonSize: 28
+                        Layout.alignment: Qt.AlignVCenter
                         onClicked: window.toggleTheme()
                     }
 
                     IconButton {
                         iconSource: Theme.icon("settings")
                         toolTip: "Settings"
-                        buttonSize: 27
-                        rotation: settingsHover.hovered ? 45 : 0
-
-                        Behavior on rotation {
-                            NumberAnimation {
-                                duration: Theme.animMove * 2
-                                easing.type: Easing.OutCubic
-                            }
-                        }
-
-                        HoverHandler {
-                            id: settingsHover
-                        }
-
-                        onClicked: settingsDialog.open()
+                        buttonSize: 28
+                        selected: Session.workspaceIndex === 4
+                        Layout.alignment: Qt.AlignVCenter
+                        onClicked: Session.workspaceIndex = 4
                     }
                 }
             }
@@ -543,39 +622,31 @@ ApplicationWindow {
                 Loader {
                     id: workspaceLoader
                     anchors.fill: parent
-                    // Render the startup workspace immediately, then spread
-                    // future heavy workspace construction across frames.
                     property bool deferFutureLoads: false
                     asynchronous: deferFutureLoads
                     source: window.workspaceFiles[Session.workspaceIndex]
                     visible: status === Loader.Ready
+                    opacity: 1
 
-                    property real appear: 1
-
-                    opacity: appear
-                    transform: Translate {
-                        y: (1 - workspaceLoader.appear) * 12
-                    }
-
-                    onSourceChanged: {
-                        workspaceLoader.appear = 0;
+                    onStatusChanged: {
+                        if (status === Loader.Error) {
+                            console.warn("workspaceLoader ERROR source:", source, "index:", Session.workspaceIndex);
+                        } else if (status === Loader.Ready) {
+                            console.log("workspaceLoader Ready", source);
+                        }
                     }
 
                     onLoaded: {
-                        appearAnimation.restart();
                         if (!deferFutureLoads)
                             Qt.callLater(function() { workspaceLoader.deferFutureLoads = true; });
                     }
+                }
 
-                    NumberAnimation {
-                        id: appearAnimation
-                        target: workspaceLoader
-                        property: "appear"
-                        from: 0
-                        to: 1
-                        duration: Theme.animSlow
-                        easing.type: Easing.OutCubic
-                    }
+                Rectangle {
+                    anchors.fill: parent
+                    color: Theme.window
+                    visible: workspaceLoader.status === Loader.Loading
+                    opacity: 1
                 }
 
                 LoadingState {
@@ -583,8 +654,22 @@ ApplicationWindow {
                     visible: workspaceLoader.status === Loader.Loading
                     running: visible
                     label: "Opening workspace"
-                    variant: "Pulse"
+                    variant: "Dots"
                     showElapsed: false
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#1a1a1c"
+                    visible: workspaceLoader.status === Loader.Error
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 8
+                        Text { text: "Workspace failed to load"; color: Theme.error; font.family: Theme.uiFont; font.pixelSize: 12; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
+                        Text { text: workspaceLoader.source.toString(); color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 9; Layout.alignment: Qt.AlignHCenter }
+                        Text { text: "Check console for QML errors — try Ctrl+1..5"; color: Theme.textSecondary; font.family: Theme.uiFont; font.pixelSize: 10; Layout.alignment: Qt.AlignHCenter }
+                        TextButton { text: "Reload Create"; Layout.alignment: Qt.AlignHCenter; onClicked: Session.workspaceIndex = 0 }
+                    }
                 }
             }
 
@@ -598,14 +683,23 @@ ApplicationWindow {
             Rectangle {
                 id: statusBar
                 Layout.fillWidth: true
-                Layout.preferredHeight: Theme.statusHeight
+                Layout.preferredHeight: Theme.statusHeight + 1
                 color: Theme.chrome
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 1
+                    color: Theme.borderSoft
+                    opacity: 0.55
+                }
 
                 RowLayout {
                     anchors.fill: parent
                     anchors.leftMargin: 12
                     anchors.rightMargin: 12
-                    spacing: 6
+                    spacing: 8
 
                     SvgIcon {
                         source: Session.projectOpen ? Theme.icon("project") : Theme.icon("info")
@@ -619,7 +713,7 @@ ApplicationWindow {
                         font.family: Theme.monoFont
                         font.pixelSize: 9
                         elide: Text.ElideMiddle
-                        Layout.maximumWidth: 440
+                        Layout.maximumWidth: 480
                     }
 
                     Item {
@@ -631,6 +725,15 @@ ApplicationWindow {
                         color: Theme.textMuted
                         font.family: Theme.uiFont
                         font.pixelSize: 9
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: 320
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 1
+                        Layout.preferredHeight: 10
+                        color: Theme.borderSoft
+                        opacity: 0.5
                     }
 
                     Text {
@@ -638,7 +741,6 @@ ApplicationWindow {
                         color: Theme.textMuted
                         font.family: Theme.uiFont
                         font.pixelSize: 9
-                        Layout.leftMargin: 6
                     }
                 }
             }

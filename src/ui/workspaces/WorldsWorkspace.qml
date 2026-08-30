@@ -11,6 +11,8 @@ Item {
 
     readonly property var selectedWorld: WorldLibraryModel.selectedWorld
     readonly property bool hasSelection: WorldLibraryModel.hasSelection
+    readonly property string selectedWorldId: root.selectedWorld
+                                                ? String(root.selectedWorld.worldId || "") : ""
     readonly property url selectedPreviewUrl: {
         const value = root.selectedWorld
                       ? root.selectedWorld.previewUrl : undefined;
@@ -19,6 +21,23 @@ Item {
     readonly property string selectedPlyPath: root.selectedWorld
                                                  ? String(root.selectedWorld.plyPath || "")
                                                  : ""
+    readonly property string selectedWorldPath: root.selectedWorld
+                                                 ? String(root.selectedWorld.worldPath || "")
+                                                 : ""
+    readonly property var routeTiles: root.selectedWorld
+                                      ? (root.selectedWorld.routeTiles || []) : []
+    property int activeRouteTileIndex: 0
+    property real pendingRouteFrame: -1
+    property bool automaticRouteStreaming: true
+    readonly property int routeFrameCount: root.routeTiles.length > 0
+                                            ? Math.max(1, Number(root.routeTiles[
+                                                root.routeTiles.length - 1].cameraEndExclusive || 1))
+                                            : 1
+    readonly property string explorePlyPath: root.routeTiles.length > 0
+                                              ? String(root.routeTiles[Math.max(
+                                                  0, Math.min(root.routeTiles.length - 1,
+                                                              root.activeRouteTileIndex))].plyPath || "")
+                                              : root.selectedPlyPath
     readonly property var recordedFrameUrls: root.selectedWorld
                                                ? (root.selectedWorld.recordedFrameUrls || [])
                                                : []
@@ -36,6 +55,12 @@ Item {
                                                  && root.selectedWorld.published === true
     property string noticeText: ""
     property bool exploreMode: false
+    property bool driveMode: false
+    property bool carlaDriveMode: false
+    property bool pendingDriveStart: false
+    readonly property bool nativeDriveSmoke: Qt.application.arguments.indexOf(
+                                                 "--native-drive-smoke") >= 0
+    property bool detailsVisible: false
     property bool moveForward: false
     property bool moveBackward: false
     property bool moveLeft: false
@@ -43,11 +68,16 @@ Item {
     property bool moveUp: false
     property bool moveDown: false
     property int visualizationMode: 0
+    property real snowAccumulation: Session.worldWeather === "snow"
+                                    ? Session.worldSnowAccumulation : 0.0
+    Behavior on snowAccumulation {
+        enabled: Theme.motionEnabled
+        NumberAnimation { duration: 2800; easing.type: Easing.InOutCubic }
+    }
     // Explore always means the reconstructed Gaussian world. Recorded frames
     // are an explicit reference view and must never impersonate 3D output.
     property bool recordedCorridorMode: false
     property real recordedProgress: 0
-    property real weatherPhase: 0
     readonly property bool exploreReady: root.exploreMode
                                         && ((root.recordedCorridorMode
                                              && root.recordedFrameCount > 0)
@@ -55,19 +85,46 @@ Item {
                                                 && !gaussianView.loading
                                                 && gaussianView.errorString.length === 0))
 
+    onActiveRouteTileIndexChanged: Qt.callLater(root.preloadAdjacentRouteTiles)
+    onRouteTilesChanged: {
+        root.activeRouteTileIndex = 0;
+        root.pendingRouteFrame = -1;
+        if (root.exploreMode)
+            Qt.callLater(root.preloadAdjacentRouteTiles);
+    }
+
     onSelectedPlyPathChanged: {
         if (root.selectedPlyPath.length === 0)
             root.exploreMode = false;
+        root.driveMode = false;
+        root.carlaDriveMode = false;
+        root.pendingDriveStart = false;
+        root.activeRouteTileIndex = 0;
+        root.pendingRouteFrame = -1;
         root.recordedCorridorMode = false;
         root.recordedProgress = 0;
+        root.loadNativePhysics();
     }
     onExploreModeChanged: {
-        if (!root.exploreMode)
+        if (!root.exploreMode) {
             root.stopMovement();
+            root.driveMode = false;
+            root.carlaDriveMode = false;
+            NativeVehicleController.stop();
+        }
+        if (root.exploreMode)
+            Qt.callLater(root.preloadAdjacentRouteTiles);
+    }
+    onSelectedWorldIdChanged: {
+        root.loadNativePhysics();
+        root.carlaDriveMode = false;
+        root.pendingDriveStart = false;
+        SimulationController.refreshWorldExecution(root.selectedWorldId);
     }
 
     function resetLayout() {
         Session.viewportFocusMode = false;
+        root.detailsVisible = false;
         worldLibrary.SplitView.preferredWidth = 330;
         worldInspector.SplitView.preferredWidth = 360;
     }
@@ -95,6 +152,279 @@ Item {
         }
     }
 
+    function loadNativePhysics() {
+        if (!root.hasSelection || root.selectedWorldPath.length === 0) {
+            NativeVehicleController.stop();
+            return false;
+        }
+        if (NativeVehicleController.worldId === root.selectedWorldId
+                && NativeVehicleController.ready)
+            return true;
+        return NativeVehicleController.loadWorld(root.selectedWorldPath);
+    }
+
+    function launchReferenceDrive() {
+        if (!root.loadNativePhysics()) {
+            root.noticeText = NativeVehicleController.errorString;
+            noticeTimer.restart();
+            return;
+        }
+        root.exploreMode = true;
+        root.recordedCorridorMode = false;
+        root.driveMode = true;
+        gaussianView.followPath = false;
+        NativeVehicleController.start();
+        Qt.callLater(function() { liveDrive.forceActiveFocus(); });
+    }
+
+    function startReferenceDrive() {
+        if (NativeVehicleController.running) {
+            root.exploreMode = true;
+            root.recordedCorridorMode = false;
+            root.driveMode = true;
+            Qt.callLater(function() { liveDrive.forceActiveFocus(); });
+            return;
+        }
+        root.launchReferenceDrive();
+    }
+
+    function showLatestDrive() {
+        root.startCarlaDrive(false);
+    }
+
+    function carlaCamera(sensorId, yawSign) {
+        return {
+            sensor_id: sensorId,
+            kind: "rgb",
+            mount_vehicle: {
+                position: {x: 1.5, y: 0.0, z: 1.4},
+                orientation: {
+                    w: 0.9914448613738104,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.13052619222005157 * yawSign
+                }
+            },
+            intrinsics: {
+                width: 960, height: 540,
+                horizontal_fov_deg: 90.0,
+                fx: 480.0, fy: 480.0, cx: 480.0, cy: 270.0
+            },
+            sensor_tick_seconds: 0.05
+        };
+    }
+
+    function carlaConfiguration() {
+        return {
+            world_execution_manifest: SimulationController.executionManifestPath,
+            route_id: "primary",
+            vehicle: {
+                blueprint: "vehicle.lincoln.mkz_2020",
+                physics_configuration: "carla-default",
+                spawn_height_offset_m: 0.25
+            },
+            policy: {
+                adapter: "external-driving",
+                name: "Local DriveMA-2B (Qwen3.5-2B)",
+                adapter_version: "official-drivema-two-turn/v1",
+                checkpoint_uri: ReconstructionController.runtimePath
+                                + "/../checkpoints/DriveMA-2B/model.safetensors",
+                checkpoint_sha256: "sha256:f7342f9c1dd3b32f61ace5ee3f582f2eb8bea4aca9212fd879a4a3ce2dbfc3a8",
+                oracle: false,
+                uses_privileged_state: false,
+                trainable: false,
+                eligible_for_promotion: false,
+                input_camera_ids: ["front_left", "front", "front_right"],
+                uses_ego_speed: true,
+                uses_ego_acceleration: true,
+                uses_recent_ego_poses: true,
+                uses_previous_action: true
+            },
+            observation: {
+                source: "servo-gaussian",
+                renderer_version: "servo-headless-gsplat-live-camera/v3",
+                camera: {
+                    sensor_id: "front",
+                    kind: "rgb",
+                    mount_vehicle: {
+                        position: {x: 1.5, y: 0.0, z: 1.4},
+                        orientation: {w: 1.0, x: 0.0, y: 0.0, z: 0.0}
+                    },
+                    intrinsics: {
+                        width: 960, height: 540,
+                        horizontal_fov_deg: 90.0,
+                        fx: 480.0, fy: 480.0, cx: 480.0, cy: 270.0
+                    },
+                    sensor_tick_seconds: 0.05
+                },
+                additional_cameras: [
+                    root.carlaCamera("front_left", -1.0),
+                    root.carlaCamera("front_right", 1.0)
+                ],
+                record_policy_frames: true
+            },
+            scenario: {
+                seed: 42,
+                maximum_duration_s: 45.0,
+                weather: Session.worldWeather === "snow" ? "snow" : "clear",
+                snow_accumulation: Session.worldSnowAccumulation,
+                dynamic_actor_profile: "none"
+            },
+            timing: {
+                fixed_delta_seconds: 0.05,
+                policy_hz: 1,
+                sensor_hz: 20,
+                policy_deadline_ms: 30000.0
+            },
+            recording: {
+                save_policy_frames: true,
+                save_every_nth_frame: 1,
+                encode_preview_video: true,
+                maximum_saved_frames: 600,
+                run_roadside_detection: false
+            },
+            resource_profile: "balanced"
+        };
+    }
+
+    function beginPendingCarlaRun() {
+        if (!root.pendingDriveStart || !SimulationController.online
+                || !SimulationController.executionReady
+                || SimulationController.executionManifestPath.length === 0
+                || SimulationController.executionWorldId !== root.selectedWorldId
+                || SimulationController.busy)
+            return;
+        root.pendingDriveStart = false;
+        if (SimulationController.hasSession && SimulationController.terminal)
+            SimulationController.forgetSimulation();
+        SimulationController.clearError();
+        SimulationController.startSimulation(root.carlaConfiguration());
+    }
+
+    function startCarlaDrive(forceNew) {
+        if (!root.hasSelection || !root.selectedWorldPublished) {
+            root.noticeText = "Select a published Gaussian world before starting CARLA.";
+            noticeTimer.restart();
+            return;
+        }
+        NativeVehicleController.stop();
+        root.driveMode = false;
+        root.exploreMode = true;
+        root.recordedCorridorMode = false;
+        root.carlaDriveMode = true;
+
+        const matchingSession = SimulationController.hasSession
+                                && SimulationController.selectedWorldId === root.selectedWorldId;
+        if (!forceNew && matchingSession)
+            return;
+        if (SimulationController.hasSession && !SimulationController.terminal) {
+            root.noticeText = matchingSession
+                    ? "The physical CARLA run is already active."
+                    : "Stop the active CARLA session before driving another world.";
+            noticeTimer.restart();
+            return;
+        }
+        root.pendingDriveStart = true;
+        if (!SimulationController.online)
+            SimulationController.connectToServer();
+        SimulationController.refreshWorldExecution(root.selectedWorldId);
+        root.beginPendingCarlaRun();
+    }
+
+    function activateAttachedDrive() {
+        if (!NativeVehicleController.running || !root.hasSelection
+                || NativeVehicleController.worldId !== root.selectedWorldId)
+            return;
+        root.exploreMode = true;
+        root.recordedCorridorMode = false;
+        root.driveMode = true;
+    }
+
+    function routeTileUrl(index) {
+        if (index < 0 || index >= root.routeTiles.length)
+            return "";
+        return String(root.routeTiles[index].plyPath || "");
+    }
+
+    function routeFrameForTile(index, localProgress) {
+        if (index < 0 || index >= root.routeTiles.length)
+            return 0;
+        const tile = root.routeTiles[index];
+        const start = Number(tile.cameraStart || 0);
+        const count = Math.max(1, Number(tile.cameraCount || 1));
+        return start + Math.max(0, Math.min(1, localProgress)) * (count - 1);
+    }
+
+    function tileProgressForFrame(index, frame) {
+        if (index < 0 || index >= root.routeTiles.length)
+            return 0;
+        const tile = root.routeTiles[index];
+        const start = Number(tile.cameraStart || 0);
+        const count = Math.max(1, Number(tile.cameraCount || 1));
+        return Math.max(0, Math.min(1, (frame - start) / Math.max(1, count - 1)));
+    }
+
+    function routeTileForFrame(frame) {
+        if (root.routeTiles.length < 2)
+            return 0;
+        for (let index = 0; index + 1 < root.routeTiles.length; ++index) {
+            const currentEnd = Number(root.routeTiles[index].cameraEndExclusive || 1) - 1;
+            const nextStart = Number(root.routeTiles[index + 1].cameraStart || 0);
+            const overlapMidpoint = (currentEnd + nextStart) * 0.5;
+            if (frame < overlapMidpoint)
+                return index;
+        }
+        return root.routeTiles.length - 1;
+    }
+
+    function preloadAdjacentRouteTiles() {
+        if (!root.exploreMode || root.routeTiles.length < 2)
+            return;
+        const previous = root.routeTileUrl(root.activeRouteTileIndex - 1);
+        const next = root.routeTileUrl(root.activeRouteTileIndex + 1);
+        if (previous.length > 0)
+            gaussianView.preloadSource(previous);
+        if (next.length > 0)
+            gaussianView.preloadSource(next);
+    }
+
+    function selectRouteTile(index, routeFrame, preserveMotion) {
+        if (root.routeTiles.length < 2)
+            return;
+        const nextIndex = Math.max(0, Math.min(root.routeTiles.length - 1, index));
+        if (nextIndex === root.activeRouteTileIndex)
+            return;
+        if (!preserveMotion)
+            root.stopMovement();
+        root.recordedCorridorMode = false;
+        root.pendingRouteFrame = Number.isFinite(routeFrame) ? routeFrame : -1;
+        root.activeRouteTileIndex = nextIndex;
+        gaussianView.followPath = true;
+        Qt.callLater(function() {
+            root.preloadAdjacentRouteTiles();
+            gaussianView.forceActiveFocus();
+        });
+    }
+
+    function updateAutomaticRouteTile() {
+        if (!root.automaticRouteStreaming || root.routeTiles.length < 2
+                || !root.exploreMode || gaussianView.loading || !gaussianView.ready)
+            return;
+        let frame = 0;
+        if (root.driveMode && NativeVehicleController.running) {
+            frame = Math.max(0, Math.min(1, NativeVehicleController.routeCompletion))
+                    * (root.routeFrameCount - 1);
+        } else if (gaussianView.followPath) {
+            frame = root.routeFrameForTile(root.activeRouteTileIndex,
+                                           gaussianView.pathProgress);
+        } else {
+            return;
+        }
+        const target = root.routeTileForFrame(frame);
+        if (target !== root.activeRouteTileIndex)
+            root.selectRouteTile(target, frame, true);
+    }
+
     Connections {
         target: Session
         function onAssistantActionRequested(action, argument) {
@@ -110,12 +440,40 @@ Item {
         }
     }
 
-    NumberAnimation on weatherPhase {
-        from: 0
-        to: 1
-        duration: Session.worldWeather === "rain" ? 900 : 4200
-        loops: Animation.Infinite
-        running: root.exploreReady && Session.worldWeather !== "clear"
+    Connections {
+        target: NativeVehicleController
+        function onStateChanged() {
+            if (NativeVehicleController.running)
+                root.activateAttachedDrive();
+            else if (root.driveMode)
+                root.driveMode = false;
+        }
+    }
+
+    Connections {
+        target: SimulationController
+
+        function onConfigurationChanged() {
+            root.beginPendingCarlaRun();
+        }
+
+        function onConnectionChanged() {
+            root.beginPendingCarlaRun();
+        }
+
+        function onSessionChanged() {
+            if (SimulationController.hasSession
+                    && SimulationController.selectedWorldId === root.selectedWorldId) {
+                root.exploreMode = true;
+                root.carlaDriveMode = true;
+            }
+            if (SimulationController.sessionState === "failed") {
+                root.noticeText = SimulationController.lastError.length > 0
+                        ? SimulationController.lastError
+                        : "The CARLA simulation failed. Open the session evidence for details.";
+                noticeTimer.restart();
+            }
+        }
     }
 
     function sortIndex(mode) {
@@ -173,8 +531,33 @@ Item {
         onTriggered: root.noticeText = ""
     }
 
+    // Deterministic app-level verification hook. It follows the same public
+    // load/start path as the Drive world button and never bypasses validation.
+    Timer {
+        interval: 250
+        repeat: true
+        running: root.nativeDriveSmoke && !NativeVehicleController.running
+        onTriggered: {
+            if (!root.hasSelection)
+                return;
+            if (root.loadNativePhysics()) {
+                stop();
+                root.startReferenceDrive();
+            }
+        }
+    }
+
+    Timer {
+        id: routeStreamingTimer
+        interval: 80
+        repeat: true
+        running: root.exploreMode && root.routeTiles.length > 1
+        onTriggered: root.updateAutomaticRouteTile()
+    }
+
     FrameAnimation {
         running: root.exploreReady
+                 && !root.driveMode
                  && (root.moveForward || root.moveBackward
                      || root.moveLeft || root.moveRight
                      || root.moveUp || root.moveDown)
@@ -201,6 +584,12 @@ Item {
         onActivated: root.toggleExplore()
     }
 
+    Shortcut {
+        sequence: "Ctrl+D"
+        enabled: root.hasSelection
+        onActivated: root.startCarlaDrive(false)
+    }
+
     onVisibleChanged: {
         if (!visible)
             root.stopMovement();
@@ -215,6 +604,12 @@ Item {
             layoutSettings.layoutSchema = 1;
         }
         WorldLibraryModel.refresh();
+        if (Qt.application.arguments.indexOf("--native-snow-smoke") >= 0)
+            Session.worldWeather = "snow";
+        root.loadNativePhysics();
+        root.activateAttachedDrive();
+        SimulationController.connectToServer();
+        SimulationController.refreshWorldExecution(root.selectedWorldId);
     }
 
     Component.onDestruction: {
@@ -268,6 +663,16 @@ Item {
                          + WorldLibraryModel.totalBytesText + " local")
             iconSource: Theme.icon("world")
             Layout.fillWidth: true
+
+            TextButton {
+                text: "Details"
+                iconSource: Theme.icon("inspector")
+                compact: true
+                selected: root.detailsVisible
+                enabled: root.hasSelection && !Session.viewportFocusMode
+                toolTip: root.detailsVisible ? "Hide world details" : "Show world details"
+                onClicked: root.detailsVisible = !root.detailsVisible
+            }
 
             TextButton {
                 text: "Create world"
@@ -427,6 +832,23 @@ Item {
 
                             width: worldList.width
                             height: 96
+                            activeFocusOnTab: true
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: worldDelegate.displayName
+                            Accessible.description: worldDelegate.gaussianText + " splats, "
+                                                    + worldDelegate.qualityLabel
+                            Accessible.focusable: true
+                            Accessible.onPressAction: WorldLibraryModel.selectWorld(
+                                                          worldDelegate.worldId)
+
+                            Keys.onPressed: event => {
+                                if (event.key === Qt.Key_Return
+                                        || event.key === Qt.Key_Enter
+                                        || event.key === Qt.Key_Space) {
+                                    WorldLibraryModel.selectWorld(worldDelegate.worldId);
+                                    event.accepted = true;
+                                }
+                            }
 
                             Rectangle {
                                 anchors.fill: parent
@@ -641,7 +1063,14 @@ Item {
                             spacing: 10
 
                             Text {
-                                Layout.fillWidth: true
+                                Layout.fillWidth: false
+                                // Long world names must yield space to the primary actions.
+                                // Without an explicit zero minimum, RowLayout treats the
+                                // text's full implicit width as mandatory and pushes Explore,
+                                // CARLA, and bundle controls outside the window.
+                                Layout.minimumWidth: 80
+                                Layout.preferredWidth: Math.min(300, implicitWidth)
+                                Layout.maximumWidth: 300
                                 text: root.hasSelection
                                       ? String(root.selectedWorld.displayName)
                                       : "No world selected"
@@ -663,6 +1092,20 @@ Item {
                             TextButton {
                                 visible: root.hasSelection
                                 compact: true
+                                text: SimulationController.busy ? "Starting CARLA"
+                                      : (SimulationController.hasSession
+                                         && SimulationController.selectedWorldId === root.selectedWorldId
+                                         ? (SimulationController.terminal ? "Replay CARLA" : "CARLA live")
+                                         : "Drive CARLA")
+                                iconSource: Theme.icon("play")
+                                tone: root.carlaDriveMode ? "primary" : "default"
+                                enabled: root.selectedWorldPublished && !SimulationController.busy
+                                toolTip: "Run or replay the real CARLA 0.9.16 Lincoln physics session in this Gaussian world."
+                                onClicked: root.startCarlaDrive(false)
+                            }
+                            TextButton {
+                                visible: root.hasSelection
+                                compact: true
                                 text: root.selectedWorldPublished ? "Open bundle" : "Open job"
                                 iconSource: Theme.icon("folder")
                                 onClicked: {
@@ -674,16 +1117,19 @@ Item {
                                                     String(root.selectedWorld.worldId));
                                 }
                             }
-                                    IconButton {
-                                        iconSource: Theme.icon(Session.viewportFocusMode
-                                                              ? "minimize" : "maximize")
-                                        toolTip: Session.viewportFocusMode
-                                                 ? "Restore library and inspector"
-                                                 : "Focus preview"
-                                        selected: Session.viewportFocusMode
-                                        buttonSize: 24
-                                        onClicked: Session.viewportFocusMode = !Session.viewportFocusMode
-                                    }
+                            IconButton {
+                                iconSource: Theme.icon(Session.viewportFocusMode
+                                                      ? "minimize" : "maximize")
+                                toolTip: Session.viewportFocusMode
+                                         ? "Restore library and inspector"
+                                         : "Focus preview"
+                                selected: Session.viewportFocusMode
+                                buttonSize: 24
+                                onClicked: Session.viewportFocusMode = !Session.viewportFocusMode
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                            }
                             }
                         }
 
@@ -733,17 +1179,55 @@ Item {
                             GaussianSplatView {
                                 id: gaussianView
                                 z: 0
-                                anchors.fill: parent
+                                anchors.top: parent.top
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                width: liveDrive.visible && liveDrive.splitView
+                                       ? Math.floor(parent.width / 2) : parent.width
                                 visible: root.hasSelection && root.exploreMode
-                                source: root.hasSelection ? root.selectedPlyPath : ""
+                                         && !root.carlaDriveMode
+                                source: root.hasSelection ? root.explorePlyPath : ""
                                 visualizationMode: root.visualizationMode
+                                snowAccumulation: root.snowAccumulation
                                 focus: visible
+                                onReadyChanged: {
+                                    if (!ready || loading)
+                                        return;
+                                    if (root.pendingRouteFrame >= 0) {
+                                        const targetProgress = root.tileProgressForFrame(
+                                            root.activeRouteTileIndex,
+                                            root.pendingRouteFrame);
+                                        root.pendingRouteFrame = -1;
+                                        gaussianView.setPathProgress(targetProgress);
+                                    }
+                                    root.preloadAdjacentRouteTiles();
+                                }
                                 onActiveFocusChanged: {
                                     if (!activeFocus)
                                         root.stopMovement();
                                 }
 
                                 Keys.onPressed: event => {
+                                    if (root.driveMode) {
+                                        if (event.isAutoRepeat)
+                                            return;
+                                        if (event.key === Qt.Key_W || event.key === Qt.Key_Up)
+                                            NativeVehicleController.setInput("forward", true);
+                                        else if (event.key === Qt.Key_S || event.key === Qt.Key_Down)
+                                            NativeVehicleController.setInput("reverse", true);
+                                        else if (event.key === Qt.Key_A || event.key === Qt.Key_Left)
+                                            NativeVehicleController.setInput("left", true);
+                                        else if (event.key === Qt.Key_D || event.key === Qt.Key_Right)
+                                            NativeVehicleController.setInput("right", true);
+                                        else if (event.key === Qt.Key_Space)
+                                            NativeVehicleController.setInput("brake", true);
+                                        else if (event.key === Qt.Key_R)
+                                            NativeVehicleController.reset();
+                                        else
+                                            return;
+                                        event.accepted = true;
+                                        return;
+                                    }
                                     if (event.key === Qt.Key_W || event.key === Qt.Key_Up)
                                         root.moveForward = true;
                                     else if (event.key === Qt.Key_S || event.key === Qt.Key_Down)
@@ -778,6 +1262,22 @@ Item {
                                 Keys.onReleased: event => {
                                     if (event.isAutoRepeat)
                                         return;
+                                    if (root.driveMode) {
+                                        if (event.key === Qt.Key_W || event.key === Qt.Key_Up)
+                                            NativeVehicleController.setInput("forward", false);
+                                        else if (event.key === Qt.Key_S || event.key === Qt.Key_Down)
+                                            NativeVehicleController.setInput("reverse", false);
+                                        else if (event.key === Qt.Key_A || event.key === Qt.Key_Left)
+                                            NativeVehicleController.setInput("left", false);
+                                        else if (event.key === Qt.Key_D || event.key === Qt.Key_Right)
+                                            NativeVehicleController.setInput("right", false);
+                                        else if (event.key === Qt.Key_Space)
+                                            NativeVehicleController.setInput("brake", false);
+                                        else
+                                            return;
+                                        event.accepted = true;
+                                        return;
+                                    }
                                     if (event.key === Qt.Key_W || event.key === Qt.Key_Up)
                                         root.moveForward = false;
                                     else if (event.key === Qt.Key_S || event.key === Qt.Key_Down)
@@ -800,7 +1300,7 @@ Item {
                                     property real previousY: 0
                                     anchors.fill: parent
                                     acceptedButtons: Qt.LeftButton
-                                    enabled: !root.recordedCorridorMode
+                                    enabled: !root.recordedCorridorMode && !root.driveMode
                                     hoverEnabled: true
                                     cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                                     onPressed: mouse => {
@@ -823,36 +1323,34 @@ Item {
                                 }
                             }
 
-                            Item {
-                                id: weatherLayer
-                                z: 1
+                            LiveDriveView {
+                                id: liveDrive
+                                z: 5
                                 anchors.fill: parent
-                                visible: root.exploreReady && Session.worldWeather !== "clear"
-                                clip: true
+                                visible: root.hasSelection && root.exploreMode
+                                         && !root.carlaDriveMode
+                                         && root.driveMode && NativeVehicleController.running
+                                active: visible
+                                gaussianView: gaussianView
+                                snowAccumulation: root.snowAccumulation
+                            }
 
-                                Repeater {
-                                    model: Session.worldWeather === "rain" ? 150 : 90
-                                    delegate: Rectangle {
-                                        required property int index
-                                        readonly property real seedX: ((index * 73) % 997) / 997
-                                        readonly property real seedY: ((index * 193) % 991) / 991
-                                        x: seedX * weatherLayer.width
-                                           + (Session.worldWeather === "rain"
-                                              ? -28 * root.weatherPhase : 14 * Math.sin(index + root.weatherPhase * 6.283))
-                                        y: ((seedY + root.weatherPhase * (Session.worldWeather === "rain" ? 1.8 : 0.42)) % 1.0)
-                                           * (weatherLayer.height + 36) - 18
-                                        width: Session.worldWeather === "rain" ? 1 : 3 + (index % 3)
-                                        height: Session.worldWeather === "rain" ? 18 + (index % 14) : width
-                                        radius: Session.worldWeather === "rain" ? 0 : width / 2
-                                        rotation: Session.worldWeather === "rain" ? 12 : 0
-                                        color: Session.worldWeather === "rain" ? "#88b8ddff" : "#dff5ffff"
-                                        opacity: Session.worldWeather === "rain" ? 0.46 : 0.72
-                                    }
+                            CarlaDriveView {
+                                id: carlaDrive
+                                z: 8
+                                anchors.fill: parent
+                                visible: root.hasSelection && root.exploreMode
+                                         && root.carlaDriveMode
+                                active: visible
+                                onNewRunRequested: (weather, accumulation) => {
+                                    Session.worldWeather = weather;
+                                    if (weather === "snow")
+                                        Session.worldSnowAccumulation = accumulation;
+                                    root.startCarlaDrive(true);
                                 }
-
-                                Rectangle {
-                                    anchors.fill: parent
-                                    color: Session.worldWeather === "rain" ? "#0b162033" : "#c7e7ff0d"
+                                onCloseRequested: {
+                                    root.carlaDriveMode = false;
+                                    root.exploreMode = false;
                                 }
                             }
 
@@ -978,21 +1476,30 @@ Item {
 
                             Rectangle {
                                 z: 2
-                                anchors.left: parent.left
                                 anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                anchors.margins: 12
-                                height: 86
-                                visible: root.exploreReady
+                                anchors.top: parent.top
+                                anchors.rightMargin: 12
+                                anchors.topMargin: 12
+                                width: 232
+                                height: Math.min(parent.height - 24,
+                                                 exploreControls.implicitHeight + 18)
+                                opacity: root.exploreReady && !root.driveMode ? 1 : 0
+                                visible: opacity > 0
                                 color: Theme.overlayHud
                                 radius: Theme.cornerPopup
 
-                                RowLayout {
+                                Behavior on opacity {
+                                    enabled: Theme.motionEnabled
+                                    NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                                }
+
+                                ColumnLayout {
+                                    id: exploreControls
                                     anchors.fill: parent
-                                    anchors.leftMargin: 11
-                                    anchors.rightMargin: 8
-                                    spacing: 12
+                                    anchors.margins: 9
+                                    spacing: 5
                                     ColumnLayout {
+                                        visible: false
                                         Layout.fillWidth: true
                                         spacing: 2
                                         Text {
@@ -1047,6 +1554,7 @@ Item {
                                     }
                                     RowLayout {
                                         spacing: 3
+                                        Layout.alignment: Qt.AlignHCenter
                                         TextButton {
                                             compact: true
                                             text: "1×"
@@ -1070,10 +1578,35 @@ Item {
                                         }
                                     }
                                     RowLayout {
+                                        visible: true
                                         spacing: 3
                                         TextButton { compact: true; text: "Clear"; selected: Session.worldWeather === "clear"; onClicked: Session.worldWeather = "clear" }
-                                        TextButton { compact: true; text: "Rain"; selected: Session.worldWeather === "rain"; onClicked: Session.worldWeather = "rain" }
-                                        TextButton { compact: true; text: "Snow"; selected: Session.worldWeather === "snow"; onClicked: Session.worldWeather = "snow" }
+                                        TextButton {
+                                            compact: true
+                                            text: "Snow"
+                                            selected: Session.worldWeather === "snow"
+                                            toolTip: "Accumulate snow on inferred up-facing Gaussian surfaces and the physical vehicle. Visual snow depth is nonmetric; vehicle grip is reduced in physics."
+                                            onClicked: Session.worldWeather = "snow"
+                                        }
+                                        Slider {
+                                            visible: Session.worldWeather === "snow"
+                                            Layout.preferredWidth: 110
+                                            from: 0.0
+                                            to: 1.0
+                                            stepSize: 0.05
+                                            value: Session.worldSnowAccumulation
+                                            onMoved: Session.worldSnowAccumulation = value
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "Inferred surface accumulation "
+                                                          + Math.round(value * 100) + "%"
+                                        }
+                                        Text {
+                                            visible: Session.worldWeather === "snow"
+                                            text: Math.round(Session.worldSnowAccumulation * 100) + "%"
+                                            color: Theme.textSecondary
+                                            font.family: Theme.monoFont
+                                            font.pixelSize: 9
+                                        }
                                     }
                                     TextButton {
                                         compact: true
@@ -1089,6 +1622,7 @@ Item {
                                         }
                                     }
                                     Text {
+                                        visible: false
                                         text: gaussianView.gaussianCount.toLocaleString()
                                               + " total splats\n"
                                               + (root.recordedCorridorMode
@@ -1102,6 +1636,7 @@ Item {
                                         horizontalAlignment: Text.AlignRight
                                     }
                                     Text {
+                                        visible: false
                                         text: gaussianView.renderFps > 0
                                               ? gaussianView.renderFps.toFixed(0) + " render callbacks/s / "
                                                 + gaussianView.geometryUpdateFps.toFixed(1) + " geometry Hz\n"
@@ -1133,13 +1668,13 @@ Item {
                             Rectangle {
                                 id: diagnosticPalette
                                 z: 3
-                                anchors.top: parent.top
                                 anchors.left: parent.left
-                                anchors.topMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
                                 anchors.leftMargin: 12
-                                width: Math.min(760, parent.width - 24)
-                                height: 72
+                                width: 132
+                                height: 176
                                 visible: root.exploreReady && !root.recordedCorridorMode
+                                         && !root.driveMode
                                 color: Theme.overlayHud
                                 radius: Theme.cornerPopup
 
@@ -1148,7 +1683,7 @@ Item {
                                     anchors.margins: 8
                                     spacing: 4
 
-                                    RowLayout {
+                                    ColumnLayout {
                                         Layout.fillWidth: true
                                         spacing: 5
                                         Text {
@@ -1202,7 +1737,7 @@ Item {
                                             Layout.fillWidth: true
                                         }
                                         Rectangle {
-                                            visible: diagnosticPalette.width > 650
+                                            visible: false
                                             implicitWidth: 128
                                             implicitHeight: 22
                                             color: Theme.tintWarning
@@ -1219,6 +1754,7 @@ Item {
                                         }
                                     }
                                     Text {
+                                        visible: false
                                         Layout.fillWidth: true
                                         text: root.visualizationDescription(root.visualizationMode)
                                         color: Theme.textMuted
@@ -1231,13 +1767,12 @@ Item {
 
                             Rectangle {
                                 z: 2
-                                anchors.top: diagnosticPalette.visible
-                                             ? diagnosticPalette.bottom : parent.top
                                 anchors.left: parent.left
-                                anchors.topMargin: diagnosticPalette.visible ? 8 : 12
+                                anchors.verticalCenter: parent.verticalCenter
                                 anchors.leftMargin: 12
-                                width: Math.min(520, parent.width - 24)
-                                height: 42
+                                anchors.verticalCenterOffset: 110
+                                width: 132
+                                height: 30
                                 visible: root.exploreReady
                                          && root.hasSelection
                                          && String(root.selectedWorld.qualityTone) === "warning"
@@ -1251,18 +1786,17 @@ Item {
                                     spacing: 8
                                     SvgIcon {
                                         source: Theme.icon("warning")
-                                        iconSize: Theme.iconMd
+                                        iconSize: Theme.iconXs
                                         color: Theme.warning
                                     }
                                     Text {
                                         Layout.fillWidth: true
-                                        text: "Experimental reconstruction / "
-                                              + root.metricText(root.selectedWorld.psnr, 2) + " dB PSNR / "
-                                              + root.metricText(root.selectedWorld.ssim, 3) + " SSIM. Gaps and unstable geometry are expected."
-                                        color: Theme.textSecondary
+                                        text: "REVIEW REQUIRED"
+                                        color: Theme.warning
                                         font.family: Theme.uiFont
-                                        font.pixelSize: 9
-                                        wrapMode: Text.WordWrap
+                                        font.pixelSize: 8
+                                        font.weight: Font.DemiBold
+                                        elide: Text.ElideRight
                                     }
                                 }
                             }
@@ -1318,7 +1852,7 @@ Item {
 
             Panel {
                 id: worldInspector
-                visible: !Session.viewportFocusMode
+                visible: !Session.viewportFocusMode && root.detailsVisible
                 SplitView.preferredWidth: 360
                 SplitView.minimumWidth: 320
                 SplitView.maximumWidth: 480

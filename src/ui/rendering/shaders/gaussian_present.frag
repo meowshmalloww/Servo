@@ -11,6 +11,8 @@ layout(std140, binding = 2) uniform CameraUniforms {
     vec4 viewportFocal;
     vec4 parameters;
     vec4 environmentFallback;
+    vec4 stabilization;
+    vec4 weather;
 };
 
 layout(location = 0) out vec4 fragmentColor;

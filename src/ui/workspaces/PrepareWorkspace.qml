@@ -146,7 +146,7 @@ Item {
 
             Panel {
                 SplitView.fillWidth: true
-                SplitView.minimumWidth: 620
+                SplitView.minimumWidth: 360
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -155,25 +155,21 @@ Item {
                     PanelHeader {
                         title: "Source media"
                         subtitle: MediaSourceModel.count === 0
-                                  ? "No application-imposed file-size or duration limit"
-                                  : MediaSourceModel.readyCount + " of " + MediaSourceModel.count + " ready"
+                                   ? "No application-imposed file-size or duration limit"
+                                   : MediaSourceModel.readyCount + " of " + MediaSourceModel.count + " ready"
                         iconSource: Theme.icon("camera")
                         Layout.fillWidth: true
                     }
 
-                    ScrollView {
+                    Item {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 224
-                        clip: true
-                        contentWidth: availableWidth
+                        Layout.margins: 12
+                        Layout.preferredHeight: 182
+                        Layout.maximumHeight: 200
 
                         SourceDropZone {
-                            width: Math.max(0, parent.width - 24)
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            anchors.top: parent.top
-                            anchors.topMargin: 12
+                            anchors.fill: parent
                             enabled: !ReconstructionController.running
-
                             onAddFilesRequested: mediaFileDialog.open()
                             onAddFolderRequested: mediaFolderDialog.open()
                             onUrlsDropped: function(urls) { root.addDroppedUrls(urls); }
@@ -182,43 +178,45 @@ Item {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 42
+                        Layout.preferredHeight: 38
                         color: Theme.panelRaised
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            height: 1
+                            color: Theme.borderSoft
+                            opacity: 0.4
+                        }
 
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 12
                             anchors.rightMargin: 12
-                            spacing: 14
+                            spacing: 16
 
                             MetricReadout {
                                 label: "SOURCES"
                                 value: MediaSourceModel.count
                                 toolTip: "Unique source paths registered in the local catalog"
                             }
-
                             MetricReadout {
                                 label: "READY"
                                 value: MediaSourceModel.readyCount
                                 toolTip: "Sources with successfully parsed image or video metadata"
                             }
-
                             MetricReadout {
                                 label: "ERRORS"
                                 value: MediaSourceModel.errorCount
                                 toolTip: "Missing, corrupt, unsupported, or unreadable sources"
                             }
-
                             MetricReadout {
                                 label: "ORIGINAL SIZE"
                                 value: MediaSourceModel.totalBytesText
                                 toolTip: "Aggregate original source bytes. Registration does not copy the files."
                             }
-
-                            Item {
-                                Layout.fillWidth: true
-                            }
-
+                            Item { Layout.fillWidth: true }
                             LoadingState {
                                 visible: MediaSourceModel.busy
                                 running: MediaSourceModel.busy
@@ -267,9 +265,9 @@ Item {
             }
 
             Panel {
-                SplitView.preferredWidth: 382
-                SplitView.minimumWidth: 340
-                SplitView.maximumWidth: 470
+                SplitView.preferredWidth: 348
+                SplitView.minimumWidth: 300
+                SplitView.maximumWidth: 440
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -283,13 +281,15 @@ Item {
                     }
 
                     ScrollView {
+                        id: buildScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
                         contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
                         ColumnLayout {
-                            width: Math.max(0, parent.width - 18)
+                            width: buildScroll.availableWidth
                             spacing: 10
 
                             ColumnLayout {
@@ -427,8 +427,10 @@ Item {
                                         id: dependencyRow
                                         required property var modelData
                                         label: modelData.name || "Dependency"
+                                        labelWidth: 118
 
                                         StatusBadge {
+                                            Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                             text: dependencyRow.modelData.ready
                                                   ? (dependencyRow.modelData.version || "Ready")
                                                   : "Missing"
@@ -727,7 +729,10 @@ Item {
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Layout.margins: 12
+                        Layout.leftMargin: 12
+                        Layout.rightMargin: 12
+                        Layout.topMargin: 12
+                        Layout.bottomMargin: 6
                         spacing: 7
 
                         TextButton {
@@ -748,7 +753,7 @@ Item {
                         TextButton {
                             Layout.fillWidth: true
                             text: ReconstructionController.state === "complete"
-                                  ? "Build another world" : "Build world"
+                                   ? "Build another world" : "Build world"
                             iconSource: Theme.icon("build")
                             tone: "primary"
                             enabled: ReconstructionController.ready

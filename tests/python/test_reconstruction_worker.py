@@ -1013,7 +1013,8 @@ class ReconstructionWorkerTests(unittest.TestCase):
             self.assertGreater(profile.checkpoint_every, 0)
             self.assertGreaterEqual(profile.min_registered_ratio, 0.8)
             self.assertEqual(profile.rasterization_mode, "antialiased")
-            self.assertGreaterEqual(profile.max_gaussians, 100_000)
+            self.assertEqual(profile.target_gaussians, 0)
+            self.assertEqual(profile.max_gaussians, 0)
             self.assertLess(profile.coarse_steps, profile.max_steps)
             if profile.absgrad:
                 self.assertGreaterEqual(profile.grow_grad2d, 0.0008)
@@ -1546,6 +1547,25 @@ class ReconstructionWorkerTests(unittest.TestCase):
         self.assertFalse(servo_train.should_reset_opacity(15_000, 3_000, 15_000))
         self.assertFalse(servo_train.should_reset_opacity(18_000, 3_000, 15_000))
 
+    def test_adaptive_gaussian_budget_preflights_growth_without_count_ceiling(self) -> None:
+        gib = 1024**3
+        self.assertFalse(
+            servo_train.adaptive_growth_would_exceed_vram(
+                gaussian_count=1_500_000,
+                allocated_bytes=int(2.7 * gib),
+                reserved_bytes=int(4.6 * gib),
+                maximum_bytes=11 * gib,
+            )
+        )
+        self.assertTrue(
+            servo_train.adaptive_growth_would_exceed_vram(
+                gaussian_count=3_000_000,
+                allocated_bytes=int(4.5 * gib),
+                reserved_bytes=int(6.0 * gib),
+                maximum_bytes=11 * gib,
+            )
+        )
+
     def test_overlap_matcher_accepts_one_neighbor_results(self) -> None:
         import numpy as np
 
@@ -1558,6 +1578,13 @@ class ReconstructionWorkerTests(unittest.TestCase):
     def test_video_extraction_decodes_encoded_media_and_keeps_source_identity(self) -> None:
         import cv2
         import numpy as np
+
+        environment = servo_worker.compiler_environment()
+        if (
+            shutil.which("ffmpeg", path=environment.get("PATH")) is None
+            or shutil.which("ffprobe", path=environment.get("PATH")) is None
+        ):
+            self.skipTest("FFmpeg and ffprobe are required")
 
         class Events:
             def __init__(self) -> None:
@@ -1649,8 +1676,9 @@ class ReconstructionWorkerTests(unittest.TestCase):
     def test_hlg_probe_requires_explicit_bt2020_to_srgb_transform(self) -> None:
         environment = servo_worker.compiler_environment()
         ffmpeg = shutil.which("ffmpeg", path=environment.get("PATH"))
-        if ffmpeg is None:
-            self.skipTest("FFmpeg is unavailable")
+        ffprobe = shutil.which("ffprobe", path=environment.get("PATH"))
+        if ffmpeg is None or ffprobe is None:
+            self.skipTest("FFmpeg and ffprobe are unavailable")
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "synthetic-hlg.mp4"
             result = subprocess.run(

@@ -63,6 +63,8 @@ public:
                                  const QString &modelName,
                                  const QString &effortName);
     Q_INVOKABLE bool runLocalAction(const QString &prompt);
+    Q_INVOKABLE void recordExternalMessage(const QString &author,
+                                           const QString &content);
     Q_INVOKABLE void addAttachments(const QVariantList &urls);
     Q_INVOKABLE void removeAttachment(int index);
     Q_INVOKABLE void clearAttachments();

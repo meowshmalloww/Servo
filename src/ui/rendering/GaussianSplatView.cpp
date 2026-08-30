@@ -8,15 +8,20 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImage>
 #include <QMatrix4x4>
 #include <QMetaObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPointer>
 #include <QQuaternion>
 #include <QRegularExpression>
+#include <QSet>
+#include <QThreadPool>
 #include <QtConcurrent>
 #include <QtEndian>
 #include <rhi/qrhi.h>
@@ -55,7 +60,10 @@ namespace {
 
 constexpr qsizetype kFloatStride = 59;
 constexpr qsizetype kByteStride = kFloatStride * qsizetype(sizeof(float));
-constexpr qint64 kMaximumGaussianCount = 5'000'000;
+// QRhi's storage-buffer byte size is the real native ABI bound. Do not impose
+// an unrelated five-million-splat product limit below it.
+constexpr qint64 kMaximumGaussianCount = qint64(std::numeric_limits<quint32>::max())
+                                          / kByteStride;
 constexpr quint32 kComputeGroupSize = 256;
 constexpr quint32 kRadixPassCount = 4;
 constexpr float kNearPlane = 0.01f;
@@ -88,6 +96,78 @@ struct LoadResult
     std::shared_ptr<const GaussianSceneData> scene;
     QString error;
 };
+
+struct SceneCache
+{
+    QMutex mutex;
+    QHash<QString, std::shared_ptr<const GaussianSceneData>> scenes;
+    QStringList recency;
+    QSet<QString> loading;
+};
+
+SceneCache &sceneCache()
+{
+    static SceneCache cache;
+    return cache;
+}
+
+QString sceneCacheKey(const QString &path)
+{
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+}
+
+std::shared_ptr<const GaussianSceneData> cachedGaussianScene(const QString &path)
+{
+    SceneCache &cache = sceneCache();
+    const QString key = sceneCacheKey(path);
+    QMutexLocker locker(&cache.mutex);
+    const auto iterator = cache.scenes.constFind(key);
+    if (iterator == cache.scenes.cend())
+        return {};
+    cache.recency.removeAll(key);
+    cache.recency.append(key);
+    return iterator.value();
+}
+
+void cacheGaussianScene(const QString &path,
+                        const std::shared_ptr<const GaussianSceneData> &scene)
+{
+    if (!scene)
+        return;
+    SceneCache &cache = sceneCache();
+    const QString key = sceneCacheKey(path);
+    QMutexLocker locker(&cache.mutex);
+    cache.scenes.insert(key, scene);
+    cache.recency.removeAll(key);
+    cache.recency.append(key);
+    // Active views retain their shared scene independently. Three cached route
+    // fields cover current, next, and previous without retaining all five.
+    while (cache.recency.size() > 3) {
+        const QString evicted = cache.recency.takeFirst();
+        cache.scenes.remove(evicted);
+    }
+}
+
+bool beginGaussianScenePreload(const QString &path)
+{
+    SceneCache &cache = sceneCache();
+    const QString key = sceneCacheKey(path);
+    QMutexLocker locker(&cache.mutex);
+    if (cache.scenes.contains(key) || cache.loading.contains(key))
+        return false;
+    cache.loading.insert(key);
+    return true;
+}
+
+void finishGaussianScenePreload(const QString &path)
+{
+    SceneCache &cache = sceneCache();
+    const QString key = sceneCacheKey(path);
+    QMutexLocker locker(&cache.mutex);
+    cache.loading.remove(key);
+}
 
 float valueAt(const char *record, qsizetype index)
 {
@@ -268,6 +348,10 @@ bool readInitialCamera(const QString &plyPath,
 LoadResult loadGaussianScene(const QString &path)
 {
     LoadResult result;
+    if (const auto cached = cachedGaussianScene(path)) {
+        result.scene = cached;
+        return result;
+    }
     Servo::Rendering::GaussianWorldEnvironment environment;
     if (!Servo::Rendering::readGaussianWorldEnvironment(path, &environment, &result.error)) {
         return result;
@@ -303,18 +387,71 @@ LoadResult loadGaussianScene(const QString &path)
         result.error = QStringLiteral("The PLY header is malformed or exceeds 64 KiB.");
         return result;
     }
-    if (!binaryLittleEndian || count <= 0 || count > kMaximumGaussianCount
-        || properties != kExpectedProperties) {
+    if (!binaryLittleEndian) {
         result.error = QStringLiteral(
-            "Servo Explore requires the verified binary little-endian SH3 Gaussian PLY schema.");
+            "Servo Explore requires a binary little-endian Gaussian PLY; this file uses a different format.");
         return result;
     }
-    if (count > (std::numeric_limits<qsizetype>::max() / kByteStride)) {
+    if (count <= 0) {
+        result.error = QStringLiteral("The Gaussian PLY declares no vertices.");
+        return result;
+    }
+    if (count > kMaximumGaussianCount) {
+        result.error = QStringLiteral(
+            "This world contains %1 Gaussian splats, above the current native renderer limit of %2.")
+                           .arg(count)
+                           .arg(kMaximumGaussianCount);
+        return result;
+    }
+    QSet<QString> uniqueProperties;
+    for (const QString &property : properties) {
+        if (uniqueProperties.contains(property)) {
+            result.error = QStringLiteral("The Gaussian PLY repeats property '%1'.").arg(property);
+            return result;
+        }
+        uniqueProperties.insert(property);
+    }
+    const QSet<QString> optionalWildGsProperties {
+        QStringLiteral("nx"), QStringLiteral("ny"), QStringLiteral("nz")
+    };
+    for (const QString &property : properties) {
+        if (!kExpectedProperties.contains(property)
+            && !optionalWildGsProperties.contains(property)) {
+            result.error = QStringLiteral(
+                "The Gaussian PLY contains unsupported vertex property '%1'.")
+                               .arg(property);
+            return result;
+        }
+    }
+
+    QVector<qsizetype> canonicalSourceIndexes;
+    canonicalSourceIndexes.reserve(kExpectedProperties.size());
+    for (const QString &property : kExpectedProperties) {
+        const qsizetype sourceIndex = properties.indexOf(property);
+        if (sourceIndex < 0) {
+            result.error = QStringLiteral("The Gaussian PLY is missing required SH3 property '%1'.")
+                               .arg(property);
+            return result;
+        }
+        canonicalSourceIndexes.append(sourceIndex);
+    }
+    if (properties.size() != kExpectedProperties.size()
+        && properties.size() != kExpectedProperties.size() + optionalWildGsProperties.size()) {
+        result.error = QStringLiteral(
+            "The Gaussian PLY has %1 float properties; expected 59 canonical fields with only optional WildGS nx/ny/nz metadata.")
+                           .arg(properties.size());
+        return result;
+    }
+
+    const qsizetype sourceByteStride = properties.size() * qsizetype(sizeof(float));
+    if (count > (std::numeric_limits<qsizetype>::max() / sourceByteStride)
+        || count > (std::numeric_limits<qsizetype>::max() / kByteStride)) {
         result.error = QStringLiteral("The Gaussian count exceeds this process's address space.");
         return result;
     }
+    const qsizetype sourcePayloadBytes = qsizetype(count) * sourceByteStride;
     const qsizetype payloadBytes = qsizetype(count) * kByteStride;
-    if (file.size() != header.size() + payloadBytes) {
+    if (file.size() != header.size() + sourcePayloadBytes) {
         result.error = QStringLiteral("The Gaussian PLY byte length does not match its header.");
         return result;
     }
@@ -322,10 +459,45 @@ LoadResult loadGaussianScene(const QString &path)
     auto scene = std::make_shared<GaussianSceneData>();
     scene->backgroundColorSrgb = environment.backgroundColorSrgb;
     scene->observedDirectionalEnvironment = environment.observedDirectionalRgba;
-    scene->payload = file.read(payloadBytes);
-    if (scene->payload.size() != payloadBytes) {
-        result.error = QStringLiteral("The Gaussian PLY could not be read completely.");
-        return result;
+    if (properties == kExpectedProperties) {
+        scene->payload = file.read(payloadBytes);
+        if (scene->payload.size() != payloadBytes) {
+            result.error = QStringLiteral("The Gaussian PLY could not be read completely.");
+            return result;
+        }
+    } else {
+        // WildGS and Brush both emit valid SH3 fields, but WildGS prefixes
+        // unused nx/ny/nz values and Brush may serialize properties in a
+        // different order. Repack only explicitly verified float fields into
+        // Servo's canonical GPU ABI; never reinterpret the foreign stride.
+        scene->payload.resize(payloadBytes);
+        constexpr qsizetype rowsPerChunk = 4096;
+        qint64 firstRow = 0;
+        while (firstRow < count) {
+            const qsizetype rowCount = qsizetype(std::min<qint64>(rowsPerChunk,
+                                                                  count - firstRow));
+            const qsizetype chunkBytes = rowCount * sourceByteStride;
+            const QByteArray chunk = file.read(chunkBytes);
+            if (chunk.size() != chunkBytes) {
+                result.error = QStringLiteral("The Gaussian PLY could not be read completely.");
+                return result;
+            }
+            for (qsizetype row = 0; row < rowCount; ++row) {
+                const char *sourceRecord = chunk.constData() + row * sourceByteStride;
+                char *targetRecord = scene->payload.data()
+                                     + (qsizetype(firstRow) + row) * kByteStride;
+                for (qsizetype targetIndex = 0;
+                     targetIndex < canonicalSourceIndexes.size();
+                     ++targetIndex) {
+                    std::memcpy(targetRecord + targetIndex * qsizetype(sizeof(float)),
+                                sourceRecord
+                                    + canonicalSourceIndexes.at(targetIndex)
+                                          * qsizetype(sizeof(float)),
+                                sizeof(float));
+                }
+            }
+            firstRow += rowCount;
+        }
     }
     scene->centers.resize(count);
     QVector<QVector3D> samples;
@@ -416,6 +588,7 @@ LoadResult loadGaussianScene(const QString &path)
     }
 
     result.scene = std::move(scene);
+    cacheGaussianScene(path, result.scene);
     return result;
 }
 
@@ -428,6 +601,7 @@ struct alignas(16) CameraUniforms
     float parameters[4];
     float environmentFallback[4];
     float stabilization[4];
+    float weather[4];
 };
 
 struct alignas(16) RadixConfig
@@ -693,6 +867,7 @@ private:
     std::unique_ptr<QRhiComputePipeline> m_digitPrefixPipeline;
     std::unique_ptr<QRhiComputePipeline> m_scatterPipeline;
     std::unique_ptr<QRhiTexture> m_hdrTexture;
+    std::unique_ptr<QRhiTexture> m_depthWeightTexture;
     std::unique_ptr<QRhiTextureRenderTarget> m_hdrRenderTarget;
     std::unique_ptr<QRhiRenderPassDescriptor> m_hdrRenderPassDescriptor;
     std::unique_ptr<QRhiTexture> m_environmentTexture;
@@ -707,9 +882,13 @@ private:
     QVector3D m_cameraUp;
     float m_verticalFov = 52.0f;
     float m_captureEnvelopeScore = 0.0f;
+    QVector3D m_egoVehiclePosition;
+    QQuaternion m_egoVehicleOrientation;
     int m_visualizationMode = 0;
+    float m_snowAccumulation = 0.0f;
     quint64 m_cameraRevision = 0;
     quint64 m_sortedCameraRevision = 0;
+    quint64 m_renderSequence = 0;
     QSize m_renderResourceSize;
     quint32 m_computeWorkgroupCount = 0;
     quint32 m_radixConfigStride = 0;
@@ -766,6 +945,20 @@ double GaussianSplatView::pathProgress() const
 double GaussianSplatView::captureEnvelopeScore() const { return m_captureEnvelopeScore; }
 QString GaussianSplatView::captureEnvelopeStatus() const { return m_captureEnvelopeStatus; }
 int GaussianSplatView::visualizationMode() const { return m_visualizationMode; }
+double GaussianSplatView::snowAccumulation() const { return m_snowAccumulation; }
+bool GaussianSplatView::externalCameraEnabled() const { return m_externalCameraEnabled; }
+QVector3D GaussianSplatView::externalCameraPosition() const { return m_externalCameraPosition; }
+QQuaternion GaussianSplatView::externalCameraOrientation() const { return m_externalCameraOrientation; }
+double GaussianSplatView::externalVerticalFieldOfView() const { return m_externalVerticalFieldOfView; }
+QVector3D GaussianSplatView::egoVehiclePosition() const { return m_egoVehiclePosition; }
+QQuaternion GaussianSplatView::egoVehicleOrientation() const { return m_egoVehicleOrientation; }
+int GaussianSplatView::simulationCameraMode() const { return m_simulationCameraMode; }
+double GaussianSplatView::chaseDistance() const { return m_chaseDistance; }
+double GaussianSplatView::chaseHeight() const { return m_chaseHeight; }
+double GaussianSplatView::chaseLookAhead() const { return m_chaseLookAhead; }
+QVariantList GaussianSplatView::dynamicActorTransforms() const { return m_dynamicActorTransforms; }
+QVariantList GaussianSplatView::routePolyline() const { return m_routePolyline; }
+qulonglong GaussianSplatView::simulationFrameId() const { return m_simulationFrameId; }
 
 void GaussianSplatView::setSource(const QUrl &source)
 {
@@ -795,7 +988,7 @@ void GaussianSplatView::setFollowPath(bool value)
     if (m_followPath == bounded)
         return;
     m_followPath = bounded;
-    if (m_followPath) {
+    if (m_followPath && !(m_externalCameraEnabled && m_simulationCameraMode != 0)) {
         m_pathDistance = 0.0;
         m_pathLateralOffset = 0.0;
         m_pathVerticalOffset = 0.0;
@@ -818,8 +1011,177 @@ void GaussianSplatView::setVisualizationMode(int value)
     update();
 }
 
+void GaussianSplatView::setSnowAccumulation(double value)
+{
+    const double bounded = std::clamp(value, 0.0, 1.0);
+    if (qFuzzyCompare(1.0 + m_snowAccumulation, 1.0 + bounded))
+        return;
+    m_snowAccumulation = bounded;
+    emit weatherChanged();
+    update();
+}
+
+void GaussianSplatView::setExternalCameraEnabled(bool value)
+{
+    if (m_externalCameraEnabled == value)
+        return;
+    m_externalCameraEnabled = value;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setExternalCameraPosition(const QVector3D &value)
+{
+    if (m_externalCameraPosition == value)
+        return;
+    m_externalCameraPosition = value;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setExternalCameraOrientation(const QQuaternion &value)
+{
+    const QQuaternion normalized = value.isNull() ? QQuaternion() : value.normalized();
+    if (m_externalCameraOrientation == normalized)
+        return;
+    m_externalCameraOrientation = normalized;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setExternalVerticalFieldOfView(double value)
+{
+    const double bounded = std::clamp(value, 10.0, 140.0);
+    if (qFuzzyCompare(m_externalVerticalFieldOfView, bounded))
+        return;
+    m_externalVerticalFieldOfView = bounded;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setEgoVehiclePosition(const QVector3D &value)
+{
+    if (m_egoVehiclePosition == value)
+        return;
+    m_egoVehiclePosition = value;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setEgoVehicleOrientation(const QQuaternion &value)
+{
+    const QQuaternion normalized = value.isNull() ? QQuaternion() : value.normalized();
+    if (m_egoVehicleOrientation == normalized)
+        return;
+    m_egoVehicleOrientation = normalized;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setSimulationCameraMode(int value)
+{
+    const int bounded = std::clamp(value, 0, 3);
+    if (m_simulationCameraMode == bounded)
+        return;
+    m_simulationCameraMode = bounded;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setChaseDistance(double value)
+{
+    const double bounded = std::clamp(value, 2.0, 30.0);
+    if (qFuzzyCompare(m_chaseDistance, bounded))
+        return;
+    m_chaseDistance = bounded;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setChaseHeight(double value)
+{
+    const double bounded = std::clamp(value, 0.5, 15.0);
+    if (qFuzzyCompare(m_chaseHeight, bounded))
+        return;
+    m_chaseHeight = bounded;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setChaseLookAhead(double value)
+{
+    const double bounded = std::clamp(value, 0.0, 30.0);
+    if (qFuzzyCompare(m_chaseLookAhead, bounded))
+        return;
+    m_chaseLookAhead = bounded;
+    updateSimulationCamera();
+    emit simulationViewChanged();
+}
+
+void GaussianSplatView::setDynamicActorTransforms(const QVariantList &value)
+{
+    if (m_dynamicActorTransforms == value)
+        return;
+    m_dynamicActorTransforms = value.mid(0, 64);
+    emit simulationViewChanged();
+    update();
+}
+
+void GaussianSplatView::setRoutePolyline(const QVariantList &value)
+{
+    if (m_routePolyline == value)
+        return;
+    m_routePolyline = value.mid(0, 20000);
+    emit simulationViewChanged();
+    update();
+}
+
+void GaussianSplatView::setSimulationFrameId(qulonglong value)
+{
+    if (m_simulationFrameId == value)
+        return;
+    m_simulationFrameId = value;
+    emit simulationViewChanged();
+    update();
+}
+
+void GaussianSplatView::updateSimulationCamera()
+{
+    if (!m_externalCameraEnabled || m_simulationCameraMode == 0)
+        return;
+    const QQuaternion egoOrientation = m_egoVehicleOrientation.isNull()
+                                               ? QQuaternion()
+                                               : m_egoVehicleOrientation.normalized();
+    const QVector3D forward = normalizedOr(
+        egoOrientation.rotatedVector(QVector3D(0, 0, 1)), QVector3D(0, 0, 1));
+    const QVector3D up = normalizedOr(
+        egoOrientation.rotatedVector(QVector3D(0, 1, 0)), QVector3D(0, 1, 0));
+    // NativeVehicleController owns every drive-camera pose (chase, hood,
+    // orbit, and side). Consuming that pose verbatim keeps the Gaussian pass
+    // and the transparent glTF vehicle pass in one coordinate frame. The old
+    // chase branch reconstructed a second camera using a -Z vehicle-forward
+    // convention while native physics uses +Z; it consequently looked behind
+    // the recorded corridor and presented a black world.
+    const QQuaternion cameraOrientation = m_externalCameraOrientation.isNull()
+                                              ? egoOrientation
+                                              : m_externalCameraOrientation.normalized();
+    m_cameraPosition = m_externalCameraPosition;
+    m_cameraForward = normalizedOr(
+        cameraOrientation.rotatedVector(QVector3D(0, 0, -1)), forward);
+    m_cameraUp = normalizedOr(
+        cameraOrientation.rotatedVector(QVector3D(0, 1, 0)), up);
+    m_verticalFieldOfView = float(m_externalVerticalFieldOfView);
+    updateCaptureEnvelope();
+    ++m_cameraRevision;
+    update();
+}
+
 void GaussianSplatView::resetCamera()
 {
+    if (m_externalCameraEnabled && m_simulationCameraMode != 0) {
+        updateSimulationCamera();
+        return;
+    }
     if (m_scene) {
         m_cameraPosition = m_initialPosition;
         m_verticalFieldOfView = m_scene->verticalFov;
@@ -841,9 +1203,25 @@ void GaussianSplatView::resetCamera()
     }
 }
 
+void GaussianSplatView::setPathProgress(double progress)
+{
+    if (!pathAvailable())
+        return;
+    const double bounded = std::clamp(progress, 0.0, 1.0);
+    const double nextDistance = bounded * double(m_scene->cameraPathDistances.last());
+    if (qFuzzyCompare(1.0 + m_pathDistance, 1.0 + nextDistance))
+        return;
+    m_pathDistance = nextDistance;
+    updatePathCamera();
+    updateCaptureEnvelope();
+    ++m_cameraRevision;
+    emit pathProgressChanged();
+    update();
+}
+
 void GaussianSplatView::look(double deltaX, double deltaY)
 {
-    if (!m_scene)
+    if (!m_scene || (m_externalCameraEnabled && m_simulationCameraMode != 0))
         return;
     constexpr float sensitivity = 0.0032f;
     constexpr float maximumPitch = 1.48353f; // 85 degrees: never crosses the horizon pole.
@@ -870,7 +1248,8 @@ void GaussianSplatView::moveCamera(double forward,
                                    double up,
                                    double elapsedSeconds)
 {
-    if (!m_scene || elapsedSeconds <= 0.0)
+    if (!m_scene || elapsedSeconds <= 0.0
+        || (m_externalCameraEnabled && m_simulationCameraMode != 0))
         return;
     if (followPath()) {
         const double travel = m_movementSpeed * elapsedSeconds;
@@ -937,13 +1316,24 @@ void GaussianSplatView::loadSource(const QString &path)
     const quint64 generation = ++m_loadGeneration;
     m_loading = true;
     m_loadProgress = 0.0;
-    m_scene.reset();
-    m_visibleGaussianCount = 0;
+    // Keep the resident route tile on screen until its replacement is ready.
+    // Adjacent route fields are parsed by preloadSource(), so a route boundary is
+    // normally a synchronous shared-scene handoff.  Retaining the old scene
+    // also prevents a black flash when disk or antivirus activity delays a
+    // cache miss; applyLoadedScene() still fails closed if the new tile is
+    // invalid.
+    if (!m_scene)
+        m_visibleGaussianCount = 0;
     setStatus(QStringLiteral("Reading and validating the Gaussian world"));
     emit loadingChanged();
     emit loadProgressChanged();
     emit sceneChanged();
     update();
+
+    if (const auto cached = cachedGaussianScene(path)) {
+        applyLoadedScene(cached, {}, generation);
+        return;
+    }
 
     auto *watcher = new QFutureWatcher<LoadResult>(this);
     connect(watcher, &QFutureWatcher<LoadResult>::finished, this, [this, watcher, generation]() {
@@ -952,6 +1342,23 @@ void GaussianSplatView::loadSource(const QString &path)
         applyLoadedScene(result.scene, result.error, generation);
     });
     watcher->setFuture(QtConcurrent::run([path]() { return loadGaussianScene(path); }));
+}
+
+void GaussianSplatView::preloadSource(const QUrl &source)
+{
+    const QString path = source.isLocalFile() ? source.toLocalFile() : source.toString();
+    if (path.isEmpty() || !beginGaussianScenePreload(path))
+        return;
+    // Parsing and validation happen off the UI/render threads. loadSource()
+    // consumes the shared cached scene at the route boundary. The in-flight
+    // registry is important for multi-field routes: QML can legitimately ask
+    // for the same neighbour from several state-change signals, but parsing a
+    // multi-million-splat PLY more than once wastes gigabytes and can terminate
+    // the process during a late-route transition.
+    QThreadPool::globalInstance()->start([path]() {
+        loadGaussianScene(path);
+        finishGaussianScenePreload(path);
+    });
 }
 
 void GaussianSplatView::clearScene()
@@ -1166,6 +1573,7 @@ void GaussianSplatRenderer::resetResources()
     m_hdrRenderTarget.reset();
     m_hdrRenderPassDescriptor.reset();
     m_hdrTexture.reset();
+    m_depthWeightTexture.reset();
     m_environmentTexture.reset();
     m_uniformBuffer.reset();
     m_radixConfigBuffer.reset();
@@ -1183,6 +1591,7 @@ void GaussianSplatRenderer::resetResources()
     m_visibleCount = 0;
     m_lastSortMilliseconds = 0.0;
     m_orderUpdatesSinceReport = 0;
+    m_renderSequence = 0;
     m_computeWorkgroupCount = 0;
     m_radixConfigStride = 0;
     m_renderResourceSize = {};
@@ -1210,13 +1619,17 @@ void GaussianSplatRenderer::synchronize(QQuickRhiItem *item)
     if (m_scene != nextScene) {
         m_scene = nextScene;
         m_sortedCameraRevision = 0;
+        m_renderSequence = 0;
     }
     m_cameraPosition = view->cameraPosition();
     m_cameraForward = view->cameraForward();
     m_cameraUp = view->cameraUp();
     m_verticalFov = view->verticalFieldOfView();
     m_visualizationMode = view->visualizationMode();
+    m_snowAccumulation = float(view->snowAccumulation());
     m_captureEnvelopeScore = float(view->captureEnvelopeScore());
+    m_egoVehiclePosition = view->egoVehiclePosition();
+    m_egoVehicleOrientation = view->egoVehicleOrientation();
     m_cameraRevision = view->cameraRevision();
 }
 
@@ -1498,8 +1911,10 @@ bool GaussianSplatRenderer::ensureRenderResources(const QSize &outputSize)
 {
     if (!m_rhi || outputSize.isEmpty() || !m_bindings || !m_renderPassDescriptor)
         return false;
-    if (m_renderResourceSize == outputSize && m_hdrTexture && m_hdrRenderTarget
-        && m_hdrRenderPassDescriptor && m_environmentTexture && m_pipeline && m_presentPipeline) {
+    if (m_renderResourceSize == outputSize && m_hdrTexture && m_depthWeightTexture
+        && m_hdrRenderTarget
+        && m_hdrRenderPassDescriptor && m_environmentTexture && m_pipeline
+        && m_presentPipeline) {
         return true;
     }
 
@@ -1514,6 +1929,7 @@ bool GaussianSplatRenderer::ensureRenderResources(const QSize &outputSize)
     m_hdrRenderTarget.reset();
     m_hdrRenderPassDescriptor.reset();
     m_hdrTexture.reset();
+    m_depthWeightTexture.reset();
     m_renderResourceSize = {};
 
     m_hdrTexture.reset(m_rhi->newTexture(QRhiTexture::RGBA16F,
@@ -1523,8 +1939,18 @@ bool GaussianSplatRenderer::ensureRenderResources(const QSize &outputSize)
     if (!m_hdrTexture->create())
         return false;
     m_hdrTexture->setName("Servo Gaussian HDR accumulation");
-    QRhiTextureRenderTargetDescription targetDescription(
-        QRhiColorAttachment(m_hdrTexture.get()));
+    m_depthWeightTexture.reset(m_rhi->newTexture(QRhiTexture::RGBA16F,
+                                                  outputSize,
+                                                  1,
+                                                  QRhiTexture::RenderTarget));
+    if (!m_depthWeightTexture->create())
+        return false;
+    m_depthWeightTexture->setName("Servo Gaussian depth-weight accumulation");
+    QRhiTextureRenderTargetDescription targetDescription;
+    targetDescription.setColorAttachments({
+        QRhiColorAttachment(m_hdrTexture.get()),
+        QRhiColorAttachment(m_depthWeightTexture.get()),
+    });
     m_hdrRenderTarget.reset(m_rhi->newTextureRenderTarget(targetDescription));
     m_hdrRenderPassDescriptor.reset(
         m_hdrRenderTarget->newCompatibleRenderPassDescriptor());
@@ -1558,7 +1984,10 @@ bool GaussianSplatRenderer::ensureRenderResources(const QSize &outputSize)
     blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
     blend.srcAlpha = QRhiGraphicsPipeline::One;
     blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    m_pipeline->setTargetBlends({ blend });
+    // The first target accumulates premultiplied colour/opacity. The second
+    // accumulates camera-Z * alpha and alpha with the identical front-to-back
+    // transmittance, yielding an expected finite-surface depth for diagnostics.
+    m_pipeline->setTargetBlends({ blend, blend });
     m_pipeline->setShaderResourceBindings(m_bindings.get());
     m_pipeline->setRenderPassDescriptor(m_hdrRenderPassDescriptor.get());
     if (!m_pipeline->create())
@@ -1651,6 +2080,13 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
                            kNearPlane,
                            1000.0f);
     CameraUniforms uniforms {};
+    // Projection must follow every physics frame, but a full four-pass radix
+    // sort over 2-3M splats is the dominant drive-view cost. Preserve the last
+    // stable order for one intervening frame on large fields. The projected
+    // ellipses still update every frame, while sort dispatches are halved.
+    const quint64 sortCadence = m_scene->count >= 2'000'000 ? 2u : 1u;
+    const bool sortThisFrame = m_renderSequence == 0
+                               || (m_renderSequence % sortCadence) == 0;
     std::memcpy(uniforms.view, view.constData(), sizeof(uniforms.view));
     std::memcpy(uniforms.projection, projection.constData(), sizeof(uniforms.projection));
     uniforms.camera[0] = m_cameraPosition.x();
@@ -1679,10 +2115,20 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     // than an explicit hole and previously caused the fiberglass failure.
     uniforms.environmentFallback[3] = 0.18f + 0.17f * captureSupport;
     uniforms.stabilization[0] = captureSupport;
+    // The preprocess shader must not replace the retained order with identity
+    // IDs on an interleaved no-sort frame.
+    uniforms.stabilization[1] = sortThisFrame ? 1.0f : 0.0f;
+    uniforms.stabilization[2] = 0.0f;
+    uniforms.stabilization[3] = 0.0f;
+    const QVector3D weatherUp = normalizedOr(m_scene->navigationUp,
+                                              QVector3D(0.0f, 1.0f, 0.0f));
+    uniforms.weather[0] = weatherUp.x();
+    uniforms.weather[1] = weatherUp.y();
+    uniforms.weather[2] = weatherUp.z();
+    uniforms.weather[3] = std::clamp(m_snowAccumulation, 0.0f, 1.0f);
 
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->updateDynamicBuffer(m_uniformBuffer.get(), 0, sizeof(uniforms), &uniforms);
-
     // Projection, conservative ellipse culling, exact depth keys, and the
     // stable four-pass radix sort all use this frame's camera snapshot.  Each
     // producer/consumer transition is a separate QRhi compute pass so QRhi can
@@ -1692,35 +2138,37 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     commandBuffer->setShaderResources(m_preprocessBindings.get());
     commandBuffer->dispatch(int(m_computeWorkgroupCount), 1, 1);
     commandBuffer->endComputePass();
-    for (quint32 pass = 0; pass < kRadixPassCount; ++pass) {
-        commandBuffer->beginComputePass();
-        commandBuffer->setComputePipeline(m_histogramPipeline.get());
-        commandBuffer->setShaderResources(m_histogramBindings[pass].get());
-        commandBuffer->dispatch(int(m_computeWorkgroupCount), 1, 1);
-        commandBuffer->endComputePass();
+    if (sortThisFrame) {
+        for (quint32 pass = 0; pass < kRadixPassCount; ++pass) {
+            commandBuffer->beginComputePass();
+            commandBuffer->setComputePipeline(m_histogramPipeline.get());
+            commandBuffer->setShaderResources(m_histogramBindings[pass].get());
+            commandBuffer->dispatch(int(m_computeWorkgroupCount), 1, 1);
+            commandBuffer->endComputePass();
 
-        commandBuffer->beginComputePass();
-        commandBuffer->setComputePipeline(m_prefixPipeline.get());
-        commandBuffer->setShaderResources(m_prefixBindings[pass].get());
-        commandBuffer->dispatch(1, 1, 1);
-        commandBuffer->endComputePass();
+            commandBuffer->beginComputePass();
+            commandBuffer->setComputePipeline(m_prefixPipeline.get());
+            commandBuffer->setShaderResources(m_prefixBindings[pass].get());
+            commandBuffer->dispatch(1, 1, 1);
+            commandBuffer->endComputePass();
 
-        commandBuffer->beginComputePass();
-        commandBuffer->setComputePipeline(m_digitPrefixPipeline.get());
-        commandBuffer->setShaderResources(m_digitPrefixBindings[pass].get());
-        commandBuffer->dispatch(1, 1, 1);
-        commandBuffer->endComputePass();
+            commandBuffer->beginComputePass();
+            commandBuffer->setComputePipeline(m_digitPrefixPipeline.get());
+            commandBuffer->setShaderResources(m_digitPrefixBindings[pass].get());
+            commandBuffer->dispatch(1, 1, 1);
+            commandBuffer->endComputePass();
 
-        commandBuffer->beginComputePass();
-        commandBuffer->setComputePipeline(m_scatterPipeline.get());
-        commandBuffer->setShaderResources(m_scatterBindings[pass].get());
-        commandBuffer->dispatch(int(m_computeWorkgroupCount), 1, 1);
-        commandBuffer->endComputePass();
+            commandBuffer->beginComputePass();
+            commandBuffer->setComputePipeline(m_scatterPipeline.get());
+            commandBuffer->setShaderResources(m_scatterBindings[pass].get());
+            commandBuffer->dispatch(int(m_computeWorkgroupCount), 1, 1);
+            commandBuffer->endComputePass();
+        }
+        m_sortedCameraRevision = m_cameraRevision;
+        ++m_orderUpdatesSinceReport;
     }
-    m_sortedCameraRevision = m_cameraRevision;
     m_visibleCount = m_scene->count;
     m_lastSortMilliseconds = 0.0;
-    ++m_orderUpdatesSinceReport;
 
     // RGB remains premultiplied by finite-splat alpha.  The presentation pass
     // combines the remaining transmittance with only observed directional sky
@@ -1752,6 +2200,7 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     reportStats(frame.nsecsElapsed() / 1'000'000.0,
                 commandBuffer->lastCompletedGpuTime() * 1000.0,
                 m_lastSortMilliseconds);
+    ++m_renderSequence;
 }
 
 void GaussianSplatRenderer::reportStats(double frameMilliseconds,

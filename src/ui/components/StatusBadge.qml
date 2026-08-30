@@ -20,9 +20,11 @@ Rectangle {
         return Theme.textMuted;
     }
 
-    implicitWidth: row.implicitWidth + 14
+    implicitWidth: Math.min(140, Math.max(56, row.implicitWidth + 14))
     implicitHeight: 20
-    radius: height / 2 - 3
+    radius: 6
+    clip: true
+    Layout.maximumWidth: 140
     color: {
         if (root.tone === "success")
             return Theme.tintSuccess;
@@ -34,10 +36,14 @@ Rectangle {
             return Theme.tintInfo;
         return Theme.panelRaised;
     }
+    border.width: root.tone === "neutral" ? 1 : 0
+    border.color: Theme.borderSoft
 
     Behavior on color {
+        enabled: Theme.motionEnabled
         ColorAnimation {
             duration: Theme.animBase
+            easing.type: Easing.OutCubic
         }
     }
 
@@ -68,6 +74,8 @@ Rectangle {
             font.pixelSize: 9
             font.weight: Font.DemiBold
             font.letterSpacing: 0.4
+            elide: Text.ElideRight
+            maximumLineCount: 1
         }
     }
 }

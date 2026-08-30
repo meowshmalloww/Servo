@@ -11,7 +11,7 @@ is mocked, simulated as a stand-in for reality, or fabricated.
 CAMPAIGN
   -> baseline run          (deterministic scenario runner + trained policy)
   -> FAILURE_DETECTED      (deterministic evaluators over measured telemetry)
-  -> hypotheses            (deterministic rule engine; Gemini via same interface)
+  -> hypotheses            (Gemini structured diagnostician or deterministic fallback)
   -> counterfactuals       (immutable derived scenarios x seed arms)
   -> ROOT_CAUSE_ESTABLISHED (deterministic causal gate over outcomes only)
   -> curriculum            (targeted pools; hidden seeds sealed BEFORE training)
@@ -72,7 +72,8 @@ Transitions are enforced by `tools/realityci/state_machine.py`
 | `exam/promotion.py` | truth-table gate; identity + isolation checks |
 | `capabilities/register.py` | state machine per capability; debt formula; next-weakness selector |
 | `capabilities/world_scout.py` | BLOCKED_MISSING_REALITY → sealed capture missions |
-| `adk_graph.py` | Google ADK 2.7 SequentialAgent over the 12 pipeline states; session persistence |
+| `assistant_tools.py` | bounded Gemini/OpenAI tool planner; ten explicit campaign tools only |
+| `adk_graph.py` | Google ADK 2.7 SequentialAgent over the 12 pipeline states; durable resume |
 | `security_audit.py` | secret/path/license release gate → docs/SECURITY_AND_PROVENANCE.md |
 | `orchestrator.py` | fsync'd event log, atomic state, idempotent resumable steps |
 | `cli.py` | `train-baseline`, `evaluate`, `run-campaign` (+ PASS/FAIL receipt) |
@@ -91,6 +92,12 @@ Transitions are enforced by `tools/realityci/state_machine.py`
    and regression records, and isolation receipt presence.
 5. **Idempotency/resume**: events carry monotonic sequence + idempotency
    key; re-running a terminal campaign emits nothing.
+6. **Safe assistant boundary**: Gemini/OpenAI may select an allowlisted tool,
+   but only deterministic campaign code changes state or decides promotion.
+7. **Local API lifecycle**: token authentication (when configured), persistent
+   request idempotency, structured errors, cancellation, artifact retrieval,
+   campaign listing, restart/resume, reconnecting clients, and a PID-guarded
+   single local API process.
 
 ## Honest limitations (current build)
 
@@ -131,17 +138,50 @@ $py = 'C:\Users\wenje\AppData\Local\Servo\reconstruction\venv-py311-cu128\Script
 ## Desktop client and control API (wired)
 
 The Qt desktop app ships a real HTTP client singleton
-(`src/ui/realityci/RealityCIController.{h,cpp}`) that the Runs / Diagnose /
-Train / Verify / Capabilities workspaces bind to. It never invents data:
-every number comes from an event served by the control API.
+(`src/ui/realityci/RealityCIController.{h,cpp}`). The primary Runs workspace
+now presents one campaign journey: Failure, Diagnosis, Experiments, Training,
+Verification, Decision, Reality Debt, and Next action. The disconnected
+Diagnose / Train / Verify / Capabilities workbench shells are not primary
+navigation. It never invents campaign data: every record comes from the API's
+durable event log.
 
 ```powershell
 # serve the API locally (no credentials needed)
 & $py -m uvicorn cloud.control_api.app.main:app --port 8000
 
 # then in Servo: Runs -> API URL http://127.0.0.1:8000 -> Connect ->
-# Create Campaign -> Start Run. Point at Cloud Run later; only the URL changes.
+# Create Campaign -> Start Run. The Assistant can also invoke the same bounded
+# tools using Gemini or OpenAI. Point at Cloud Run later; only the URL changes.
 ```
+
+Control API surface:
+
+- `GET /v1/campaigns`, `GET /v1/campaigns/{id}/state`, and `/events`
+- `POST /v1/campaigns/{id}/run`, `/resume`, `/step`, and `/cancel`
+- `GET /v1/campaigns/{id}/artifacts` and hash-bound artifact download
+- `GET /v1/assistant/tools`, `POST /v1/assistant/plan`, and `/execute`
+- explicit tool execution for create/start/status/explain/counterfactuals/
+  training/hidden-exam/comparison/cancel/next-weakness
+
+`Start-Servo.ps1` owns `tmp/local-control-api/api.pid`, reuses a healthy local
+listener, removes stale ownership, and refuses to launch a second unhealthy
+recorded process.
+
+## Verification receipt (2026-08-27)
+
+- RealityCI Python suite: **110 passed, 2 optional skips**.
+- Google ADK environment: **3 passed**, including fresh-process resume,
+  byte-stable terminal replay, no duplicate idempotency keys, and recovery
+  from an interrupted campaign.
+- Native Qt/QML build: successful; CTest: **10/10 passed**.
+- Live HTTP smoke: one local API listener; a campaign traversed the complete
+  loop and ended `completed_rejected` through the deterministic safety gate;
+  80 artifacts were retrievable.
+
+The Gemini and OpenAI structured providers are implemented and schema-tested.
+The receipt above does not claim that a paid external model request was made;
+its live assistant smoke used the deterministic planner so verification was
+repeatable and cost-free.
 
 Campaign gates and sizes are stored in the sealed `campaign.json` record at
 create time and are reconstructed from it on every resumed step, so strict

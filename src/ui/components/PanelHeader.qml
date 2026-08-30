@@ -12,13 +12,24 @@ Rectangle {
     property string actionToolTip: ""
     signal actionTriggered()
 
-    implicitHeight: Theme.panelHeaderHeight
+    implicitHeight: Theme.panelHeaderHeight + 1
     color: "transparent"
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: Theme.borderSoft
+        opacity: 0.45
+        visible: root.title.length > 0
+    }
 
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: 12
         anchors.rightMargin: 6
+        anchors.bottomMargin: 1
         spacing: 8
 
         SvgIcon {
@@ -34,7 +45,9 @@ Rectangle {
             font.family: Theme.uiFont
             font.pixelSize: 11
             font.weight: Font.DemiBold
-            font.letterSpacing: 0.3
+            font.letterSpacing: 0.35
+            elide: Text.ElideRight
+            Layout.maximumWidth: 180
         }
 
         Item {
@@ -46,9 +59,10 @@ Rectangle {
             text: root.subtitle
             color: Theme.textMuted
             font.family: Theme.uiFont
-            font.pixelSize: 10
+            font.pixelSize: 9
             elide: Text.ElideRight
             Layout.maximumWidth: 220
+            Layout.alignment: Qt.AlignVCenter
         }
 
         IconButton {

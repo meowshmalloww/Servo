@@ -10,18 +10,20 @@ Panel {
     property bool expanded: false
     property int currentTab: 0
     property var tabs: ["Problems", "Output", "Terminal"]
+    readonly property var tabIcons: ["warning", "table", "terminal"]
 
     function showTab(index) {
         currentTab = Math.max(0, Math.min(tabs.length - 1, index));
         expanded = true;
     }
 
-    implicitHeight: expanded ? 218 : 31
+    implicitHeight: expanded ? 248 : 32
 
     Behavior on implicitHeight {
+        enabled: Theme.motionEnabled
         NumberAnimation {
-            duration: Theme.animMove
-            easing.type: Easing.InOutCubic
+            duration: Theme.animDrawer
+            easing.type: Easing.OutCubic
         }
     }
 
@@ -58,13 +60,14 @@ Panel {
                 Repeater {
                     model: root.tabs
 
-                    delegate: TopTab {
+                    delegate: TextButton {
                         required property int index
                         required property string modelData
                         text: modelData
-                        current: root.currentTab === index && root.expanded
-                        implicitWidth: Math.max(72, contentItem.implicitWidth + 24)
-                        implicitHeight: 31
+                        iconSource: Theme.icon(root.tabIcons[index])
+                        compact: true
+                        selected: root.currentTab === index && root.expanded
+                        implicitHeight: 27
                         onClicked: {
                             if (root.currentTab === index && root.expanded)
                                 root.expanded = false;

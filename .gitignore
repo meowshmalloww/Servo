@@ -58,6 +58,7 @@ venv/
 /diagnostics/
 /campaigns/
 /external/
+/third_party/
 /.serena/
 /runtime/
 
@@ -65,6 +66,11 @@ venv/
 # checked-in fixtures remain trackable outside these paths.
 /simulations/runtime/
 /simulations/sim-*/
+/simulations/weather-state.json
+
+# The original Khronos sample is retained locally as source evidence; Servo
+# packages only the scene-trimmed runtime derivative listed in CMake.
+/src/ui/assets/vehicles/ToyCar.glb
 
 # Generated demo evidence. Keep the compact baseline/checkpoints and receipts,
 # but regenerate per-timestep frame dumps locally.

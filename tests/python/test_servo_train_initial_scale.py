@@ -54,6 +54,42 @@ def reconstruction_for_depths(depths: list[float], focals: list[float] | None = 
 
 
 class InitialScaleTests(unittest.TestCase):
+    def test_direct_da3_policy_is_sealed_to_t2_diagnostic(self) -> None:
+        policy = {
+            "schema": servo_train.DIRECT_INITIAL_SCALE_SCHEMA,
+            "method": servo_train.DIRECT_INITIAL_SCALE_METHOD,
+            "targetRadiusPixels": 1.75,
+            "maximumCappedFraction": 1.0,
+            "minimumValidObservations": 3,
+            "covariance": "isotropic",
+            "generatedEvidence": False,
+        }
+        config = {
+            "pipelineRevision": "t2-da3-fullres-rgb-3dgs-v3",
+            "diagnosticProvenance": {
+                "schema": servo_train.DIAGNOSTIC_PROVENANCE_SCHEMA,
+                "nonPublishable": True,
+            },
+        }
+        self.assertTrue(servo_train.supported_initial_scale_contract(config, policy))
+        self.assertFalse(
+            servo_train.supported_initial_scale_contract(
+                {**config, "pipelineRevision": "r17-production"}, policy
+            )
+        )
+        self.assertFalse(
+            servo_train.supported_initial_scale_contract(
+                {
+                    **config,
+                    "diagnosticProvenance": {
+                        "schema": servo_train.DIAGNOSTIC_PROVENANCE_SCHEMA,
+                        "nonPublishable": False,
+                    },
+                },
+                policy,
+            )
+        )
+
     def test_projected_track_cap_matches_pinhole_radius(self) -> None:
         caps, stats = servo_train.projected_track_scale_caps(
             reconstruction_for_depths([10.0, 10.0, 10.0]),

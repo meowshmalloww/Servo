@@ -41,11 +41,12 @@ T.Button {
         }
     }
 
-    scale: control.pressed ? 0.92 : 1.0
+    scale: control.pressed && control.enabled ? 0.94 : 1.0
 
     Behavior on scale {
+        enabled: Theme.motionEnabled
         NumberAnimation {
-            duration: Theme.animFast
+            duration: 90
             easing.type: Easing.OutCubic
         }
     }

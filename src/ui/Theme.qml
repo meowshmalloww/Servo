@@ -94,12 +94,16 @@ QtObject {
 
     // ------------------------------------------------------------------
     // Motion - short, soft, consistent. Users can disable non-essential motion.
+    // Professional timing: fast for micro feedback, base for color/state,
+    // move for layout and panel motion, slow for workspace entry.
+    // All curves resolve with Easing.OutCubic family for uniform feel.
     // ------------------------------------------------------------------
     property bool motionEnabled: true
-    readonly property int animFast: motionEnabled ? 130 : 0
-    readonly property int animBase: motionEnabled ? 190 : 0
-    readonly property int animSlow: motionEnabled ? 300 : 0
-    readonly property int animMove: motionEnabled ? 240 : 0
+    readonly property int animFast: motionEnabled ? 140 : 0
+    readonly property int animBase: motionEnabled ? 180 : 0
+    readonly property int animSlow: motionEnabled ? 280 : 0
+    readonly property int animMove: motionEnabled ? 260 : 0
+    readonly property int animDrawer: motionEnabled ? 220 : 0
 
     function icon(name) {
         return Qt.resolvedUrl("icons/" + name + ".svg");

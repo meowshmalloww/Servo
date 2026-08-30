@@ -19,6 +19,7 @@ private slots:
     void readsR6PreferredQualityShape();
     void rejectsArtifactOutsideWorldBundle();
     void filtersSortsAndPersistsAliases();
+    void migratesOnceToBestQualifiedVisualRoute();
     void deletesOnlyKnownJobDirectory();
 
 private:
@@ -66,6 +67,7 @@ void WorldLibraryModelTests::discoversVerifiedPublishedJobs()
              QFileInfo(worldPath).canonicalFilePath());
     QVERIFY(model.totalBytes() > 0);
     QVERIFY(!model.selectedWorld().value(QStringLiteral("previewUrl")).toUrl().isEmpty());
+    QVERIFY(model.selectedWorld().value(QStringLiteral("plyUrl")).toUrl().isLocalFile());
     QCOMPARE(model.data(item, WorldLibraryModel::RecordedFrameCountRole).toInt(), 2);
     const QVariantList recordedFrames = model.data(
         item, WorldLibraryModel::RecordedFrameUrlsRole).toList();
@@ -224,6 +226,71 @@ void WorldLibraryModelTests::filtersSortsAndPersistsAliases()
     QVERIFY(restored.selectWorld(alphaId));
     QCOMPARE(restored.selectedWorld().value(QStringLiteral("displayName")).toString(),
              QStringLiteral("Zebra Courtyard"));
+}
+
+void WorldLibraryModelTests::migratesOnceToBestQualifiedVisualRoute()
+{
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString jobsRoot = QDir(temporary.path()).filePath(QStringLiteral("jobs"));
+    const QString catalogPath = QDir(temporary.path()).filePath(QStringLiteral("library.json"));
+    const QString oldId = QStringLiteral("old-selected-world");
+    const QString t5Id = QStringLiteral("yosemite-t5-hybrid-full-route-v1-20260828");
+    QVERIFY(!createWorld(jobsRoot,
+                         oldId,
+                         QStringLiteral("Old world"),
+                         QStringLiteral("2026-08-28T18:00:00.000Z"))
+                 .isEmpty());
+    const QString t5WorldPath = createWorld(jobsRoot,
+                                            t5Id,
+                                            QStringLiteral("Yosemite T5 - Hybrid Full Route (Accepted)"),
+                                            QStringLiteral("2026-08-28T17:00:00.000Z"));
+    QVERIFY(!t5WorldPath.isEmpty());
+
+    const QString manifestPath = QDir(t5WorldPath).filePath(QStringLiteral("world.json"));
+    QFile manifestFile(manifestPath);
+    QVERIFY(manifestFile.open(QIODevice::ReadOnly));
+    QJsonObject manifest = QJsonDocument::fromJson(manifestFile.readAll()).object();
+    manifestFile.close();
+    QJsonObject quality = manifest.value(QStringLiteral("quality")).toObject();
+    quality.insert(QStringLiteral("tier"), QStringLiteral("hackathon-visual-route"));
+    manifest.insert(QStringLiteral("quality"), quality);
+    QJsonArray routeTiles;
+    for (int index = 0; index < 5; ++index) {
+        const QString relativePath = QStringLiteral("tiles/tile-%1.ply").arg(index);
+        QVERIFY(writeFile(QDir(t5WorldPath).filePath(relativePath), QByteArrayLiteral("ply\n")));
+        routeTiles.append(QJsonObject {
+            { QStringLiteral("tileId"), QStringLiteral("tile-%1").arg(index) },
+            { QStringLiteral("ply"), relativePath },
+            { QStringLiteral("cameraStart"), index * 10 },
+            { QStringLiteral("cameraEndExclusive"), (index + 1) * 10 },
+            { QStringLiteral("cameraCount"), 10 },
+            { QStringLiteral("gaussianCount"), 1000 },
+        });
+    }
+    manifest.insert(QStringLiteral("routeTiles"), routeTiles);
+    QVERIFY(writeFile(manifestPath,
+                      QJsonDocument(manifest).toJson(QJsonDocument::Compact)));
+
+    const QJsonObject legacyCatalog {
+        { QStringLiteral("schema"), QStringLiteral("servo.world-library/v1") },
+        { QStringLiteral("selectedWorldId"), oldId },
+        { QStringLiteral("selectionPolicyVersion"), 5 },
+        { QStringLiteral("aliases"), QJsonObject {} },
+    };
+    QVERIFY(writeFile(catalogPath,
+                      QJsonDocument(legacyCatalog).toJson(QJsonDocument::Compact)));
+
+    {
+        WorldLibraryModel model(jobsRoot, catalogPath);
+        QTRY_VERIFY_WITH_TIMEOUT(!model.busy(), 10000);
+        QCOMPARE(model.selectedWorldId(), t5Id);
+        QVERIFY(model.selectWorld(oldId));
+    }
+
+    WorldLibraryModel restored(jobsRoot, catalogPath);
+    QTRY_VERIFY_WITH_TIMEOUT(!restored.busy(), 10000);
+    QCOMPARE(restored.selectedWorldId(), oldId);
 }
 
 void WorldLibraryModelTests::deletesOnlyKnownJobDirectory()

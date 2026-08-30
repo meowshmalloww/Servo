@@ -18,6 +18,7 @@ private slots:
     void extractsDelayedText();
     void persistsLocalResponsesAndJobs();
     void dispatchesLocalWorldActions();
+    void recordsVerifiedControlPlaneMessages();
     void extractsApiError();
     void liveVertexRequest();
     void liveOpenAiRequest();
@@ -34,11 +35,35 @@ void AiChatControllerTests::dispatchesLocalWorldActions()
     QCOMPARE(actionSpy.first().at(1).toString(), QStringLiteral("r17"));
     QCOMPARE(controller.count(), 2);
 
-    QVERIFY(controller.runLocalAction(QStringLiteral("show rain")));
+    QVERIFY(controller.runLocalAction(QStringLiteral("enable snow accumulation")));
     QCOMPARE(actionSpy.count(), 2);
     QCOMPARE(actionSpy.last().at(0).toString(), QStringLiteral("weather"));
-    QCOMPARE(actionSpy.last().at(1).toString(), QStringLiteral("rain"));
+    QCOMPARE(actionSpy.last().at(1).toString(), QStringLiteral("snow"));
+
+    QVERIFY(controller.runLocalAction(QStringLiteral("show rain")));
+    QCOMPARE(actionSpy.count(), 3);
+    QCOMPARE(actionSpy.last().at(0).toString(), QStringLiteral("weather"));
+    QCOMPARE(actionSpy.last().at(1).toString(), QStringLiteral("clear"));
+    QVERIFY(controller.runLocalAction(QStringLiteral("show flood water")));
+    QCOMPARE(actionSpy.last().at(0).toString(), QStringLiteral("weather"));
+    QCOMPARE(actionSpy.last().at(1).toString(), QStringLiteral("clear"));
+    QVERIFY(controller.runLocalAction(QStringLiteral("add fog")));
+    QCOMPARE(actionSpy.last().at(1).toString(), QStringLiteral("clear"));
+    QVERIFY(controller.runLocalAction(QStringLiteral("make the road wet")));
+    QCOMPARE(actionSpy.last().at(1).toString(), QStringLiteral("clear"));
     QVERIFY(!controller.runLocalAction(QStringLiteral("explain depth ambiguity")));
+}
+
+void AiChatControllerTests::recordsVerifiedControlPlaneMessages()
+{
+    AiChatController controller;
+    controller.recordExternalMessage(QStringLiteral("user"), QStringLiteral("List worlds"));
+    controller.recordExternalMessage(QStringLiteral("assistant"), QStringLiteral("Found 24 worlds."));
+    QCOMPARE(controller.count(), 2);
+    QCOMPARE(controller.data(controller.index(0), AiChatController::AuthorRole).toString(),
+             QStringLiteral("user"));
+    QCOMPARE(controller.data(controller.index(1), AiChatController::ContentRole).toString(),
+             QStringLiteral("Found 24 worlds."));
 }
 
 void AiChatControllerTests::mapsModelsAndEffort()

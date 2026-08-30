@@ -6,10 +6,27 @@
 #include <QNetworkRequest>
 #include <QSettings>
 #include <QUrlQuery>
+#include <QUuid>
 
 namespace {
 constexpr auto kTransferTimeout = 15 * 60 * 1000;
 constexpr auto kDefaultBaseUrl = "http://127.0.0.1:8000";
+
+QString apiModelId(const QString &displayName)
+{
+    const QString value = displayName.trimmed();
+    if (value.startsWith(QStringLiteral("Gemini 3.7")))
+        return QStringLiteral("gemini-3.7-flash");
+    if (value.startsWith(QStringLiteral("Gemini 3.6")))
+        return QStringLiteral("gemini-3.6-flash");
+    if (value == QStringLiteral("GPT-5.6 Sol"))
+        return QStringLiteral("gpt-5.6-sol");
+    if (value == QStringLiteral("GPT-5.6 Terra"))
+        return QStringLiteral("gpt-5.6-terra");
+    if (value == QStringLiteral("GPT-5.6 Luna"))
+        return QStringLiteral("gpt-5.6-luna");
+    return value.contains(QLatin1Char(' ')) ? QString() : value;
+}
 } // namespace
 
 RealityCIController::RealityCIController(QObject *parent)
@@ -27,6 +44,9 @@ RealityCIController::RealityCIController(QObject *parent)
             m_campaignState = QStringLiteral("restoring");
     }
     m_network.setTransferTimeout(kTransferTimeout);
+    m_reconnectTimer.setSingleShot(true);
+    m_reconnectTimer.setInterval(3000);
+    connect(&m_reconnectTimer, &QTimer::timeout, this, &RealityCIController::connectToServer);
 }
 
 int RealityCIController::rowCount(const QModelIndex &parent) const
@@ -135,6 +155,11 @@ bool RealityCIController::busy() const
     return m_busy;
 }
 
+bool RealityCIController::assistantBusy() const
+{
+    return m_assistantBusy;
+}
+
 QString RealityCIController::lastError() const
 {
     return m_lastError;
@@ -160,6 +185,21 @@ bool RealityCIController::terminal() const
 bool RealityCIController::hasCampaign() const
 {
     return !m_campaignId.isEmpty();
+}
+
+QVariantList RealityCIController::campaigns() const
+{
+    return m_campaigns;
+}
+
+QVariantList RealityCIController::artifacts() const
+{
+    return m_artifacts;
+}
+
+QString RealityCIController::assistantResult() const
+{
+    return m_assistantResult;
 }
 
 void RealityCIController::setBaseUrl(const QString &baseUrl)
@@ -192,12 +232,22 @@ void RealityCIController::setBusy(bool value)
     emit busyChanged();
 }
 
+void RealityCIController::setAssistantBusy(bool value)
+{
+    if (m_assistantBusy == value)
+        return;
+    m_assistantBusy = value;
+    emit assistantBusyChanged();
+}
+
 void RealityCIController::fail(const QString &message)
 {
     m_lastError = message;
     setBusy(false);
     setConnectionState(QStringLiteral("error"));
     emit lastErrorChanged();
+    if (!m_reconnectTimer.isActive())
+        m_reconnectTimer.start();
 }
 
 void RealityCIController::resetCampaign()
@@ -232,7 +282,8 @@ QNetworkReply *RealityCIController::get(const QString &path)
     return m_network.get(request);
 }
 
-QNetworkReply *RealityCIController::post(const QString &path, const QJsonObject &body)
+QNetworkReply *RealityCIController::post(const QString &path, const QJsonObject &body,
+                                         const QString &idempotencyKey)
 {
     QNetworkRequest request{ QUrl(m_baseUrl + path) };
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -240,7 +291,23 @@ QNetworkReply *RealityCIController::post(const QString &path, const QJsonObject 
                          QNetworkRequest::NoLessSafeRedirectPolicy);
     if (!m_token.isEmpty())
         request.setRawHeader("Authorization", "Bearer " + m_token.toUtf8());
+    if (!idempotencyKey.isEmpty())
+        request.setRawHeader("Idempotency-Key", idempotencyKey.toUtf8());
     return m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+}
+
+QString RealityCIController::replyError(QNetworkReply *reply, const QString &fallback)
+{
+    const QByteArray bytes = reply->readAll();
+    const QJsonObject root = QJsonDocument::fromJson(bytes).object();
+    const QJsonObject error = root.value(QLatin1String("error")).toObject();
+    const QString message = error.value(QLatin1String("message")).toString();
+    const QString requestId = error.value(QLatin1String("request_id")).toString();
+    if (!message.isEmpty())
+        return requestId.isEmpty() ? message : QStringLiteral("%1 (%2)").arg(message, requestId);
+    if (!bytes.isEmpty())
+        return QString::fromUtf8(bytes);
+    return fallback;
 }
 
 void RealityCIController::connectToServer()
@@ -258,7 +325,9 @@ void RealityCIController::connectToServer()
         m_lastError.clear();
         emit lastErrorChanged();
         setConnectionState(QStringLiteral("online"));
+        m_reconnectTimer.stop();
         setBusy(false);
+        listCampaigns();
         refresh();
     });
 }
@@ -367,12 +436,13 @@ void RealityCIController::createCampaign(const QString &checkpointUri,
     body.insert(QLatin1String("training_epochs"), trainingEpochs);
     body.insert(QLatin1String("promotion_target_success_rate"), promotionTarget);
     body.insert(QLatin1String("promotion_min_lower_bound"), promotionFloor);
-    QNetworkReply *reply = post(QStringLiteral("/v1/campaigns"), body);
+    QNetworkReply *reply = post(QStringLiteral("/v1/campaigns"), body,
+                                QUuid::createUuid().toString(QUuid::WithoutBraces));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
             fail(QStringLiteral("create campaign failed: %1")
-                     .arg(QString::fromUtf8(reply->readAll())));
+                     .arg(replyError(reply, reply->errorString())));
             return;
         }
         applyStateJson(QJsonDocument::fromJson(reply->readAll()).object());
@@ -389,11 +459,12 @@ void RealityCIController::stepCampaign()
     clearError();
     setBusy(true);
     QNetworkReply *reply =
-        post(QStringLiteral("/v1/campaigns/%1/step").arg(m_campaignId), {});
+        post(QStringLiteral("/v1/campaigns/%1/step").arg(m_campaignId), {},
+             QUuid::createUuid().toString(QUuid::WithoutBraces));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            fail(QStringLiteral("step failed: %1").arg(QString::fromUtf8(reply->readAll())));
+            fail(QStringLiteral("step failed: %1").arg(replyError(reply, reply->errorString())));
             return;
         }
         applyStateJson(QJsonDocument::fromJson(reply->readAll()).object());
@@ -410,16 +481,294 @@ void RealityCIController::runCampaign()
     clearError();
     setBusy(true);
     QNetworkReply *reply =
-        post(QStringLiteral("/v1/campaigns/%1/run").arg(m_campaignId), {});
+        post(QStringLiteral("/v1/campaigns/%1/resume").arg(m_campaignId), {},
+             QUuid::createUuid().toString(QUuid::WithoutBraces));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            fail(QStringLiteral("run failed: %1").arg(QString::fromUtf8(reply->readAll())));
+            fail(QStringLiteral("run failed: %1").arg(replyError(reply, reply->errorString())));
             return;
         }
         applyStateJson(QJsonDocument::fromJson(reply->readAll()).object());
         refresh();
     });
+}
+
+void RealityCIController::cancelCampaign(const QString &reason)
+{
+    if (!online() || !hasCampaign() || terminal()) {
+        fail(QStringLiteral("an active campaign is required"));
+        return;
+    }
+    clearError();
+    setBusy(true);
+    QJsonObject body;
+    body.insert(QLatin1String("reason"), reason.trimmed().isEmpty()
+                    ? QStringLiteral("cancelled by operator") : reason.trimmed());
+    QNetworkReply *reply = post(
+        QStringLiteral("/v1/campaigns/%1/cancel").arg(m_campaignId), body,
+        QUuid::createUuid().toString(QUuid::WithoutBraces));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(QStringLiteral("cancel failed: %1").arg(replyError(reply, reply->errorString())));
+            return;
+        }
+        applyStateJson(QJsonDocument::fromJson(reply->readAll()).object());
+        refresh();
+        listCampaigns();
+    });
+}
+
+void RealityCIController::listCampaigns()
+{
+    if (!online())
+        return;
+    QNetworkReply *reply = get(QStringLiteral("/v1/campaigns"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(QStringLiteral("campaign list failed: %1")
+                     .arg(replyError(reply, reply->errorString())));
+            return;
+        }
+        const QJsonArray values = QJsonDocument::fromJson(reply->readAll())
+                                      .object().value(QLatin1String("campaigns")).toArray();
+        QVariantList campaigns;
+        campaigns.reserve(values.size());
+        for (const QJsonValue &value : values)
+            campaigns.append(value.toObject().toVariantMap());
+        m_campaigns = campaigns;
+        emit campaignsChanged();
+    });
+}
+
+void RealityCIController::selectCampaign(const QString &campaignId)
+{
+    const QString selected = campaignId.trimmed();
+    if (selected.isEmpty() || selected == m_campaignId)
+        return;
+    beginResetModel();
+    m_events.clear();
+    endResetModel();
+    m_campaignId = selected;
+    m_campaignState = QStringLiteral("restoring");
+    QSettings settings;
+    settings.setValue("realityci/campaignBaseUrl", m_baseUrl);
+    settings.setValue("realityci/campaignId", m_campaignId);
+    emit campaignChanged();
+    emit eventsChanged();
+    refresh();
+}
+
+void RealityCIController::fetchArtifacts()
+{
+    if (!online() || !hasCampaign())
+        return;
+    QNetworkReply *reply = get(QStringLiteral("/v1/campaigns/%1/artifacts").arg(m_campaignId));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(QStringLiteral("artifact fetch failed: %1")
+                     .arg(replyError(reply, reply->errorString())));
+            return;
+        }
+        const QJsonArray values = QJsonDocument::fromJson(reply->readAll())
+                                      .object().value(QLatin1String("artifacts")).toArray();
+        QVariantList artifacts;
+        artifacts.reserve(values.size());
+        for (const QJsonValue &value : values)
+            artifacts.append(value.toObject().toVariantMap());
+        m_artifacts = artifacts;
+        emit artifactsChanged();
+    });
+}
+
+void RealityCIController::executeAssistantPrompt(const QString &prompt,
+                                                  const QString &provider,
+                                                  const QString &model)
+{
+    Q_UNUSED(model)
+    if (!online() || prompt.trimmed().isEmpty()) {
+        fail(QStringLiteral("connect to RealityCI before asking Servo to act"));
+        return;
+    }
+    clearError();
+    setBusy(true);
+    setAssistantBusy(true);
+    QJsonObject body;
+    body.insert(QLatin1String("prompt"), prompt.trimmed());
+    QString normalizedProvider = provider.trimmed().toLower();
+    if (normalizedProvider.contains(QLatin1String("openai"))
+        || normalizedProvider.startsWith(QLatin1String("gpt")))
+        normalizedProvider = QStringLiteral("openai");
+    else if (normalizedProvider.contains(QLatin1String("google"))
+             || normalizedProvider.startsWith(QLatin1String("gemini")))
+        normalizedProvider = QStringLiteral("gemini");
+    else if (normalizedProvider != QLatin1String("deterministic"))
+        normalizedProvider = QStringLiteral("auto");
+    body.insert(QLatin1String("provider"), normalizedProvider);
+    if (hasCampaign())
+        body.insert(QLatin1String("campaign_id"), m_campaignId);
+
+    QNetworkReply *reply = post(
+        QStringLiteral("/v1/assistant/execute"), body,
+        QUuid::createUuid().toString(QUuid::WithoutBraces));
+    m_assistantReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (m_assistantReply == reply)
+            m_assistantReply.clear();
+        setAssistantBusy(false);
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            setBusy(false);
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(QStringLiteral("assistant action failed: %1")
+                     .arg(replyError(reply, reply->errorString())));
+            return;
+        }
+        const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonObject result = object.value(QLatin1String("result")).toObject();
+        m_assistantResult = object.value(QLatin1String("message")).toString();
+        const QString tool = object.value(QLatin1String("tool")).toString();
+        if (!tool.isEmpty())
+            m_assistantResult += QStringLiteral("\nTool: %1").arg(tool);
+        emit assistantResultChanged();
+        applyStateJson(result);
+        setBusy(false);
+        listCampaigns();
+        refresh();
+    });
+}
+
+bool RealityCIController::isCampaignPrompt(const QString &prompt) const
+{
+    const QString text = prompt.toLower();
+    static const QStringList terms = {
+        QStringLiteral("campaign"), QStringLiteral("reality debt"),
+        QStringLiteral("counterfactual"), QStringLiteral("root cause"),
+        QStringLiteral("hidden exam"), QStringLiteral("checkpoint"),
+        QStringLiteral("regression"), QStringLiteral("next weakness"),
+        QStringLiteral("train the policy"), QStringLiteral("diagnose the failure"),
+        QStringLiteral("verify the policy"), QStringLiteral("cancel the run")
+    };
+    for (const QString &term : terms) {
+        if (text.contains(term))
+            return true;
+    }
+    return false;
+}
+
+bool RealityCIController::isAskPrompt(const QString &prompt) const
+{
+    if (isCampaignPrompt(prompt))
+        return true;
+    const QString text = prompt.toLower();
+    static const QStringList terms = {
+        QStringLiteral("world"), QStringLiteral("simulation"), QStringLiteral("carla"),
+        QStringLiteral("vehicle"), QStringLiteral("tinydrive"), QStringLiteral("drivema"),
+        QStringLiteral("weather"), QStringLiteral("snow"), QStringLiteral("rain"),
+        QStringLiteral("fog"), QStringLiteral("flood"), QStringLiteral("wet"),
+        QStringLiteral("build"), QStringLiteral("ffmpeg"), QStringLiteral("colmap"),
+        QStringLiteral("cuda"), QStringLiteral("gsplat"), QStringLiteral("telemetry"),
+        QStringLiteral("live state"), QStringLiteral("policy frame"), QStringLiteral("metrics"),
+        QStringLiteral("speed"), QStringLiteral("acceleration"), QStringLiteral("steering"),
+        QStringLiteral("route"), QStringLiteral("map"), QStringLiteral("execution"),
+        QStringLiteral("setting"), QStringLiteral("error"), QStringLiteral("log")
+    };
+    for (const QString &term : terms) {
+        if (text.contains(term))
+            return true;
+    }
+    return false;
+}
+
+void RealityCIController::executeAskPrompt(const QString &prompt,
+                                           const QString &provider,
+                                           const QString &model,
+                                           const QString &worldId,
+                                           const QString &simulationId)
+{
+    if (!online() || prompt.trimmed().isEmpty()) {
+        fail(QStringLiteral("connect to RealityCI before asking Servo to act"));
+        return;
+    }
+    clearError();
+    setBusy(true);
+    setAssistantBusy(true);
+    QJsonObject body;
+    body.insert(QLatin1String("prompt"), prompt.trimmed());
+    QString normalizedProvider = provider.trimmed().toLower();
+    if (normalizedProvider.contains(QLatin1String("openai")) || normalizedProvider.startsWith(QLatin1String("gpt")))
+        normalizedProvider = QStringLiteral("openai");
+    else if (normalizedProvider.contains(QLatin1String("google")) || normalizedProvider.startsWith(QLatin1String("gemini")))
+        normalizedProvider = QStringLiteral("gemini");
+    else if (normalizedProvider != QLatin1String("deterministic"))
+        normalizedProvider = QStringLiteral("auto");
+    body.insert(QLatin1String("provider"), normalizedProvider);
+    const QString selectedModel = apiModelId(model);
+    if (!selectedModel.isEmpty())
+        body.insert(QLatin1String("model"), selectedModel);
+    if (hasCampaign())
+        body.insert(QLatin1String("campaign_id"), m_campaignId);
+    if (!worldId.trimmed().isEmpty())
+        body.insert(QLatin1String("world_id"), worldId.trimmed());
+    if (!simulationId.trimmed().isEmpty())
+        body.insert(QLatin1String("simulation_id"), simulationId.trimmed());
+
+    QNetworkReply *reply = post(QStringLiteral("/v1/ask/execute"), body, QUuid::createUuid().toString(QUuid::WithoutBraces));
+    m_assistantReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (m_assistantReply == reply)
+            m_assistantReply.clear();
+        setAssistantBusy(false);
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            setBusy(false);
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            fail(QStringLiteral("Ask action failed: %1").arg(replyError(reply, reply->errorString())));
+            return;
+        }
+        const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonObject call = object.value(QLatin1String("call")).toObject();
+        const QJsonObject result = object.value(QLatin1String("result")).toObject();
+        QString tool = call.value(QLatin1String("tool")).toString();
+        if (tool.isEmpty())
+            tool = object.value(QLatin1String("tool")).toString();
+        m_assistantResult = object.value(QLatin1String("message")).toString().trimmed();
+        if (m_assistantResult.isEmpty()) {
+            m_assistantResult = object.value(QLatin1String("provider")).toString()
+                + QStringLiteral(" used ") + tool + QStringLiteral(".");
+        }
+        emit assistantResultChanged();
+        // Refresh campaign/simulation worlds as needed
+        if (object.contains(QLatin1String("result"))) {
+            // Ask tools may return campaign state inside result.result
+            QJsonObject inner = result.value(QLatin1String("result")).toObject();
+            if (inner.contains(QLatin1String("campaign_id")) || inner.contains(QLatin1String("state")))
+                applyStateJson(inner);
+        }
+        setBusy(false);
+        listCampaigns();
+        refresh();
+    });
+}
+
+void RealityCIController::cancelAssistantRequest()
+{
+    QNetworkReply *reply = m_assistantReply.data();
+    m_assistantReply.clear();
+    if (reply)
+        reply->abort();
+    setAssistantBusy(false);
+    setBusy(false);
+    m_assistantResult = QStringLiteral(
+        "Stopped. Any durable campaign already created remains available.");
+    emit assistantResultChanged();
 }
 
 void RealityCIController::forgetCampaign()

@@ -12,6 +12,7 @@ Item {
     property var detectionSeries: []
     property var speedSeries: []
     property int selectedSequence: -1
+    property bool inspectorVisible: false
     readonly property string selectedPayloadJson: {
         const count = RealityCIController.eventCount
         for (let row = 0; row < count; ++row) {
@@ -24,6 +25,24 @@ Item {
     readonly property var failurePayload: RealityCIController.latestPayload("FAILURE_DETECTED")
     readonly property var runCompletedPayload: RealityCIController.latestPayload("RUN_COMPLETED")
     readonly property var checkpointPayload: RealityCIController.latestPayload("CHECKPOINT_READY")
+    readonly property var diagnosisPayload: RealityCIController.latestPayload("HYPOTHESES_PROPOSED")
+    readonly property var rootCausePayload: RealityCIController.latestPayload("ROOT_CAUSE_ESTABLISHED")
+    readonly property var curriculumPayload: RealityCIController.latestPayload("CURRICULUM_CREATED")
+    readonly property var examPayload: RealityCIController.latestPayload("HIDDEN_EXAM_COMPLETED")
+    readonly property var regressionPayload: RealityCIController.latestPayload("REGRESSION_COMPLETED")
+    readonly property var promotedPayload: RealityCIController.latestPayload("CHECKPOINT_PROMOTED")
+    readonly property var rejectedPayload: RealityCIController.latestPayload("CHECKPOINT_REJECTED")
+    readonly property var debtPayload: RealityCIController.latestPayload("REALITY_DEBT_UPDATED")
+    readonly property var nextPayload: RealityCIController.latestPayload("NEXT_WEAKNESS_SELECTED")
+    readonly property var experimentPayloads: RealityCIController.payloadsOf("EXPERIMENT_COMPLETED")
+
+    function hasEvent(type) {
+        for (let row = 0; row < RealityCIController.eventCount; ++row) {
+            if (RealityCIController.eventAt(row).event_type === type)
+                return true
+        }
+        return false
+    }
 
     function prettyJson(text) {
         if (text.length === 0)
@@ -33,6 +52,12 @@ Item {
         } catch (error) {
             return text
         }
+    }
+
+    function value(record, key, fallback) {
+        if (record === undefined || record === null || record[key] === undefined)
+            return fallback
+        return String(record[key])
     }
 
     ColumnLayout {
@@ -60,6 +85,15 @@ Item {
                 toolTip: "Reconnect to the control API"
                 enabled: !RealityCIController.busy
                 onClicked: RealityCIController.connectToServer()
+            }
+
+            TextButton {
+                text: "Details"
+                iconSource: Theme.icon("inspector")
+                compact: true
+                selected: root.inspectorVisible
+                toolTip: root.inspectorVisible ? "Hide run details" : "Show run details"
+                onClicked: root.inspectorVisible = !root.inspectorVisible
             }
 
             TextButton {
@@ -109,6 +143,17 @@ Item {
                          : "Control API is not connected"
                 onClicked: RealityCIController.runCampaign()
             }
+
+            TextButton {
+                text: "Cancel"
+                iconSource: Theme.icon("close")
+                compact: true
+                tone: "danger"
+                visible: RealityCIController.hasCampaign && !RealityCIController.terminal
+                enabled: root.runnerAvailable && !RealityCIController.busy
+                toolTip: "Durably cancel this campaign; repeated requests are idempotent"
+                onClicked: RealityCIController.cancelCampaign("cancelled from campaign workspace")
+            }
         }
 
         SplitView {
@@ -118,9 +163,9 @@ Item {
             handle: SplitHandle { }
 
             Panel {
-                SplitView.preferredWidth: 320
+                SplitView.preferredWidth: 292
                 SplitView.minimumWidth: 260
-                SplitView.maximumWidth: 440
+                SplitView.maximumWidth: 380
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -147,6 +192,30 @@ Item {
                             width: controlScroll.availableWidth
 
                             Section {
+                                title: "Campaigns"
+                                RowLayout {
+                                    width: parent.width
+                                    spacing: 6
+                                    ComboBox {
+                                        id: campaignPicker
+                                        Layout.fillWidth: true
+                                        model: RealityCIController.campaigns
+                                        textRole: "campaign_id"
+                                        valueRole: "campaign_id"
+                                        displayText: RealityCIController.hasCampaign
+                                                     ? RealityCIController.campaignId
+                                                     : (currentText.length > 0 ? currentText : "Select campaign")
+                                        onActivated: RealityCIController.selectCampaign(currentValue)
+                                    }
+                                    IconButton {
+                                        iconSource: Theme.icon("refresh")
+                                        toolTip: "Reload durable campaigns"
+                                        onClicked: RealityCIController.listCampaigns()
+                                    }
+                                }
+                            }
+
+                            Section {
                                 title: "Connection"
                                 PropertyRow {
                                     label: "API URL"
@@ -161,6 +230,82 @@ Item {
                                         placeholderText: RealityCIController.tokenConfigured
                                                          ? "bearer token active (SERVO_API_TOKEN)"
                                                          : "no token required"
+                                    }
+                                }
+                            }
+
+                            Section {
+                                title: "Physical Simulation"
+                                summary: SimulationController.hasSession
+                                         ? SimulationController.sessionState : "No attached session"
+                                PropertyRow {
+                                    label: "Session"
+                                    labelWidth: 90
+                                    TextInput {
+                                        id: simulationSessionField
+                                        text: SimulationController.sessionId
+                                        placeholderText: "sim-…"
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Result"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: SimulationController.result.length > 0
+                                              ? SimulationController.result : SimulationController.sessionState
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Failure"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: SimulationController.failureClass
+                                        placeholderText: "None"
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Evidence"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: SimulationController.evidencePath
+                                        placeholderText: SimulationController.hasSession
+                                                         ? "Pending terminal evidence" : "Unavailable"
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Artifacts"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: SimulationController.artifactPaths
+                                        placeholderText: "Pending"
+                                    }
+                                }
+                                Item {
+                                    width: parent.width
+                                    height: 42
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 8
+                                        TextButton {
+                                            Layout.fillWidth: true
+                                            compact: true
+                                            text: "Reattach"
+                                            enabled: SimulationController.online
+                                                     && simulationSessionField.text.length > 0
+                                            onClicked: SimulationController.reattachSimulation(simulationSessionField.text)
+                                        }
+                                        TextButton {
+                                            Layout.fillWidth: true
+                                            compact: true
+                                            text: "Stop"
+                                            tone: "danger"
+                                            enabled: SimulationController.hasSession && !SimulationController.terminal
+                                            onClicked: SimulationController.stopSimulation()
+                                        }
                                     }
                                 }
                             }
@@ -240,7 +385,7 @@ Item {
 
             Panel {
                 SplitView.fillWidth: true
-                SplitView.minimumWidth: 560
+                SplitView.minimumWidth: 380
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -249,10 +394,85 @@ Item {
                     PanelHeader {
                         title: "Agent Activity Timeline"
                         subtitle: RealityCIController.online
-                                  ? RealityCIController.eventCount + " durable events"
-                                  : "Offline - connect to load records"
+                                   ? RealityCIController.eventCount + " durable events"
+                                   : "Offline - connect to load records"
                         iconSource: Theme.icon("table")
                         Layout.fillWidth: true
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 64
+                        color: Theme.panelRaised
+                        clip: true
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 1
+                            color: Theme.borderSoft
+                            opacity: 0.45
+                        }
+
+                        Flickable {
+                            id: timelineFlick
+                            anchors.fill: parent
+                            anchors.margins: 6
+                            contentWidth: timelineRow.implicitWidth + 6
+                            contentHeight: height
+                            flickableDirection: Flickable.HorizontalFlick
+                            boundsBehavior: Flickable.StopAtBounds
+                            clip: true
+                            ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded; height: 4 }
+
+                            Row {
+                                id: timelineRow
+                                height: parent.height
+                                spacing: 7
+                                Repeater {
+                                    model: [
+                                        { label: "Failure", event: "FAILURE_DETECTED" },
+                                        { label: "Diagnosis", event: "HYPOTHESES_PROPOSED" },
+                                        { label: "Experiments", event: "EXPERIMENT_COMPLETED" },
+                                        { label: "Training", event: "CHECKPOINT_READY" },
+                                        { label: "Verification", event: "HIDDEN_EXAM_COMPLETED" },
+                                        { label: "Decision", event: root.hasEvent("CHECKPOINT_PROMOTED") ? "CHECKPOINT_PROMOTED" : "CHECKPOINT_REJECTED" },
+                                        { label: "Reality Debt", event: "REALITY_DEBT_UPDATED" },
+                                        { label: "Next", event: "NEXT_WEAKNESS_SELECTED" }
+                                    ]
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        width: 108
+                                        height: 44
+                                        radius: 8
+                                        color: root.hasEvent(modelData.event) ? Theme.tintSuccess : Theme.panel
+                                        border.width: 1
+                                        border.color: root.hasEvent(modelData.event) ? Theme.success : Theme.borderSoft
+
+                                        Column {
+                                            anchors.centerIn: parent
+                                            spacing: 2
+                                            Text {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                text: modelData.label
+                                                color: Theme.text
+                                                font.family: Theme.uiFont
+                                                font.pixelSize: 9
+                                                font.weight: Font.DemiBold
+                                            }
+                                            Text {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                text: root.hasEvent(modelData.event) ? "COMPLETE" : "WAITING"
+                                                color: root.hasEvent(modelData.event) ? Theme.success : Theme.textMuted
+                                                font.family: Theme.monoFont
+                                                font.pixelSize: 8
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     DataTable {
@@ -268,7 +488,7 @@ Item {
                         emptyTitle: RealityCIController.online ? "No campaign events" : "Control API offline"
                         emptyDescription: RealityCIController.online
                                           ? "Start the control API, create a campaign, and its durable event history appears here."
-                                          : "Start the local control API (uvicorn cloud.control_api.app.main:app) or point the API URL at Cloud Run, then connect."
+                                          : "Start Servo with Start-Servo.ps1 to launch the local control API, then connect."
                         onRowActivated: function(row) {
                             root.selectedSequence =
                                 RealityCIController.data(RealityCIController.index(row, 0), "sequence")
@@ -278,9 +498,10 @@ Item {
             }
 
             Panel {
-                SplitView.preferredWidth: 330
-                SplitView.minimumWidth: 280
-                SplitView.maximumWidth: 450
+                visible: root.inspectorVisible
+                SplitView.preferredWidth: 300
+                SplitView.minimumWidth: 260
+                SplitView.maximumWidth: 400
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -342,6 +563,147 @@ Item {
                                     label: "Record"
                                     labelWidth: 90
                                     TextInput { readOnly: true; placeholderText: String(root.failurePayload.failure_id) }
+                                }
+                            }
+
+                            Section {
+                                title: "Diagnosis"
+                                visible: Object.keys(root.diagnosisPayload).length > 0
+                                PropertyRow {
+                                    label: "Method"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.diagnosisPayload, "diagnostician", "-") }
+                                }
+                                PropertyRow {
+                                    label: "Summary"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.diagnosisPayload, "summary", "-") }
+                                }
+                                PropertyRow {
+                                    label: "Root cause"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.rootCausePayload, "root_cause", "Not established") }
+                                }
+                            }
+
+                            Section {
+                                title: "Experiments"
+                                visible: root.experimentPayloads.length > 0
+                                PropertyRow {
+                                    label: "Executed"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: String(root.experimentPayloads.length) }
+                                }
+                                PropertyRow {
+                                    label: "Latest"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: root.experimentPayloads.length > 0
+                                              ? root.value(root.experimentPayloads[root.experimentPayloads.length - 1], "intervention", "-")
+                                              : "-"
+                                    }
+                                }
+                            }
+
+                            Section {
+                                title: "Training"
+                                visible: Object.keys(root.curriculumPayload).length > 0
+                                         || Object.keys(root.checkpointPayload).length > 0
+                                PropertyRow {
+                                    label: "Scenarios"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.curriculumPayload, "total_scenarios", "-") }
+                                }
+                                PropertyRow {
+                                    label: "Checkpoint"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.checkpointPayload, "candidate_sha256", "Not ready") }
+                                }
+                                PropertyRow {
+                                    label: "Val loss"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.checkpointPayload, "best_val_loss", "-") }
+                                }
+                            }
+
+                            Section {
+                                title: "Verification"
+                                visible: Object.keys(root.examPayload).length > 0
+                                         || Object.keys(root.regressionPayload).length > 0
+                                PropertyRow {
+                                    label: "Hidden exam"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: root.value(root.examPayload, "baseline_success", "-")
+                                              + " -> " + root.value(root.examPayload, "candidate_success", "-")
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Regression"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.regressionPayload, "max_drop_pp", "-") + " pp" }
+                                }
+                            }
+
+                            Section {
+                                title: "Decision"
+                                visible: Object.keys(root.promotedPayload).length > 0
+                                         || Object.keys(root.rejectedPayload).length > 0
+                                PropertyRow {
+                                    label: "Outcome"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: Object.keys(root.promotedPayload).length > 0 ? "PROMOTED" : "REJECTED"
+                                    }
+                                }
+                                PropertyRow {
+                                    label: "Decision ID"
+                                    labelWidth: 90
+                                    TextInput {
+                                        readOnly: true
+                                        text: Object.keys(root.promotedPayload).length > 0
+                                              ? root.value(root.promotedPayload, "decision_id", "-")
+                                              : root.value(root.rejectedPayload, "decision_id", "-")
+                                    }
+                                }
+                            }
+
+                            Section {
+                                title: "Reality Debt & Next Action"
+                                visible: Object.keys(root.debtPayload).length > 0
+                                         || Object.keys(root.nextPayload).length > 0
+                                PropertyRow {
+                                    label: "Debt"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.debtPayload, "total_debt", "-") }
+                                }
+                                PropertyRow {
+                                    label: "Next"
+                                    labelWidth: 90
+                                    TextInput { readOnly: true; text: root.value(root.nextPayload, "taxonomy_id", "No eligible weakness") }
+                                }
+                            }
+
+                            Section {
+                                title: "Artifacts"
+                                RowLayout {
+                                    width: parent.width
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: RealityCIController.artifacts.length + " files"
+                                        color: Theme.textSecondary
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 10
+                                    }
+                                    TextButton {
+                                        text: "Load"
+                                        compact: true
+                                        enabled: RealityCIController.hasCampaign
+                                        onClicked: RealityCIController.fetchArtifacts()
+                                    }
                                 }
                             }
 

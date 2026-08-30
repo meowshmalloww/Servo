@@ -72,7 +72,18 @@ class StepNode(BaseAgent):
         engine = self._resolve_engine()
         current = engine.current_state()
 
-        if current in TERMINAL_STATES or _index(current) > _index(CampaignState(self.expected_state)):
+        if current in TERMINAL_STATES:
+            yield Event(
+                author=self.name,
+                actions=EventActions(state_delta={
+                    "realityci.skipped": self.name,
+                    "realityci.last_state": current.value,
+                    "realityci.campaign_id": engine.campaign_id,
+                }),
+            )
+            return
+
+        if _index(current) > _index(CampaignState(self.expected_state)):
             yield Event(
                 author=self.name,
                 actions=EventActions(state_delta={

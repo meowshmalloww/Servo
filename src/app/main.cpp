@@ -11,6 +11,9 @@
 #include <QWindow>
 #include <QtLogging>
 
+#include "../ui/simulation/SimulationController.h"
+#include "../ui/simulation/SimulationFrameProvider.h"
+
 #ifdef Q_OS_WIN
 #include <dwmapi.h>
 #include <windows.h>
@@ -100,6 +103,10 @@ int main(int argc, char *argv[])
     app.setWindowIcon(QIcon(QStringLiteral(":/qt/qml/Servo/assets/servo-logo.png")));
 
     QQmlApplicationEngine engine;
+    auto *simulationFrameProvider = new SimulationFrameProvider;
+    SimulationController::setFrameProvider(simulationFrameProvider);
+    engine.addImageProvider(QStringLiteral("simulation-policy"),
+                            simulationFrameProvider);
     QObject::connect(
         &engine,
         &QQmlApplicationEngine::objectCreated,
@@ -110,6 +117,11 @@ int main(int argc, char *argv[])
                 return;
 
             QQuickGraphicsConfiguration graphicsConfiguration;
+            // LiveDriveView embeds its small native vehicle scene inline over
+            // the Gaussian QQuickRhiItem. Qt documents disabling 2D depth
+            // writes for this composition mode; otherwise Quick items can
+            // incorrectly occlude one another on Vulkan.
+            graphicsConfiguration.setDepthBufferFor2D(false);
             const bool validationEnabled =
                 qEnvironmentVariableIntValue("SERVO_VULKAN_VALIDATION") != 0;
             graphicsConfiguration.setDebugLayer(validationEnabled);

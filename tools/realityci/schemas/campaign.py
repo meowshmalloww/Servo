@@ -26,6 +26,7 @@ class CampaignConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     diagnostician: str = "deterministic"
+    diagnostician_model: Optional[str] = None
     max_counterfactuals: int = Field(ge=1, default=8)
     training_seed_pool_size: int = Field(ge=1)
     hidden_exam_size: int = Field(ge=1)

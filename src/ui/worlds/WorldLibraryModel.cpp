@@ -23,6 +23,10 @@
 namespace {
 constexpr auto worldSchema = "servo.gaussian-world/v1";
 constexpr auto catalogSchema = "servo.world-library/v1";
+// Version 6 selects the best published visual-route world by manifest quality
+// instead of naming a map or experiment. This makes the default portable to
+// any future capture while avoiding a newer rejected diagnostic.
+constexpr int latestSelectionPolicyVersion = 6;
 constexpr qint64 maximumJsonBytes = 16LL * 1024LL * 1024LL;
 constexpr qint64 maximumEventLogBytes = 32LL * 1024LL * 1024LL;
 constexpr qint64 maximumEventLineBytes = 16LL * 1024LL * 1024LL;
@@ -202,6 +206,7 @@ struct WorldLibraryModel::WorldEntry {
     QString plyPath;
     QString jobPath;
     QUrl previewUrl;
+    QUrl repairedReferenceUrl;
     QString sourceSummary;
     QDateTime createdAt;
     QString createdText;
@@ -217,6 +222,7 @@ struct WorldLibraryModel::WorldEntry {
     bool published = true;
     QString failureText;
     QVariantList recordedFrameUrls;
+    QVariantList routeTiles;
 };
 
 struct WorldLibraryModel::DeleteResult {
@@ -820,6 +826,35 @@ QVector<WorldLibraryModel::WorldEntry> WorldLibraryModel::scanJobs(
                               .toObject()
                               .value(QStringLiteral("scale"))
                               .toString(QStringLiteral("unknown"));
+        const QJsonArray routeTiles = manifest.value(QStringLiteral("routeTiles")).toArray();
+        entry.routeTiles.reserve(routeTiles.size());
+        for (const QJsonValue &tileValue : routeTiles) {
+            const QJsonObject tile = tileValue.toObject();
+            const QString tileId = tile.value(QStringLiteral("tileId")).toString();
+            const QString tilePlyPath = resolveExistingPath(
+                worldPath, tile.value(QStringLiteral("ply")).toString());
+            const QFileInfo tilePly(tilePlyPath);
+            if (tileId.isEmpty() || tilePlyPath.isEmpty() || !tilePly.isFile()
+                || !tilePly.isReadable() || tilePly.size() <= 0) {
+                entry.routeTiles.clear();
+                break;
+            }
+            entry.routeTiles.append(QVariantMap {
+                { QStringLiteral("tileId"), tileId },
+                { QStringLiteral("plyPath"), tilePlyPath },
+                { QStringLiteral("plyUrl"), QUrl::fromLocalFile(tilePlyPath) },
+                { QStringLiteral("cameraStart"),
+                  jsonInteger(tile.value(QStringLiteral("cameraStart"))) },
+                { QStringLiteral("cameraEndExclusive"),
+                  jsonInteger(tile.value(QStringLiteral("cameraEndExclusive"))) },
+                { QStringLiteral("cameraCount"),
+                  jsonInteger(tile.value(QStringLiteral("cameraCount"))) },
+                { QStringLiteral("gaussianCount"),
+                  jsonInteger(tile.value(QStringLiteral("gaussianCount"))) },
+                { QStringLiteral("sourceProfile"),
+                  tile.value(QStringLiteral("sourceProfile")).toString() },
+            });
+        }
         const QString camerasPath = resolveExistingPath(
             worldPath,
             artifacts.value(QStringLiteral("cameras")).toString(
@@ -868,6 +903,15 @@ QVector<WorldLibraryModel::WorldEntry> WorldLibraryModel::scanJobs(
         const QString previewPath = firstPreview(worldPath, artifacts);
         if (!previewPath.isEmpty())
             entry.previewUrl = QUrl::fromLocalFile(previewPath);
+        const QString repairedReferencePath = resolveExistingPath(
+            worldPath, artifacts.value(QStringLiteral("difixReference")).toString());
+        if (!repairedReferencePath.isEmpty()) {
+            const QFileInfo repairedReference(repairedReferencePath);
+            if (pathInside(worldPath, repairedReferencePath)
+                && repairedReference.isFile() && repairedReference.isReadable()) {
+                entry.repairedReferenceUrl = QUrl::fromLocalFile(repairedReferencePath);
+            }
+        }
         entry.sizeBytes = directorySize(jobPath);
         result.append(std::move(entry));
     }
@@ -1004,6 +1048,7 @@ void WorldLibraryModel::loadCatalog()
         return;
     }
     m_selectedWorldId = root.value(QStringLiteral("selectedWorldId")).toString();
+    m_selectionPolicyVersion = root.value(QStringLiteral("selectionPolicyVersion")).toInt();
     const QJsonObject aliases = root.value(QStringLiteral("aliases")).toObject();
     for (auto iterator = aliases.constBegin(); iterator != aliases.constEnd(); ++iterator) {
         const QString alias = sanitizeDisplayName(iterator.value().toString());
@@ -1023,6 +1068,7 @@ bool WorldLibraryModel::saveCatalog()
         aliases.insert(iterator.key(), iterator.value());
     const QJsonObject root {
         { QStringLiteral("schema"), QLatin1StringView(catalogSchema) },
+        { QStringLiteral("selectionPolicyVersion"), m_selectionPolicyVersion },
         { QStringLiteral("selectedWorldId"), m_selectedWorldId },
         { QStringLiteral("aliases"), aliases },
     };
@@ -1092,6 +1138,27 @@ void WorldLibraryModel::applyScannedWorlds(QVector<WorldEntry> worlds)
     endResetModel();
 
     QString nextSelection = previousSelection;
+    if (m_selectionPolicyVersion < latestSelectionPolicyVersion) {
+        // A visual-route publication is an explicit product choice made by
+        // the world's validation gate. Prefer the strongest such route, while
+        // keeping this selector independent of map names, job IDs, dates, and
+        // route coordinates.
+        const WorldEntry *bestQualified = nullptr;
+        for (const WorldEntry &entry : std::as_const(m_worlds)) {
+            if (!entry.published
+                || entry.qualityTier != QLatin1String("hackathon-visual-route")
+                || entry.routeTiles.isEmpty())
+                continue;
+            if (!bestQualified
+                || entry.ssim > bestQualified->ssim
+                || (qFuzzyCompare(entry.ssim, bestQualified->ssim)
+                    && entry.psnr > bestQualified->psnr))
+                bestQualified = &entry;
+        }
+        if (bestQualified)
+            nextSelection = bestQualified->worldId;
+        m_selectionPolicyVersion = latestSelectionPolicyVersion;
+    }
     if (!m_pendingWorldPath.isEmpty()) {
         for (const WorldEntry &entry : std::as_const(m_worlds)) {
             if (samePath(entry.worldPath, m_pendingWorldPath)) {
@@ -1139,8 +1206,10 @@ QVariantMap WorldLibraryModel::entryMap(const WorldEntry &entry) const
         { QStringLiteral("originalName"), entry.originalName },
         { QStringLiteral("worldPath"), entry.worldPath },
         { QStringLiteral("plyPath"), entry.plyPath },
+        { QStringLiteral("plyUrl"), QUrl::fromLocalFile(entry.plyPath) },
         { QStringLiteral("jobPath"), entry.jobPath },
         { QStringLiteral("previewUrl"), entry.previewUrl },
+        { QStringLiteral("repairedReferenceUrl"), entry.repairedReferenceUrl },
         { QStringLiteral("sourceSummary"), entry.sourceSummary },
         { QStringLiteral("createdAt"), entry.createdAt.toUTC().toString(Qt::ISODateWithMs) },
         { QStringLiteral("createdText"), entry.createdText },
@@ -1162,6 +1231,8 @@ QVariantMap WorldLibraryModel::entryMap(const WorldEntry &entry) const
         { QStringLiteral("failureText"), entry.failureText },
         { QStringLiteral("recordedFrameUrls"), entry.recordedFrameUrls },
         { QStringLiteral("recordedFrameCount"), entry.recordedFrameUrls.size() },
+        { QStringLiteral("routeTiles"), entry.routeTiles },
+        { QStringLiteral("routeTileCount"), entry.routeTiles.size() },
     };
 }
 

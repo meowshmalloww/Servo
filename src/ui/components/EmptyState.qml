@@ -18,38 +18,39 @@ Item {
     ColumnLayout {
         id: content
         anchors.centerIn: parent
-        width: Math.min(380, Math.max(240, parent.width - 40))
-        spacing: 10
+        width: Math.min(420, Math.max(260, parent.width - 40))
+        spacing: 11
 
         Item {
             id: tileWrap
             Layout.alignment: Qt.AlignHCenter
-            Layout.preferredWidth: 42
-            Layout.preferredHeight: 42
+            Layout.preferredWidth: 44
+            Layout.preferredHeight: 44
 
             Rectangle {
                 id: tile
                 anchors.fill: parent
-                radius: Theme.cornerCard + 2
-                color: Theme.selection
-                opacity: 0.55
+                radius: 10
+                color: Theme.panelRaised
+                border.width: 1
+                border.color: Theme.borderSoft
             }
 
             SvgIcon {
                 anchors.centerIn: parent
                 source: root.iconSource
                 iconSize: Theme.iconXl
-                color: Theme.accentDim
-                opacity: 0.95
+                color: Theme.textMuted
+                opacity: 0.9
             }
         }
 
         Text {
             visible: root.title.length > 0
             text: root.title
-            color: Theme.textSecondary
+            color: Theme.text
             font.family: Theme.uiFont
-            font.pixelSize: 12
+            font.pixelSize: 13
             font.weight: Font.DemiBold
             horizontalAlignment: Text.AlignHCenter
             Layout.fillWidth: true
@@ -63,7 +64,7 @@ Item {
             font.pixelSize: 10
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
-            lineHeight: 1.25
+            lineHeight: 1.32
             Layout.fillWidth: true
         }
 
@@ -72,7 +73,7 @@ Item {
             text: root.actionText
             iconSource: root.actionIcon
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: 3
+            Layout.topMargin: 4
             onClicked: root.actionRequested()
         }
     }

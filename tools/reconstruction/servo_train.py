@@ -37,6 +37,7 @@ CONFIG_SCHEMA = "servo.gsplat-training/v2"
 METRICS_SCHEMA = "servo.gsplat-metrics/v2"
 CHECKPOINT_SCHEMA = "servo.gsplat-checkpoint/v2"
 REPRESENTATION_TYPE = "servo-fidelity-3dgs-v1"
+GAUSSIAN_BUDGET_POLICY = "vram-adaptive-preflight-v1"
 C0 = 0.28209479177387814
 OPACITY_RESET_SEMANTICS = "servo-gsplat-1.5.3-fix-v2"
 STATIC_CONFIDENCE_METHOD = (
@@ -137,6 +138,8 @@ INITIAL_SCALE_SCHEMA = "servo.diagnostic-projected-footprint-init/v1"
 INITIAL_SCALE_METHOD = (
     "colmap-track-projection-jacobian-tail-cap-v1"
 )
+DIRECT_INITIAL_SCALE_SCHEMA = "servo.da3-projected-footprint-init/v1"
+DIRECT_INITIAL_SCALE_METHOD = "colmap-track-projection-jacobian-direct-cap-v1"
 
 
 class TrainingError(RuntimeError):
@@ -164,21 +167,44 @@ def supported_initial_scale_contract(
     """Seal the calibrated track-footprint initializer to an isolated diagnostic."""
 
     try:
-        calibration_quantile = float(policy["calibrationQuantile"])
         maximum_capped_fraction = float(policy["maximumCappedFraction"])
         minimum_valid_observations = int(policy["minimumValidObservations"])
     except (KeyError, TypeError, ValueError):
         return False
-    return bool(
+    common = bool(
         is_nonpublishable_diagnostic_config(config)
-        and policy.get("schema") == INITIAL_SCALE_SCHEMA
-        and policy.get("method") == INITIAL_SCALE_METHOD
         and policy.get("covariance") == "isotropic"
         and policy.get("generatedEvidence") is False
-        and math.isclose(calibration_quantile, 0.90, rel_tol=0.0, abs_tol=1e-12)
-        and math.isclose(maximum_capped_fraction, 0.11, rel_tol=0.0, abs_tol=1e-12)
         and minimum_valid_observations == 3
     )
+    if not common:
+        return False
+    if (
+        policy.get("schema") == INITIAL_SCALE_SCHEMA
+        and policy.get("method") == INITIAL_SCALE_METHOD
+    ):
+        try:
+            calibration_quantile = float(policy["calibrationQuantile"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return bool(
+            math.isclose(calibration_quantile, 0.90, rel_tol=0.0, abs_tol=1e-12)
+            and math.isclose(maximum_capped_fraction, 0.11, rel_tol=0.0, abs_tol=1e-12)
+        )
+    if (
+        policy.get("schema") == DIRECT_INITIAL_SCALE_SCHEMA
+        and policy.get("method") == DIRECT_INITIAL_SCALE_METHOD
+        and str(config.get("pipelineRevision", "")).startswith("t2-da3-")
+    ):
+        try:
+            target_radius_pixels = float(policy["targetRadiusPixels"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return bool(
+            math.isclose(target_radius_pixels, 1.75, rel_tol=0.0, abs_tol=1e-12)
+            and math.isclose(maximum_capped_fraction, 1.0, rel_tol=0.0, abs_tol=1e-12)
+        )
+    return False
 
 
 def supported_density_refinement_contract(
@@ -1443,6 +1469,31 @@ def freeze_density_growth_at_target(strategy: Any) -> None:
     strategy.grow_scale2d = math.inf
 
 
+def adaptive_growth_would_exceed_vram(
+    *,
+    gaussian_count: int,
+    allocated_bytes: int,
+    reserved_bytes: int,
+    maximum_bytes: int,
+) -> bool:
+    """Conservatively preflight the next possible gsplat growth allocation.
+
+    A DefaultStrategy refinement can duplicate or split a large portion of the
+    active parameter/optimizer state.  Adaptive mode therefore forecasts one
+    additional copy of the measured per-Gaussian allocation and freezes only
+    growth before that worst-case pass would consume 90% of the CUDA budget.
+    There is no primitive-count ceiling; pruning and optimization continue.
+    """
+
+    if gaussian_count <= 0 or maximum_bytes <= 0:
+        return True
+    if allocated_bytes < 0 or reserved_bytes < 0:
+        raise TrainingError("CUDA allocation counters cannot be negative.")
+    per_gaussian = allocated_bytes / gaussian_count
+    forecast = reserved_bytes + math.ceil(per_gaussian * gaussian_count)
+    return forecast >= math.floor(maximum_bytes * 0.90)
+
+
 class DeterministicWeightedEpochSampler:
     """Resume-safe shuffled epochs whose order is content-bound."""
 
@@ -2025,12 +2076,20 @@ class ColmapDataset:
         self.initial_scale_caps = None
         normalized_xyz = (xyz - center[None, :]) * scale
         if initial_scale_policy is not None:
+            direct_footprint_cap = (
+                initial_scale_policy.get("schema") == DIRECT_INITIAL_SCALE_SCHEMA
+            )
+            target_radius_pixels = (
+                float(initial_scale_policy["targetRadiusPixels"])
+                if direct_footprint_cap
+                else 1.0
+            )
             unit_caps, initial_scale_stats = projected_track_scale_caps(
                 reconstruction,
                 point_ids,
                 normalization_scale=scale,
                 training_factor=self.factor,
-                target_radius_pixels=1.0,
+                target_radius_pixels=target_radius_pixels,
                 minimum_valid_observations=int(
                     initial_scale_policy["minimumValidObservations"]
                 ),
@@ -2046,26 +2105,37 @@ class ColmapDataset:
             )
             unit_caps64 = np.asarray(unit_caps, dtype=np.float64)
             valid_caps = np.isfinite(unit_caps64) & (unit_caps64 > 0.0)
-            implied_radius = nearest_linear[valid_caps] / unit_caps64[valid_caps]
-            calibration_quantile = float(
-                initial_scale_policy["calibrationQuantile"]
-            )
-            calibrated_target_radius = float(
-                np.quantile(implied_radius, calibration_quantile)
-            )
-            self.initial_scale_caps = (
-                unit_caps64 * calibrated_target_radius
-            ).astype(np.float32)
-            initial_scale_stats.update(
-                {
-                    "calibrationQuantile": calibration_quantile,
-                    "calibratedTargetRadiusPixels": calibrated_target_radius,
-                    "targetRadiusDefinition": (
-                        "dataset-tail-one-sigma-major-axis-before-eps2d-"
-                        "at-training-resolution"
-                    ),
-                }
-            )
+            if direct_footprint_cap:
+                self.initial_scale_caps = unit_caps64.astype(np.float32)
+                initial_scale_stats.update(
+                    {
+                        "calibratedTargetRadiusPixels": target_radius_pixels,
+                        "targetRadiusDefinition": (
+                            "direct-one-sigma-major-axis-before-eps2d-at-training-resolution"
+                        ),
+                    }
+                )
+            else:
+                implied_radius = nearest_linear[valid_caps] / unit_caps64[valid_caps]
+                calibration_quantile = float(
+                    initial_scale_policy["calibrationQuantile"]
+                )
+                calibrated_target_radius = float(
+                    np.quantile(implied_radius, calibration_quantile)
+                )
+                self.initial_scale_caps = (
+                    unit_caps64 * calibrated_target_radius
+                ).astype(np.float32)
+                initial_scale_stats.update(
+                    {
+                        "calibrationQuantile": calibration_quantile,
+                        "calibratedTargetRadiusPixels": calibrated_target_radius,
+                        "targetRadiusDefinition": (
+                            "dataset-tail-one-sigma-major-axis-before-eps2d-"
+                            "at-training-resolution"
+                        ),
+                    }
+                )
             self.initialization_stats["projectedFootprintScale"] = initial_scale_stats
         self.points = normalized_xyz.astype(np.float32, copy=False)
         self.colors = (rgb / 255.0).clip(0.0, 1.0).astype(np.float32, copy=False)
@@ -5932,6 +6002,8 @@ def train(config_path: Path) -> int:
     refine_every = int(config.get("refineEvery", 100))
     target_gaussians = int(config.get("targetGaussians", 0))
     max_gaussians = int(config.get("maxGaussians", 0))
+    gaussian_budget_policy = str(config.get("gaussianBudgetPolicy", "fixed-count-v1"))
+    adaptive_gaussian_budget = gaussian_budget_policy == GAUSSIAN_BUDGET_POLICY
     quality_gate = config.get("qualityGate", {})
     minimum_psnr = float(quality_gate.get("minimumPsnr", 18.0))
     minimum_ssim = float(quality_gate.get("minimumSsim", 0.60))
@@ -6215,12 +6287,18 @@ def train(config_path: Path) -> int:
         )
     ):
         raise TrainingError("The gsplat screen-space refinement policy is unsupported.")
-    if target_gaussians < 100_000 or target_gaussians * 2 > max_gaussians:
-        raise TrainingError(
-            "targetGaussians must be meaningful and no greater than half the allocation ceiling."
-        )
-    if max_gaussians < 100_000:
-        raise TrainingError("maxGaussians must reserve a meaningful bounded scene budget.")
+    if adaptive_gaussian_budget:
+        if target_gaussians != 0 or max_gaussians != 0:
+            raise TrainingError(
+                "VRAM-adaptive Gaussian growth requires zero fixed target and maximum counts."
+            )
+    else:
+        if target_gaussians < 100_000 or target_gaussians * 2 > max_gaussians:
+            raise TrainingError(
+                "targetGaussians must be meaningful and no greater than half the allocation ceiling."
+            )
+        if max_gaussians < 100_000:
+            raise TrainingError("maxGaussians must reserve a meaningful bounded scene budget.")
     if (
         not math.isfinite(minimum_psnr)
         or not math.isfinite(minimum_ssim)
@@ -7752,6 +7830,7 @@ def train(config_path: Path) -> int:
                 appearance_scheduler.step()
             if (
                 not densification_limited
+                and not adaptive_gaussian_budget
                 and len(parameters["means"]) >= target_gaussians
             ):
                 # One DefaultStrategy split/duplicate pass can at most double
@@ -7791,6 +7870,48 @@ def train(config_path: Path) -> int:
                     growthFrozen=True,
                     pruningContinuesUntil=strategy.refine_stop_iter,
                 )
+            if not densification_limited and adaptive_gaussian_budget:
+                allocated_bytes = int(torch.cuda.memory_allocated())
+                reserved_bytes = int(torch.cuda.memory_reserved())
+                maximum_bytes = int(max_vram_gib * 1024**3)
+                if adaptive_growth_would_exceed_vram(
+                    gaussian_count=len(parameters["means"]),
+                    allocated_bytes=allocated_bytes,
+                    reserved_bytes=reserved_bytes,
+                    maximum_bytes=maximum_bytes,
+                ):
+                    freeze_density_growth_at_target(strategy)
+                    densification_limited = True
+                    density_growth_frozen = True
+                    densification_limit_reason = "adaptive-vram-growth-preflight"
+                    atomic_json(
+                        recovery_policy_path,
+                        {
+                            "schema": "servo.gsplat-recovery-policy/v2",
+                            "configurationHash": config["configurationHash"],
+                            "trainingInputHash": config["trainingInputHash"],
+                            "disableDensification": False,
+                            "freezeGrowth": True,
+                            "growthCapPolicy": DENSITY_GROWTH_CAP_POLICY,
+                            "reason": densification_limit_reason,
+                            "step": step,
+                            "gaussians": len(parameters["means"]),
+                            "allocatedVramGiB": allocated_bytes / 1024**3,
+                            "reservedVramGiB": reserved_bytes / 1024**3,
+                            "maxVramGiB": max_vram_gib,
+                        },
+                    )
+                    emit(
+                        "densification_limited",
+                        step=step,
+                        reason=densification_limit_reason,
+                        gaussians=len(parameters["means"]),
+                        allocatedVramGiB=allocated_bytes / 1024**3,
+                        reservedVramGiB=reserved_bytes / 1024**3,
+                        maxVramGiB=max_vram_gib,
+                        growthFrozen=True,
+                        pruningContinuesUntil=strategy.refine_stop_iter,
+                    )
             strategy.step_post_backward(
                 params=parameters,
                 optimizers=optimizers,
@@ -8001,6 +8122,25 @@ def train(config_path: Path) -> int:
             raise TrainingError(f"The final artifact semantic metric {name} is missing.")
         return float(value)
 
+    semantic_gate_failed = False
+    if dataset.geometry_priors:
+        semantic_gate_failed = (
+            required_semantic_metric("skyAlphaP95") > maximum_sky_alpha_p95
+            or required_semantic_metric("skyAlphaAboveTenPercentFraction")
+            > maximum_sky_alpha_fraction
+            or required_semantic_metric("maximumViewSkyAlphaP95")
+            > maximum_view_sky_alpha_p95
+            or required_semantic_metric("roadSupportFraction")
+            < minimum_road_surface_support
+            or required_semantic_metric("roadRelativeDepthP50")
+            > maximum_road_relative_depth_p50
+            or required_semantic_metric("roadRelativeDepthP95")
+            > maximum_road_relative_depth_p95
+            or required_semantic_metric("roadDepthAmbiguityP50")
+            > maximum_road_ambiguity_p50
+            or required_semantic_metric("roadDepthAmbiguityP95")
+            > maximum_road_ambiguity_p95
+        )
     if (
         float(final_artifact_validation["psnrMean"]) < minimum_final_artifact_psnr
         or float(final_artifact_validation["ssimMean"])
@@ -8017,21 +8157,7 @@ def train(config_path: Path) -> int:
         < float(heldout_snapshot["psnrMean"]) - maximum_final_psnr_regression
         or float(final_artifact_validation["ssimMean"])
         < float(heldout_snapshot["ssimMean"]) - maximum_final_ssim_regression
-        or required_semantic_metric("skyAlphaP95") > maximum_sky_alpha_p95
-        or required_semantic_metric("skyAlphaAboveTenPercentFraction")
-        > maximum_sky_alpha_fraction
-        or required_semantic_metric("maximumViewSkyAlphaP95")
-        > maximum_view_sky_alpha_p95
-        or required_semantic_metric("roadSupportFraction")
-        < minimum_road_surface_support
-        or required_semantic_metric("roadRelativeDepthP50")
-        > maximum_road_relative_depth_p50
-        or required_semantic_metric("roadRelativeDepthP95")
-        > maximum_road_relative_depth_p95
-        or required_semantic_metric("roadDepthAmbiguityP50")
-        > maximum_road_ambiguity_p50
-        or required_semantic_metric("roadDepthAmbiguityP95")
-        > maximum_road_ambiguity_p95
+        or semantic_gate_failed
     ):
         raise TrainingError(
             "The cleaned final artifact failed its all-camera appearance or geometry gate."
@@ -8166,6 +8292,7 @@ def train(config_path: Path) -> int:
         ),
         "targetGaussians": target_gaussians,
         "maxGaussians": max_gaussians,
+        "gaussianBudgetPolicy": gaussian_budget_policy,
         "resolutionSchedule": {
             "coarseFactor": coarse_factor,
             "coarseSteps": coarse_steps,
@@ -8338,6 +8465,7 @@ def train(config_path: Path) -> int:
             peak_reserved_before, torch.cuda.max_memory_reserved() / 1024**3
         ),
         "maxVramGiB": max_vram_gib,
+        "gaussianBudgetPolicy": gaussian_budget_policy,
         "densificationLimited": densification_limited,
         "densificationLimitReason": densification_limit_reason,
         "densityGrowthFrozen": density_growth_frozen,

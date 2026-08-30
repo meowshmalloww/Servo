@@ -63,6 +63,48 @@ target_link_libraries(RealityCIControllerTests
 
 add_test(NAME RealityCIControllerTests COMMAND RealityCIControllerTests)
 
+qt_add_executable(SimulationControllerTests
+    SimulationControllerTests.cpp
+    ../src/ui/simulation/SimulationController.cpp
+    ../src/ui/simulation/SimulationController.h
+    ../src/ui/simulation/SimulationFrameProvider.cpp
+    ../src/ui/simulation/SimulationFrameProvider.h
+)
+
+target_include_directories(SimulationControllerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui/simulation
+)
+
+target_link_libraries(SimulationControllerTests
+    PRIVATE
+        Qt6::Gui
+        Qt6::Network
+        Qt6::Qml
+        Qt6::Quick
+        Qt6::Test
+)
+
+add_test(NAME SimulationControllerTests COMMAND SimulationControllerTests)
+
+qt_add_executable(NativeVehicleControllerTests
+    NativeVehicleControllerTests.cpp
+    ../src/ui/simulation/NativeVehicleController.cpp
+    ../src/ui/simulation/NativeVehicleController.h
+)
+
+target_include_directories(NativeVehicleControllerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui/simulation
+)
+
+target_link_libraries(NativeVehicleControllerTests
+    PRIVATE
+        Qt6::Gui
+        Qt6::Qml
+        Qt6::Test
+)
+
+add_test(NAME NativeVehicleControllerTests COMMAND NativeVehicleControllerTests)
+
 qt_add_executable(ReconstructionControllerTests
     ReconstructionControllerTests.cpp
     ../src/ui/reconstruction/ReconstructionController.cpp
@@ -188,6 +230,8 @@ if(Qt6_RUNTIME_DIR)
         MediaSourceModelTests
         AiChatControllerTests
         RealityCIControllerTests
+        SimulationControllerTests
+        NativeVehicleControllerTests
         ReconstructionControllerTests
         WorldLibraryModelTests
         GaussianPathSmoothingTests
