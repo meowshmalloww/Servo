@@ -17,6 +17,41 @@ def test_healthz_open() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_legacy_t5_carla_composite_is_rejected_as_submission_view(
+    tmp_path, monkeypatch
+) -> None:
+    import cloud.control_api.app.main as api
+
+    monkeypatch.setattr(api, "SIMULATION_ROOT", tmp_path)
+    session_id = "sim-0123456789abcdef"
+    (tmp_path / session_id).mkdir()
+    response = TestClient(app).get(f"/v1/simulations/{session_id}/integrated-frame")
+    assert response.status_code == 410
+    assert "not a spatially unified CARLA/Gaussian render" in response.text
+
+
+def test_simulation_evidence_fails_closed_without_visual_integration_receipt(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+    import cloud.control_api.app.main as api
+
+    monkeypatch.setattr(api, "SIMULATION_ROOT", tmp_path)
+    session_id = "sim-fedcba9876543210"
+    session_root = tmp_path / session_id
+    session_root.mkdir()
+    (session_root / "run-evidence.json").write_text(
+        json.dumps({"outcome": "success", "artifact_sha256": {}}),
+        encoding="utf-8",
+    )
+    response = TestClient(app).get(f"/v1/simulations/{session_id}/evidence")
+    assert response.status_code == 200
+    visual = response.json()["visual_integration"]
+    assert visual["status"] == "rejected"
+    assert visual["submission_eligible"] is False
+    assert visual["unified_scene"] is False
+
+
 def test_campaign_flow_over_http(tmp_path, monkeypatch) -> None:
     from pathlib import Path
 

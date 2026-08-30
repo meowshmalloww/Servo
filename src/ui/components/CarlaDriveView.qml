@@ -11,25 +11,22 @@ Item {
 
     property bool active: false
     property string viewMode: "native"
-    readonly property string selectedReplay:
-        root.viewMode === "hybrid" ? SimulationController.hybridReplayVideoUrl
-        : (root.viewMode === "compare" ? SimulationController.comparisonReplayVideoUrl
-                                        : SimulationController.nativeReplayVideoUrl)
-    readonly property bool showReplay: SimulationController.terminal
+    property bool followRunPose: !SimulationController.terminal
+    property real inspectedRouteProgress: 0.0
+    readonly property bool worldView: root.viewMode === "world"
+    readonly property real displayedWorldProgress:
+        root.followRunPose ? SimulationController.routeCompletion
+                           : root.inspectedRouteProgress
+    readonly property string selectedReplay: SimulationController.nativeReplayVideoUrl
+    readonly property bool showReplay: !root.worldView && SimulationController.terminal
                                        && root.selectedReplay.length > 0
-    readonly property string liveFrame:
-        root.viewMode === "hybrid" ? SimulationController.integratedFrameUrl
-                                   : SimulationController.nativeFrameUrl
+    readonly property string liveFrame: SimulationController.nativeFrameUrl
     readonly property string viewTitle:
-        root.viewMode === "hybrid" ? "T5 VISUAL COMPOSITE"
-        : (root.viewMode === "compare" ? "SYNCHRONIZED A/B"
-                                        : "NATIVE CARLA")
+        root.worldView ? "PUBLISHED T5 WORLD" : "NATIVE CARLA"
     readonly property string viewProvenance:
-        root.viewMode === "hybrid"
-        ? "Depth-aware visual composite · not unified CARLA geometry"
-        : (root.viewMode === "compare"
-           ? "Native CARLA (left) · T5 visual composite (right)"
-           : "Uncomposited CARLA/Unreal physics camera")
+        root.worldView
+        ? "Interactive five-tile Gaussian world · CARLA evidence attached separately · NOT UNIFIED"
+        : "Uncomposited CARLA/Unreal physics camera"
     readonly property string activeWeather:
         SimulationController.hasSession
         && SimulationController.scenarioWeather.length > 0
@@ -42,6 +39,19 @@ Item {
 
     signal newRunRequested(string weather, real snowAccumulation)
     signal closeRequested()
+
+    function openWorldView() {
+        root.viewMode = "world";
+        if (SimulationController.terminal) {
+            // A finished video has no exact replay clock connected to the
+            // interactive renderer. Start from the first registered route
+            // camera and let the reviewer inspect the complete real world.
+            root.followRunPose = false;
+            root.inspectedRouteProgress = 0.0;
+        } else {
+            root.followRunPose = true;
+        }
+    }
 
     function updatePlayback() {
         if (root.active && root.showReplay) {
@@ -64,21 +74,25 @@ Item {
     Connections {
         target: SimulationController
         function onSessionChanged() {
-            if (!SimulationController.terminal)
+            if (!SimulationController.terminal) {
                 root.viewMode = "native";
+                root.followRunPose = true;
+            }
         }
     }
 
     Rectangle {
         anchors.fill: parent
         color: "#080b0d"
+        visible: !root.worldView
     }
 
     Image {
         anchors.fill: parent
         anchors.bottomMargin: 58
         source: root.liveFrame
-        visible: !root.showReplay && source.toString().length > 0
+        visible: !root.worldView && !root.showReplay
+                 && source.toString().length > 0
         asynchronous: false
         cache: false
         fillMode: Image.PreserveAspectFit
@@ -88,7 +102,7 @@ Item {
         id: replayOutput
         anchors.fill: parent
         anchors.bottomMargin: 58
-        visible: root.showReplay
+        visible: !root.worldView && root.showReplay
         fillMode: VideoOutput.PreserveAspectFit
     }
 
@@ -112,13 +126,12 @@ Item {
     EmptyState {
         anchors.fill: parent
         anchors.bottomMargin: 58
-        visible: !root.showReplay && root.liveFrame.length === 0
+        visible: !root.worldView && !root.showReplay
+                 && root.liveFrame.length === 0
         iconSource: Theme.icon("run")
         title: SimulationController.busy ? "Starting physical CARLA run"
                                          : "No " + root.viewTitle.toLowerCase() + " frame"
-        description: root.viewMode === "hybrid"
-                     ? "The T5 view is a synchronized visual composite. Select Native CARLA for the uncomposited physics camera."
-                     : "Servo has not received an uncomposited CARLA/Unreal camera frame for this session."
+        description: "Servo has not received an uncomposited CARLA/Unreal camera frame for this session."
     }
 
     Rectangle {
@@ -147,18 +160,11 @@ Item {
             }
             TextButton {
                 compact: true
-                text: "T5 visual"
-                selected: root.viewMode === "hybrid"
-                tone: root.viewMode === "hybrid" ? "primary" : "default"
-                onClicked: root.viewMode = "hybrid"
-            }
-            TextButton {
-                compact: true
-                text: "Compare"
-                visible: SimulationController.terminal
-                         && SimulationController.comparisonReplayVideoUrl.length > 0
-                selected: root.viewMode === "compare"
-                onClicked: root.viewMode = "compare"
+                text: "Actual T5 world"
+                selected: root.worldView
+                tone: root.worldView ? "primary" : "default"
+                toolTip: "Open the actual interactive five-tile Gaussian world. The rejected composite is not shown."
+                onClicked: root.openWorldView()
             }
         }
     }
@@ -187,13 +193,14 @@ Item {
                           : "info"
                 }
                 StatusBadge {
-                    text: root.viewMode === "hybrid" ? "COMPOSITE"
-                          : (root.viewMode === "compare" ? "A/B" : "NATIVE")
-                    tone: root.viewMode === "native" ? "success" : "warning"
+                    text: root.worldView ? "VISUAL WORLD" : "NATIVE"
+                    tone: root.worldView ? "warning" : "success"
                 }
                 Text {
-                    text: (SimulationController.terminal ? "RECORDED " : "LIVE ")
-                          + root.viewTitle
+                    text: root.worldView
+                          ? root.viewTitle + " · CARLA RUN ATTACHED"
+                          : (SimulationController.terminal ? "RECORDED " : "LIVE ")
+                            + root.viewTitle
                     color: Theme.text
                     font.family: Theme.monoFont
                     font.pixelSize: 10
@@ -243,8 +250,10 @@ Item {
         anchors.rightMargin: 12
         anchors.bottomMargin: 70
         spacing: 8
-        visible: SimulationController.leftPolicyFrameUrl.length > 0
-                 || SimulationController.rightPolicyFrameUrl.length > 0
+        // These frames were rendered from the rejected off-corridor Gaussian
+        // sensor poses. Keep the sealed files for forensics, but never present
+        // them as valid submission imagery.
+        visible: false
 
         Repeater {
             model: [
@@ -305,13 +314,13 @@ Item {
         radius: 7
         color: Theme.overlayHud
         border.width: 1
-        border.color: root.viewMode === "native" ? Theme.border : Theme.warning
+        border.color: root.worldView ? Theme.warning : Theme.border
 
         Text {
             id: provenanceLabel
             anchors.centerIn: parent
             text: root.viewProvenance
-            color: root.viewMode === "native" ? Theme.textSecondary : Theme.warning
+            color: root.worldView ? Theme.warning : Theme.textSecondary
             font.family: Theme.monoFont
             font.pixelSize: 9
             font.weight: Font.DemiBold
@@ -361,18 +370,20 @@ Item {
             TextButton {
                 compact: true
                 text: "Run clear"
+                visible: !root.worldView
                 selected: Session.worldWeather === "clear"
                 onClicked: root.newRunRequested("clear", 0.0)
             }
             TextButton {
                 compact: true
                 text: "Run snow"
+                visible: !root.worldView
                 selected: Session.worldWeather === "snow"
                 tone: Session.worldWeather === "snow" ? "primary" : "default"
                 onClicked: root.newRunRequested("snow", Session.worldSnowAccumulation)
             }
             Slider {
-                visible: Session.worldWeather === "snow"
+                visible: !root.worldView && Session.worldWeather === "snow"
                 Layout.preferredWidth: 120
                 from: 0.0
                 to: 1.0
@@ -384,8 +395,33 @@ Item {
                               + Math.round(value * 100) + "%"
             }
             Text {
-                visible: Session.worldWeather === "snow"
+                visible: !root.worldView && Session.worldWeather === "snow"
                 text: Math.round(Session.worldSnowAccumulation * 100) + "%"
+                color: Theme.textSecondary
+                font.family: Theme.monoFont
+                font.pixelSize: 9
+            }
+            TextButton {
+                compact: true
+                visible: root.worldView
+                text: root.followRunPose ? "Following run" : "Inspect route"
+                selected: root.followRunPose
+                onClicked: root.followRunPose = !root.followRunPose
+            }
+            Slider {
+                visible: root.worldView && !root.followRunPose
+                Layout.preferredWidth: 170
+                from: 0.0
+                to: 1.0
+                stepSize: 0.001
+                value: root.inspectedRouteProgress
+                onMoved: root.inspectedRouteProgress = value
+                ToolTip.visible: hovered
+                ToolTip.text: "Registered route " + Math.round(value * 100) + "%"
+            }
+            Text {
+                visible: root.worldView
+                text: Math.round(root.displayedWorldProgress * 100) + "% route"
                 color: Theme.textSecondary
                 font.family: Theme.monoFont
                 font.pixelSize: 9
@@ -398,7 +434,7 @@ Item {
                          ? (SimulationController.physicsGatePassed
                             ? "CARLA contact/gravity verified · collision geometry NOT VALIDATED"
                             : "CARLA physics gate did not pass or is not verified")
-                         : "Authoritative synchronous CARLA · native and composite views are separate")
+                         : "Authoritative synchronous CARLA · no unified T5/CARLA geometry claim")
                 color: SimulationController.lastError.length > 0 ? Theme.error : Theme.textMuted
                 font.family: Theme.uiFont
                 font.pixelSize: 9

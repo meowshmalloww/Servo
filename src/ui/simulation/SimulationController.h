@@ -82,6 +82,8 @@ class SimulationController final : public QObject
     Q_PROPERTY(bool physicsGatePassed READ physicsGatePassed NOTIFY evidenceChanged)
     Q_PROPERTY(bool metricRealWorldValidated READ metricRealWorldValidated NOTIFY evidenceChanged)
     Q_PROPERTY(bool collisionValidated READ collisionValidated NOTIFY evidenceChanged)
+    Q_PROPERTY(bool visualIntegrationValidated READ visualIntegrationValidated NOTIFY evidenceChanged)
+    Q_PROPERTY(QString visualIntegrationStatus READ visualIntegrationStatus NOTIFY evidenceChanged)
 
 public:
     explicit SimulationController(QObject *parent = nullptr);
@@ -149,6 +151,8 @@ public:
     bool physicsGatePassed() const;
     bool metricRealWorldValidated() const;
     bool collisionValidated() const;
+    bool visualIntegrationValidated() const;
+    QString visualIntegrationStatus() const;
 
     Q_INVOKABLE void setBaseUrl(const QString &value);
     Q_INVOKABLE void connectToServer();
@@ -268,4 +272,6 @@ private:
     bool m_physicsGatePassed = false;
     bool m_metricRealWorldValidated = false;
     bool m_collisionValidated = false;
+    bool m_visualIntegrationValidated = false;
+    QString m_visualIntegrationStatus { QStringLiteral("not-evaluated") };
 };

@@ -18,12 +18,14 @@ updates Reality Debt and picks the next weakness autonomously.
 
 ## What actually ran here (real artifacts, not claims)
 
-- Accepted T5 Hybrid + DriveMA/CARLA snow session
+- Accepted T5 visual route + separate DriveMA/CARLA snow session
   `sim-6291857fc6c84f13`: 94.26% route completion, zero collisions, one lane
   event, three policy cameras, measured gravity/contact pass, and a physically
   applied 12-frame full-brake terminal stop at 0.056 m/s. It is hash-bound to
   `yosemite-t5-hybrid-full-route-v1-20260828`, not Final v2.
-- Accepted T5 Hybrid pedestrian challenge `sim-40185a19d24e45a9`: a grounded,
+- The former T5/CARLA depth-aware composite is rejected forensic evidence; it
+  is not a spatially unified render and must not appear in submission footage.
+- Accepted-T5-route pedestrian challenge `sim-40185a19d24e45a9`: a grounded,
   owned CARLA walker crossed the generated lane and DriveMA collided at 53.86%
   progress. Servo classified `collision_pedestrian`; cleanup destroyed all
   nine actors. This is a policy failure artifact, not a pass.

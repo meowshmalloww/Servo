@@ -425,6 +425,23 @@ Item {
             root.selectRouteTile(target, frame, true);
     }
 
+    function syncCarlaWorldRoute() {
+        if (!root.carlaDriveMode || !carlaDrive.worldView
+                || !root.exploreMode || root.routeTiles.length < 1
+                || gaussianView.loading || !gaussianView.ready)
+            return;
+        const progress = Math.max(0, Math.min(
+            1, Number(carlaDrive.displayedWorldProgress || 0)));
+        const frame = progress * (root.routeFrameCount - 1);
+        const target = root.routeTileForFrame(frame);
+        if (target !== root.activeRouteTileIndex) {
+            root.selectRouteTile(target, frame, true);
+            return;
+        }
+        gaussianView.followPath = true;
+        gaussianView.setPathProgress(root.tileProgressForFrame(target, frame));
+    }
+
     Connections {
         target: Session
         function onAssistantActionRequested(action, argument) {
@@ -553,6 +570,14 @@ Item {
         repeat: true
         running: root.exploreMode && root.routeTiles.length > 1
         onTriggered: root.updateAutomaticRouteTile()
+    }
+
+    Timer {
+        interval: 80
+        repeat: true
+        running: root.carlaDriveMode && carlaDrive.worldView
+                 && root.exploreMode && root.routeTiles.length > 0
+        onTriggered: root.syncCarlaWorldRoute()
     }
 
     FrameAnimation {
@@ -1100,7 +1125,7 @@ Item {
                                 iconSource: Theme.icon("play")
                                 tone: root.carlaDriveMode ? "primary" : "default"
                                 enabled: root.selectedWorldPublished && !SimulationController.busy
-                                toolTip: "Run or replay the real CARLA 0.9.16 Lincoln physics session in this Gaussian world."
+                                toolTip: "Run or replay the real CARLA 0.9.16 Lincoln physics session attached to this world record. CARLA and T5 remain separate views."
                                 onClicked: root.startCarlaDrive(false)
                             }
                             TextButton {
@@ -1185,7 +1210,8 @@ Item {
                                 width: liveDrive.visible && liveDrive.splitView
                                        ? Math.floor(parent.width / 2) : parent.width
                                 visible: root.hasSelection && root.exploreMode
-                                         && !root.carlaDriveMode
+                                         && (!root.carlaDriveMode
+                                             || carlaDrive.worldView)
                                 source: root.hasSelection ? root.explorePlyPath : ""
                                 visualizationMode: root.visualizationMode
                                 snowAccumulation: root.snowAccumulation
@@ -1342,6 +1368,7 @@ Item {
                                 visible: root.hasSelection && root.exploreMode
                                          && root.carlaDriveMode
                                 active: visible
+                                onViewModeChanged: root.syncCarlaWorldRoute()
                                 onNewRunRequested: (weather, accumulation) => {
                                     Session.worldWeather = weather;
                                     if (weather === "snow")

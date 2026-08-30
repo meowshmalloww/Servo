@@ -21,17 +21,21 @@ Missing exact frames, inadequate Gaussian coverage, invalid alignment, or an
 unvalidated map fail closed as infrastructure-invalid. There is no silent
 renderer or policy fallback.
 
-The desktop exposes three equally explicit evidence views:
+The desktop exposes two explicit, separate evidence views:
 
 - **Native CARLA** is the uncomposited CARLA/Unreal chase camera and is the
   default live and replay view.
-- **T5 visual** is a synchronized, depth-aware RGB/instance composite of the
-  CARLA actor over reconstructed T5 imagery. It is visual-only and is never
-  described as native CARLA or unified scene geometry.
-- **Compare** places both evidence streams side by side.
+- **Actual T5 world** is the published interactive five-tile Gaussian world.
+  CARLA telemetry can be attached for route inspection, but the view is never
+  described as spatially unified CARLA/Gaussian geometry.
 
-Every retained run records a `visual_integration_receipt`. For the current T5
-path it states `gaussian_appearance_loaded_as_carla_geometry=false`,
+The former depth-aware RGB/instance composite is retained only as a sealed
+forensic artifact. Its API endpoint returns `410 Gone`, its integration status
+is `rejected`, and the desktop does not offer it as a replay or submission view.
+
+The evidence API emits a `visual_integration` verdict for every retained run,
+and new runs persist the same fields as `visual_integration_receipt`. For the
+current T5 path it states `gaussian_appearance_loaded_as_carla_geometry=false`,
 `unified_scene=false`, and `collision_validated=false`. A passing physics gate
 therefore proves CARLA contact, gravity, control, and sensor execution only; it
 does not validate the reconstructed Gaussian world as a CARLA map.
@@ -47,9 +51,9 @@ lane, applies bounded `WalkerControl`, verifies surface contact after warm-up
 and at the terminal frame, records activation/collision events, and destroys
 the actor in cleanup. There is no traffic-light scenario yet.
 
-## Verified accepted T5 Hybrid runs (2026-08-30)
+## Verified CARLA runs attached to the accepted T5 visual route (2026-08-30)
 
-Both runs below use the exact accepted world
+Both runs below use the route and appearance evidence from
 `yosemite-t5-hybrid-full-route-v1-20260828`, not the rejected Final v2, with
 CARLA 0.9.16 and the local DriveMA-2B checkpoint.
 
@@ -76,7 +80,7 @@ Pedestrian challenge: `sim-40185a19d24e45a9`. The walker stayed grounded
 pass. Cleanup destroyed all nine owned actors without error.
 
 The desktop validates persisted session identities before attaching. An empty,
-wrong-world, or rejected-v2 session cannot impersonate an accepted Hybrid run.
+wrong-world, or rejected-v2 session cannot impersonate the accepted visual route.
 
 These are real CARLA/Unreal physics runs, but they are not collision validation
 of the reconstructed Gaussian world. T5 scale and road structure remain

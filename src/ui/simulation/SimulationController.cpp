@@ -127,6 +127,8 @@ QString SimulationController::comparisonReplayVideoUrl() const { return m_compar
 bool SimulationController::physicsGatePassed() const { return m_physicsGatePassed; }
 bool SimulationController::metricRealWorldValidated() const { return m_metricRealWorldValidated; }
 bool SimulationController::collisionValidated() const { return m_collisionValidated; }
+bool SimulationController::visualIntegrationValidated() const { return m_visualIntegrationValidated; }
+QString SimulationController::visualIntegrationStatus() const { return m_visualIntegrationStatus; }
 
 void SimulationController::setBaseUrl(const QString &value)
 {
@@ -397,6 +399,8 @@ void SimulationController::startSimulation(const QVariantMap &configuration)
         m_physicsGatePassed = false;
         m_metricRealWorldValidated = false;
         m_collisionValidated = false;
+        m_visualIntegrationValidated = false;
+        m_visualIntegrationStatus = QStringLiteral("not-evaluated");
         QSettings settings;
         settings.setValue("simulation/sessionBaseUrl", m_baseUrl);
         settings.setValue("simulation/sessionId", m_sessionId);
@@ -568,6 +572,8 @@ void SimulationController::attachSimulationEntry(const QJsonObject &entry)
     m_physicsGatePassed = false;
     m_metricRealWorldValidated = false;
     m_collisionValidated = false;
+    m_visualIntegrationValidated = false;
+    m_visualIntegrationStatus = QStringLiteral("not-evaluated");
     QSettings settings;
     settings.setValue("simulation/sessionBaseUrl", m_baseUrl);
     settings.setValue("simulation/sessionId", m_sessionId);
@@ -616,6 +622,8 @@ void SimulationController::clearAttachedSimulation()
     m_physicsGatePassed = false;
     m_metricRealWorldValidated = false;
     m_collisionValidated = false;
+    m_visualIntegrationValidated = false;
+    m_visualIntegrationStatus = QStringLiteral("not-evaluated");
     QSettings settings;
     settings.remove("simulation/sessionBaseUrl");
     settings.remove("simulation/sessionId");
@@ -712,15 +720,11 @@ void SimulationController::applyLive(const QJsonObject &object)
     const qulonglong nextPolicyFrame = object.value(QStringLiteral("policy_frame_id")).toInteger();
     const bool frameChanged = nextPolicyFrame > m_policyFrameId;
     m_policyFrameId = nextPolicyFrame;
-    if (m_sequence == sequence
-        && (m_policyFrameUrl.isEmpty() || m_nativeFrameUrl.isEmpty()
-            || m_integratedFrameUrl.isEmpty()))
+    if (m_sequence == sequence && m_nativeFrameUrl.isEmpty())
         qInfo() << "Simulation live frame" << m_sessionId << "sequence" << sequence
                 << "policy frame" << m_policyFrameId;
     emit liveChanged();
-    if (frameChanged || (m_policyFrameId > 0
-                         && (m_policyFrameUrl.isEmpty() || m_nativeFrameUrl.isEmpty()
-                             || m_integratedFrameUrl.isEmpty())))
+    if (frameChanged || (m_policyFrameId > 0 && m_nativeFrameUrl.isEmpty()))
         fetchPolicyFrame();
 }
 
@@ -784,6 +788,7 @@ void SimulationController::fetchPolicyFrame()
             this, [this, nativeReply, requestedFrame]() {
         const QByteArray bytes = nativeReply->readAll();
         nativeReply->deleteLater();
+        m_frameRequestActive = false;
         if (nativeReply->error() != QNetworkReply::NoError
             || requestedFrame != m_policyFrameId || !s_frameProvider)
             return;
@@ -795,30 +800,6 @@ void SimulationController::fetchPolicyFrame()
         ++m_policyFrameRevision;
         m_nativeFrameUrl = QStringLiteral("image://simulation-policy/%1/%2?revision=%3")
                                .arg(key).arg(requestedFrame).arg(m_policyFrameRevision);
-        emit policyFrameChanged();
-    });
-    QNetworkReply *integratedReply = get(
-        QStringLiteral("/v1/simulations/%1/integrated-frame?frame=%2")
-            .arg(m_sessionId).arg(requestedFrame));
-    connect(integratedReply, &QNetworkReply::finished,
-            this, [this, integratedReply, requestedFrame]() {
-        const QByteArray bytes = integratedReply->readAll();
-        integratedReply->deleteLater();
-        m_frameRequestActive = false;
-        if (integratedReply->error() != QNetworkReply::NoError
-            || requestedFrame != m_policyFrameId || !s_frameProvider) {
-            qWarning() << "Integrated simulation frame unavailable" << requestedFrame
-                       << integratedReply->errorString();
-            return;
-        }
-        const QImage image = QImage::fromData(bytes);
-        if (image.isNull())
-            return;
-        const QString key = m_sessionId + QStringLiteral("-integrated");
-        s_frameProvider->publish(image, key, requestedFrame);
-        ++m_policyFrameRevision;
-        m_integratedFrameUrl = QStringLiteral("image://simulation-policy/%1/%2?revision=%3")
-                                   .arg(key).arg(requestedFrame).arg(m_policyFrameRevision);
         emit policyFrameChanged();
     });
 }
@@ -847,6 +828,7 @@ void SimulationController::applyEvidence(const QJsonObject &root)
     const QJsonObject evidence = root.value(QStringLiteral("evidence")).toObject();
     const QJsonObject artifacts = root.value(QStringLiteral("artifact_paths")).toObject();
     const QJsonObject physics = root.value(QStringLiteral("physics_evidence")).toObject();
+    const QJsonObject visual = root.value(QStringLiteral("visual_integration")).toObject();
     m_result = evidence.value(QStringLiteral("outcome")).toString(m_result);
     m_failureClass = evidence.value(QStringLiteral("failure_class")).toString(m_failureClass);
     m_evidencePath = root.value(QStringLiteral("run_evidence_uri")).toString();
@@ -861,24 +843,22 @@ void SimulationController::applyEvidence(const QJsonObject &root)
     };
     m_nativeReplayVideoUrl = artifactUrl(
         QStringLiteral("evidence/carla-native-fixed.mp4"));
-    m_hybridReplayVideoUrl = artifactUrl(
-        QStringLiteral("evidence/servo-t5-carla-lincoln-fixed.mp4"));
-    m_comparisonReplayVideoUrl = artifactUrl(
-        QStringLiteral("evidence/native-and-t5-synchronized.mp4"));
-
-    // The default must be the native Unreal capture.  The T5 stream is a
-    // synchronized, depth-aware visual composite and must only be selected
-    // explicitly by the operator.
-    m_replayVideoUrl = !m_nativeReplayVideoUrl.isEmpty()
-                           ? m_nativeReplayVideoUrl
-                           : (!m_comparisonReplayVideoUrl.isEmpty()
-                                  ? m_comparisonReplayVideoUrl
-                                  : m_hybridReplayVideoUrl);
+    // Legacy composite artifacts remain in artifactPaths so an investigator
+    // can reproduce the rejection. They are deliberately not exposed as
+    // playable product views.
+    m_hybridReplayVideoUrl.clear();
+    m_comparisonReplayVideoUrl.clear();
+    m_integratedFrameUrl.clear();
+    m_replayVideoUrl = m_nativeReplayVideoUrl;
     m_physicsGatePassed = physics.value(QStringLiteral("physics_gate_pass")).toBool(false);
     m_metricRealWorldValidated = physics.value(
         QStringLiteral("metric_real_world_validated")).toBool(false);
     m_collisionValidated = physics.value(
         QStringLiteral("collision_validated")).toBool(false);
+    m_visualIntegrationValidated = visual.value(
+        QStringLiteral("submission_eligible")).toBool(false);
+    m_visualIntegrationStatus = visual.value(
+        QStringLiteral("status")).toString(QStringLiteral("rejected"));
     emit liveChanged();
     emit evidenceChanged();
 }

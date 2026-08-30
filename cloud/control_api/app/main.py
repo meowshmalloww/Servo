@@ -2022,14 +2022,22 @@ def simulation_policy_camera_frame(session_id: str, camera_id: str):
 
 @app.get("/v1/simulations/{session_id}/integrated-frame", dependencies=[Depends(require_token)])
 def simulation_integrated_frame(session_id: str):
-    session_root = _session_store(session_id).session_root
-    rejection = session_root / "evidence-rejected.json"
-    if rejection.is_file():
-        raise HTTPException(status_code=409, detail=json.loads(rejection.read_text(encoding="utf-8")))
-    path = session_root / "previews" / "latest-servo-t5-carla-lincoln-fixed.jpg"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="integrated T5/CARLA frame is not available")
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    _session_store(session_id)
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "status": "rejected",
+            "submission_eligible": False,
+            "reason": (
+                "The legacy T5/CARLA frame is an offline depth-aware 2D "
+                "composite, not a spatially unified CARLA/Gaussian render."
+            ),
+            "replacement": (
+                "Use the published interactive T5 world and uncomposited "
+                "native CARLA evidence as separate verified views."
+            ),
+        },
+    )
 
 
 @app.get("/v1/simulations/{session_id}/native-frame", dependencies=[Depends(require_token)])
@@ -2072,10 +2080,38 @@ def simulation_evidence(session_id: str) -> dict:
         if not expected_hash or sha256_file(str(physics_path)) != expected_hash:
             raise HTTPException(status_code=409, detail="physics evidence hash mismatch")
         physics_evidence = json.loads(physics_path.read_text(encoding="utf-8"))
+    visual_integration = dict(evidence.get("visual_integration_receipt") or {})
+    visual_integration.setdefault(
+        "schema", "servo.carla-gaussian-visual-integration/v1"
+    )
+    visual_integration.setdefault(
+        "mode", "legacy-offline-depth-aware-composite"
+    )
+    visual_integration.setdefault("native_carla_capture", True)
+    visual_integration.setdefault(
+        "gaussian_appearance_loaded_as_carla_geometry", False
+    )
+    visual_integration.setdefault("unified_scene", False)
+    visual_integration.setdefault("collision_validated", False)
+    visual_integration.setdefault("visual_only", True)
+    submission_eligible = bool(
+        visual_integration.get("unified_scene") is True
+        and visual_integration.get("visual_only") is False
+    )
+    visual_integration["submission_eligible"] = submission_eligible
+    visual_integration["status"] = (
+        "accepted" if submission_eligible else "rejected"
+    )
+    if not submission_eligible:
+        visual_integration["reason"] = (
+            "T5 appearance and CARLA physics are separate evidence layers; "
+            "the retained composite is forensic-only."
+        )
     return {
         "run_evidence_uri": str(evidence_path),
         "evidence": evidence,
         "physics_evidence": physics_evidence,
+        "visual_integration": visual_integration,
         "artifact_paths": artifact_paths,
     }
 

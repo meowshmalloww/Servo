@@ -277,11 +277,13 @@ Item {
                                     }
                                 }
                                 PropertyRow {
-                                    label: "T5 view"
+                                    label: "World integration"
                                     labelWidth: 90
                                     TextInput {
                                         readOnly: true
-                                        text: "Visual composite, not unified CARLA geometry"
+                                        text: SimulationController.visualIntegrationValidated
+                                              ? "Spatial integration validated"
+                                              : "REJECTED — evidence layers are separate"
                                     }
                                 }
                                 PropertyRow {

@@ -57,19 +57,22 @@
 - Switch to Worlds/Explore.
 - Show the reconstructed Yosemite Gaussian world.
 - Briefly toggle Appearance, inferred Depth, Structure, Coverage.
+- Switch separately to the uncomposited native CARLA evidence.
 - Overlay labels:
   - `Gaussian world = camera appearance`
-  - `Deterministic scenario state = actors + collision truth`
+  - `Native CARLA = actors + collision truth`
+  - `Current build: separate evidence views, not one unified scene`
 
 **Narration**
 
-> “The road appearance comes from Servo’s real video-to-Gaussian reconstruction and native Vulkan renderer. Servo keeps physics honest: splats render the camera image, while deterministic scenario state owns actor positions, motion, and collision.”
+> “The road appearance comes from Servo’s real video-to-Gaussian reconstruction and native Vulkan renderer. Native CARLA separately owns actor positions, motion, contact, and collision. This build links their route and evidence, but does not claim they are one spatially unified scene.”
 
 **Do not say**
 
 - “collision-ready Gaussian world”;
 - “metric LiDAR depth”;
 - “complete 360-degree reconstruction.”
+- “the vehicle is physically driving inside the Gaussian world.”
 
 ---
 

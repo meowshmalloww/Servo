@@ -21,7 +21,7 @@ private slots:
     void rejectsOlderSequence();
     void marksOldHeartbeatStale();
     void policyFrameProviderIsThreadSafeAndMonotonic();
-    void defaultsToNativeCarlaReplayAndKeepsCompositeExplicit();
+    void exposesNativeCarlaReplayAndRejectsCompositeProductViews();
     void keepsExecutionSelectionSeparateFromAttachedSession();
     void clearsStaleAttachedSessionMetadata();
     void reattachesOnlySessionForSelectedExecutionWorld();
@@ -111,7 +111,7 @@ void SimulationControllerTests::policyFrameProviderIsThreadSafeAndMonotonic()
     QCOMPARE(result.pixelColor(0, 0), QColor(Qt::green));
 }
 
-void SimulationControllerTests::defaultsToNativeCarlaReplayAndKeepsCompositeExplicit()
+void SimulationControllerTests::exposesNativeCarlaReplayAndRejectsCompositeProductViews()
 {
     QTemporaryDir temporary;
     QVERIFY(temporary.isValid());
@@ -136,6 +136,10 @@ void SimulationControllerTests::defaultsToNativeCarlaReplayAndKeepsCompositeExpl
               { QStringLiteral("metric_real_world_validated"), false },
               { QStringLiteral("collision_validated"), false },
           } },
+        { QStringLiteral("visual_integration"), QJsonObject {
+              { QStringLiteral("status"), QStringLiteral("rejected") },
+              { QStringLiteral("submission_eligible"), false },
+          } },
         { QStringLiteral("artifact_paths"), QJsonObject {
               { QStringLiteral("evidence/carla-native-fixed.mp4"), native },
               { QStringLiteral("evidence/servo-t5-carla-lincoln-fixed.mp4"), integrated },
@@ -146,11 +150,13 @@ void SimulationControllerTests::defaultsToNativeCarlaReplayAndKeepsCompositeExpl
     QCOMPARE(controller.result(), QStringLiteral("success"));
     QCOMPARE(controller.replayVideoUrl(), QUrl::fromLocalFile(native).toString());
     QCOMPARE(controller.nativeReplayVideoUrl(), QUrl::fromLocalFile(native).toString());
-    QCOMPARE(controller.hybridReplayVideoUrl(), QUrl::fromLocalFile(integrated).toString());
-    QCOMPARE(controller.comparisonReplayVideoUrl(), QUrl::fromLocalFile(comparison).toString());
+    QVERIFY(controller.hybridReplayVideoUrl().isEmpty());
+    QVERIFY(controller.comparisonReplayVideoUrl().isEmpty());
     QVERIFY(controller.physicsGatePassed());
     QVERIFY(!controller.metricRealWorldValidated());
     QVERIFY(!controller.collisionValidated());
+    QVERIFY(!controller.visualIntegrationValidated());
+    QCOMPARE(controller.visualIntegrationStatus(), QStringLiteral("rejected"));
 }
 
 void SimulationControllerTests::keepsExecutionSelectionSeparateFromAttachedSession()
