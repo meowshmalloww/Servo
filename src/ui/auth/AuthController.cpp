@@ -129,6 +129,7 @@ QString AuthController::userId() const { return m_userId; }
 QString AuthController::projectId() const { return m_projectId; }
 QString AuthController::apiBaseUrl() const { return m_apiBaseUrl; }
 QString AuthController::lastError() const { return m_lastError; }
+QString AuthController::notice() const { return m_notice; }
 QString AuthController::accessToken() const { return m_accessToken; }
 
 void AuthController::signIn(const QString &email, const QString &password)
@@ -151,6 +152,7 @@ void AuthController::signIn(const QString &email, const QString &password)
     m_busy = true;
     m_state = QStringLiteral("signing-in");
     m_lastError.clear();
+    m_notice.clear();
     emit authenticationChanged();
 
     QUrl endpoint(QStringLiteral(
@@ -190,6 +192,62 @@ void AuthController::signIn(const QString &email, const QString &password)
     });
 }
 
+void AuthController::requestPasswordReset(const QString &email)
+{
+    if (localMode() || m_busy)
+        return;
+    if (!m_configured) {
+        m_lastError = QStringLiteral("Firebase authentication is not configured.");
+        emit authenticationChanged();
+        return;
+    }
+    if (email.trimmed().isEmpty()) {
+        m_lastError = QStringLiteral("Enter the Firebase account email first.");
+        emit authenticationChanged();
+        return;
+    }
+
+    ++m_generation;
+    const quint64 generation = m_generation;
+    m_busy = true;
+    m_state = QStringLiteral("sending-reset");
+    m_lastError.clear();
+    m_notice.clear();
+    emit authenticationChanged();
+
+    QUrl endpoint(QStringLiteral(
+        "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode"));
+    QUrlQuery endpointQuery;
+    endpointQuery.addQueryItem(QStringLiteral("key"), m_apiKey);
+    endpoint.setQuery(endpointQuery);
+    QNetworkRequest request(endpoint);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    const QJsonObject body{
+        {QStringLiteral("requestType"), QStringLiteral("PASSWORD_RESET")},
+        {QStringLiteral("email"), email.trimmed()},
+    };
+    QNetworkReply *reply = m_network->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation]() {
+        const QByteArray payload = reply->readAll();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        if (generation != m_generation)
+            return;
+        m_busy = false;
+        m_state = QStringLiteral("signed-out");
+        if (status < 200 || status >= 300) {
+            m_lastError = firebaseError(
+                payload, QStringLiteral("Firebase could not send a password reset email."));
+            emit authenticationChanged();
+            return;
+        }
+        m_notice = QStringLiteral(
+            "Password reset sent. Check the inbox for this Firebase account.");
+        emit authenticationChanged();
+    });
+}
+
 void AuthController::signOut()
 {
     ++m_generation;
@@ -205,6 +263,7 @@ void AuthController::signOut()
     m_state = localMode() ? QStringLiteral("local-development")
                           : QStringLiteral("signed-out");
     m_lastError.clear();
+    m_notice.clear();
     if (tokenChanged)
         emit accessTokenChanged();
     emit authenticationChanged();
@@ -316,6 +375,7 @@ void AuthController::acceptSession(const QString &idToken,
     m_busy = false;
     m_state = QStringLiteral("authenticated");
     m_lastError.clear();
+    m_notice.clear();
     const int refreshAfterSeconds = qMax(60, expiresInSeconds - 300);
     m_refreshTimer.start(refreshAfterSeconds * 1000);
     if (tokenChanged)
@@ -335,6 +395,7 @@ void AuthController::rejectSession(const QString &message, quint64 generation)
     m_busy = false;
     m_state = QStringLiteral("signed-out");
     m_lastError = message;
+    m_notice.clear();
     if (tokenChanged)
         emit accessTokenChanged();
     emit authenticationChanged();

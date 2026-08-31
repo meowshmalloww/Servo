@@ -137,7 +137,7 @@ py -3.11 -m venv .venv-realityci
 .\.venv-realityci\Scripts\python.exe -m pytest tests\realityci -q
 ```
 
-Expected result for the documented submission build: **194 passed, 1 optional test skipped**.
+Expected result for the documented submission build: **201 passed, 1 optional test skipped**.
 The suite exercises the Google ADK campaign graph, Gemini/GenAI structured
 client boundary with mock transports, Firebase authentication, Cloud Run Job
 dispatch contract, durable campaign resume, training, hidden evaluation,

@@ -26,6 +26,7 @@ class AuthController final : public QObject
     Q_PROPERTY(QString projectId READ projectId CONSTANT)
     Q_PROPERTY(QString apiBaseUrl READ apiBaseUrl CONSTANT)
     Q_PROPERTY(QString lastError READ lastError NOTIFY authenticationChanged)
+    Q_PROPERTY(QString notice READ notice NOTIFY authenticationChanged)
     // Trusted in-process QML passes this directly to the two API controllers.
     // It is never persisted, printed, or written to Settings.
     Q_PROPERTY(QString accessToken READ accessToken NOTIFY accessTokenChanged)
@@ -45,9 +46,11 @@ public:
     QString projectId() const;
     QString apiBaseUrl() const;
     QString lastError() const;
+    QString notice() const;
     QString accessToken() const;
 
     Q_INVOKABLE void signIn(const QString &email, const QString &password);
+    Q_INVOKABLE void requestPasswordReset(const QString &email);
     Q_INVOKABLE void signOut();
 
 signals:
@@ -86,6 +89,7 @@ private:
     QString m_userId;
     QString m_state;
     QString m_lastError;
+    QString m_notice;
     bool m_configured = false;
     bool m_authenticated = false;
     bool m_busy = false;

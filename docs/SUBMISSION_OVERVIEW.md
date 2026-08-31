@@ -1,9 +1,9 @@
 # Servo — RealityCI submission overview (backend build)
 
-> Status: **complete local agentic campaign loop, desktop Ask Servo, and a
-> separate real CARLA vertical slice, verified locally**. These are not yet one
-> end-to-end T5/CARLA training campaign. Cloud deployment remains a required
-> submission step.
+> Status: **complete local agentic campaign loop, desktop Ask Servo, a separate
+> real CARLA vertical slice, and deployed Google Cloud infrastructure**. These
+> are not yet one end-to-end T5/CARLA training campaign. One authenticated
+> cloud campaign receipt remains to be captured.
 
 ## 30-second explanation
 
@@ -73,7 +73,7 @@ See `assets/realityci-architecture.svg` and `REALITYCI_BACKEND.md`
 |---|---|
 | Gemini API / Vertex AI-compatible planner | structured causal hypotheses and bounded tool selection; current local credentials use the Gemini API path |
 | Google ADK | durable graph execution of the campaign (`adk_graph.py`) |
-| Cloud Run | Firebase-authenticated control API plus one asynchronous complete-campaign Job; deployment proof is still required |
+| Cloud Run | deployed Firebase-authenticated control API plus one configured asynchronous complete-campaign Job |
 | Vertex AI | ADC/service-account Gemini 3.7 Flash execution inside the campaign Job |
 | Cloud Storage | versioned campaign workspace, ordered events, checkpoints, hidden exam, decision, and cloud execution receipt |
 | Cloud Firestore | bounded campaign and artifact metadata index; large bytes remain in Cloud Storage |
@@ -94,9 +94,9 @@ See `assets/realityci-architecture.svg` and `REALITYCI_BACKEND.md`
 - Gemini live calls are configured and verified locally. Credentials remain
   environment-only and are not committed. The deterministic diagnostician is
   still the fail-closed fallback when a provider is unavailable.
-- Cloud deployment is scripted and the desktop speaks to the same API, but the
-  current verified run is local uvicorn + local CARLA/DriveMA; Cloud Run has
-  not yet been claimed as deployed.
+- Cloud Run service and Job deployment are verified. The current full campaign
+  receipt is local; a completed authenticated Cloud Run Job campaign receipt is
+  still pending and is not claimed.
 - Firestore is implemented as a metadata-only campaign/artifact index. Pub/Sub
   is not a runtime claim: the deadline path uses one Cloud Run Job per
   versioned GCS campaign workspace rather than an unverified queue layer.

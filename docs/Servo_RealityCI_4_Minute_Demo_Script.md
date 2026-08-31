@@ -130,14 +130,14 @@
 - Train workspace.
 - Curriculum dimensions appear: occlusion, ego speed, pedestrian speed, angle, contrast.
 - Training/hidden split shown; hidden manifest visibly sealed.
-- Pub/Sub event: `TRAINING_REQUESTED`.
+- Cloud Run Job dispatch: `TRAINING_REQUESTED`.
 - Cut to Google Cloud Console or terminal showing actual Cloud Run Job execution.
 - Show training metrics briefly.
 - Baseline hash → candidate hash.
 
 **Narration**
 
-> “Servo creates an easy-to-hard curriculum around the measured weakness and reserves hidden scenarios before training. Pub/Sub launches a real Cloud Run training job. The small PyTorch policy learns from oracle trajectories, and the model weights produce a new content-addressed checkpoint.”
+> “Servo creates an easy-to-hard curriculum around the measured weakness and reserves hidden scenarios before training. The authenticated API dispatches a real Cloud Run Job. The small PyTorch policy learns from oracle trajectories, and the model weights produce a new content-addressed checkpoint.”
 
 **Visible proof required**
 
@@ -206,15 +206,14 @@
   1. Qt/QML + Vulkan desktop
   2. Cloud Run API + Google ADK graph
   3. Vertex AI / Gemini 3.7 Flash
-  4. Pub/Sub
-  5. Firestore
-  6. Cloud Storage
-  7. Cloud Run Jobs
-  8. deterministic exam/promotion services
+  4. Firestore
+  5. Cloud Storage
+  6. Cloud Run Jobs
+  7. deterministic exam/promotion services
 
 **Narration**
 
-> “The native Qt and Vulkan desktop is the evidence workbench. Google ADK runs the durable workflow on Cloud Run. Gemini 3.7 Flash performs grounded multimodal diagnosis and curriculum planning. Firestore stores workflow state, Pub/Sub carries domain events, Cloud Storage keeps evidence and checkpoints, and Cloud Run Jobs execute scenarios, training, and exams.”
+> “The native Qt and Vulkan desktop is the evidence workbench. Google ADK runs the workflow on Cloud Run. Gemini 3.7 Flash performs grounded diagnosis and curriculum planning. Firestore indexes workflow state, Cloud Storage keeps evidence and checkpoints, and Cloud Run Jobs execute campaigns.”
 
 ---
 
