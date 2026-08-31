@@ -1,0 +1,7 @@
+-r ../../cloud/control_api/requirements.txt
+-r ../../cloud/control_api/requirements-gcs.txt
+
+httpx==0.28.1
+opencv-python-headless==4.11.0.86
+Pillow==12.1.1
+pytest==9.0.3

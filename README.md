@@ -118,12 +118,55 @@ cmake --build build --parallel
 .\build\appServo.exe
 ```
 
-Run the test suites:
+## Reproducible testing
+
+The agentic backend test environment is independent of CARLA, CUDA, API keys,
+and private media. From a fresh Windows checkout with Python 3.11:
 
 ```powershell
+py -3.11 -m venv .venv-realityci
+.\.venv-realityci\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-realityci\Scripts\python.exe -m pip install `
+  torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+.\.venv-realityci\Scripts\python.exe -m pip install `
+  -r tools\realityci\requirements-test.txt
+.\.venv-realityci\Scripts\python.exe -m pytest tests\realityci -q
+```
+
+Expected result for the documented submission build: **192 passed, 1 optional test skipped**.
+The suite exercises the Google ADK campaign graph, Gemini/GenAI structured
+client boundary with mock transports, Firebase authentication, Cloud Run Job
+dispatch contract, durable campaign resume, training, hidden evaluation,
+promotion/rejection, and fail-closed CARLA route validation. It does not claim
+that a local unit test is a deployed Google Cloud execution or a live CARLA
+drive.
+
+For the native Qt application, install Qt 6.11.1 with MinGW 13.1 and CMake,
+then run:
+
+```powershell
+$env:Path = "C:\Qt\6.11.1\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;$env:Path"
+cmake -S . -B build -G Ninja `
+  -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/mingw_64 `
+  -DCMAKE_CXX_COMPILER=C:/Qt/Tools/mingw1310_64/bin/g++.exe
+cmake --build build --parallel
 ctest --test-dir build --output-on-failure
+```
+
+Expected result: **13/13 native tests passed**. Reconstruction-specific Python
+tests can additionally be run with the checksum-locked runtime described below:
+
+```powershell
 python -m unittest discover -s tests/python -p "test_*.py" -v
 ```
+
+Google Cloud deployment is reproducible through
+[`cloud/infra/deploy.ps1`](cloud/infra/deploy.ps1); the exact service accounts,
+Cloud Build images, Cloud Run service and Job, Vertex AI configuration, and
+versioned Cloud Storage evidence flow are documented in
+[`cloud/infra/README.md`](cloud/infra/README.md). A deployment is considered
+proven only after a real `.run.app` revision and hash-sealed Cloud Run Job
+execution receipt have been captured.
 
 ### Reconstruction runtime
 
