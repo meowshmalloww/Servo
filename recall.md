@@ -138,6 +138,25 @@ checkpoint, hidden result, and decision is content-addressed and auditable.
 - Off-axis Gaussian blur, gaps, and fiberglass artifacts remain an honest
   limitation of the captured forward monocular evidence.
 
+## 3D asset format support
+
+- **Servo Gaussian world:** a specialized 3DGS `.ply` inside a validated Servo
+  world bundle with `world.json`, cameras, hashes, and provenance. An arbitrary
+  mesh or point-cloud PLY is not automatically a valid Servo world.
+- **Native vehicle overlay:** bundled `.glb` assets are rendered through Qt
+  Quick 3D in the Gaussian view. The current accepted vehicle is an OpenX Volvo
+  EX30 GLB.
+- **OBJ:** currently generated for the inferred road debug/physics collider;
+  it is not exposed as a general visual-world import workflow.
+- **glTF/GLB/OBJ runtime import:** Qt's RuntimeLoader can support these formats,
+  but Servo does not yet expose a user-facing arbitrary-model importer,
+  validation gate, placement editor, or persisted asset registry.
+- **USDZ:** not supported by Servo's runtime loading path.
+
+For a Sketchfab asset intended as a vehicle or prop, prefer a self-contained
+`.glb`. A 4K-texture GLB is the default hackathon balance; 8K should be used
+only for a close-up hero asset after measuring GPU memory and frame time.
+
 ## Real CARLA evidence
 
 - CARLA 0.9.16 packaged-runtime discovery and owned process/session management
