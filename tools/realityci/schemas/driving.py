@@ -174,6 +174,9 @@ class DrivingOutcome(str, Enum):
     CANCELLED = "cancelled"
 
 
+MINIMUM_SUCCESS_ROUTE_COMPLETION = 0.90
+
+
 class DrivingFailureClass(str, Enum):
     COLLISION_VEHICLE = "collision_vehicle"
     COLLISION_PEDESTRIAN = "collision_pedestrian"
@@ -240,3 +243,20 @@ class DrivingRunEvidence(StrictModel):
     infrastructure_invalid: bool = False
     artifact_sha256: dict[str, str]
     created_at: datetime
+
+    @model_validator(mode="after")
+    def route_success_is_fail_closed(self) -> "DrivingRunEvidence":
+        if self.outcome != DrivingOutcome.SUCCESS:
+            return self
+        if self.metrics.route_completion < MINIMUM_SUCCESS_ROUTE_COMPLETION:
+            raise ValueError(
+                "successful driving evidence requires route completion >= "
+                f"{MINIMUM_SUCCESS_ROUTE_COMPLETION:.2f}"
+            )
+        if self.metrics.frame_count <= 0:
+            raise ValueError("successful driving evidence requires authoritative physics frames")
+        if self.infrastructure_invalid:
+            raise ValueError("infrastructure-invalid evidence cannot be successful")
+        if self.failure_class is not None:
+            raise ValueError("successful driving evidence cannot carry a failure class")
+        return self

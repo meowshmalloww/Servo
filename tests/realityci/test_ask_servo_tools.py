@@ -42,3 +42,15 @@ def test_deterministic_agentic_campaign_goal_uses_durable_graph_tool() -> None:
     assert call.tool == AskToolName.RUN_TO_COMPLETION
     assert call.campaign_id == "cam-0123456789abcdef"
     assert "Google ADK" in call.explanation
+
+
+def test_cloud_background_campaign_routes_to_dispatch() -> None:
+    call = deterministic_plan(
+        AskPlanRequest(
+            prompt="Run this campaign in the Google Cloud background",
+            provider="deterministic",
+            campaign_id="cam-0123456789abcdef",
+        )
+    )
+    assert call.tool == AskToolName.DISPATCH_CAMPAIGN
+    assert call.campaign_id == "cam-0123456789abcdef"

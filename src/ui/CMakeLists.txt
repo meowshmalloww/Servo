@@ -40,6 +40,7 @@ qt_add_qml_module(appServo
         components/DrivingHud.qml
         components/CarlaDriveView.qml
         components/LiveDriveView.qml
+        components/LoginPage.qml
         components/PolicyFrameMonitor.qml
         components/SimulationReadiness.qml
         components/PageToolbar.qml
@@ -72,6 +73,8 @@ qt_add_qml_module(appServo
         workspaces/WorldsWorkspace.qml
 
     SOURCES
+        auth/AuthController.cpp
+        auth/AuthController.h
         chat/AiChatController.cpp
         chat/AiChatController.h
         chat/AiChatStore.cpp
@@ -166,6 +169,7 @@ qt_add_qml_module(appServo
 )
 
 target_include_directories(appServo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/auth
     ${CMAKE_CURRENT_SOURCE_DIR}/chat
     ${CMAKE_CURRENT_SOURCE_DIR}/media
     ${CMAKE_CURRENT_SOURCE_DIR}/realityci

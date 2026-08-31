@@ -1,0 +1,16 @@
+# Control API image build. The full repository context is required because
+# the app imports tools/realityci from the repo root.
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      [
+        "build",
+        "-f",
+        "cloud/control_api/Dockerfile",
+        "-t",
+        "${_REGION}-docker.pkg.dev/${PROJECT_ID}/servo/${_SERVICE}:cpu",
+        ".",
+      ]
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/servo/${_SERVICE}:cpu"

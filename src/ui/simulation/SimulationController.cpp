@@ -473,6 +473,11 @@ void SimulationController::fetchSimulationList(const QString &preferredSessionId
     });
 }
 
+void SimulationController::setBearerToken(const QString &token)
+{
+    m_token = token;
+}
+
 QJsonObject SimulationController::selectSimulationEntry(
     const QJsonArray &sessions,
     const QString &preferredSessionId,

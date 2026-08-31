@@ -19,6 +19,7 @@ from ...schemas.driving import (
 from ...schemas.simulation import SimulationSessionState
 from ..session_store import SessionStore, atomic_write_json
 from .discovery import DiscoveryResult, port_available
+from .evaluator import terminal_route_validation
 from .process_manager import CarlaProcessManager
 from .runner import CarlaSimulationRunner
 
@@ -112,6 +113,31 @@ def run_manifest(manifest_path: Path) -> int:
                 },
             )
             if manifest is not None:
+                last_live = None
+                try:
+                    if store.live_path.is_file():
+                        last_live = store.live()
+                except Exception:
+                    last_live = None
+                route_completion = (
+                    float(last_live.route_completion) if last_live is not None else 0.0
+                )
+                authoritative_frames = (
+                    int(last_live.sequence) if last_live is not None else 0
+                )
+                route_validation = terminal_route_validation(
+                    route_completion=route_completion,
+                    frame_count=authoritative_frames,
+                    outcome=DrivingOutcome.INFRASTRUCTURE_INVALID,
+                    session_state=store.state(),
+                )
+                route_validation["source"] = (
+                    "last-authoritative-live-state"
+                    if last_live is not None else "no-authoritative-frame-starting-pose"
+                )
+                atomic_write_json(
+                    session_root / "route-validation.json", route_validation
+                )
                 evidence = DrivingRunEvidence(
                     session_id=manifest.session_id,
                     campaign_id=manifest.campaign_id,
@@ -128,28 +154,49 @@ def run_manifest(manifest_path: Path) -> int:
                     observation_source=manifest.observation.source,
                     seed=manifest.scenario.seed,
                     metrics=DrivingRunMetrics(
-                        simulation_duration_s=0.0,
+                        simulation_duration_s=(
+                            float(last_live.simulation_time_s) if last_live is not None else 0.0
+                        ),
                         fixed_delta_seconds=manifest.timing.fixed_delta_seconds,
-                        frame_count=0,
+                        frame_count=authoritative_frames,
                         distance_traveled_m=0.0,
-                        route_completion=0.0,
-                        min_speed_mps=0.0,
-                        max_speed_mps=0.0,
-                        final_speed_mps=0.0,
-                        mean_lateral_error_m=0.0,
-                        max_lateral_error_m=0.0,
+                        route_completion=route_completion,
+                        min_speed_mps=(
+                            float(last_live.speed_mps) if last_live is not None else 0.0
+                        ),
+                        max_speed_mps=(
+                            float(last_live.speed_mps) if last_live is not None else 0.0
+                        ),
+                        final_speed_mps=(
+                            float(last_live.speed_mps) if last_live is not None else 0.0
+                        ),
+                        mean_lateral_error_m=(
+                            float(last_live.lateral_error_m) if last_live is not None else 0.0
+                        ),
+                        max_lateral_error_m=(
+                            float(last_live.lateral_error_m) if last_live is not None else 0.0
+                        ),
                         mean_policy_latency_ms=0.0,
                         max_policy_latency_ms=0.0,
                         deadline_misses=0,
                         sensor_sync_failures=1 if failure_class == DrivingFailureClass.SENSOR_DESYNCHRONIZATION else 0,
-                        collision_count=0,
-                        lane_invasion_count=0,
+                        collision_count=(
+                            int(last_live.collision_count) if last_live is not None else 0
+                        ),
+                        lane_invasion_count=(
+                            int(last_live.lane_invasion_count) if last_live is not None else 0
+                        ),
                         out_of_support_duration_s=0.0,
                     ),
                     outcome=DrivingOutcome.INFRASTRUCTURE_INVALID,
                     failure_class=failure_class,
                     infrastructure_invalid=True,
-                    artifact_sha256={"worker-failure.json": sha256_file(str(failure_path))},
+                    artifact_sha256={
+                        "worker-failure.json": sha256_file(str(failure_path)),
+                        "route-validation.json": sha256_file(
+                            str(session_root / "route-validation.json")
+                        ),
+                    },
                     created_at=datetime.now(timezone.utc),
                 )
                 atomic_write_json(session_root / "run-evidence.json", evidence.model_dump(mode="json"))

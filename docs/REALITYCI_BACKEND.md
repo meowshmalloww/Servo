@@ -1,5 +1,10 @@
 # RealityCI Backend Architecture
 
+All `/v1` control endpoints except the load-balancer health check use the
+shared authentication dependency. Cloud Run defaults to verified Firebase ID
+tokens and never falls back to the local shared token. Local development can
+select `SERVO_AUTH_MODE=local`. See [AUTHENTICATION.md](AUTHENTICATION.md).
+
 The autonomous improvement loop for physical-AI policies, implemented as
 real, verified code under `tools/realityci/`, `tests/realityci/`, and
 `cloud/`. Every number in every artifact comes from executed code. The local
@@ -104,12 +109,9 @@ Transitions are enforced by `tools/realityci/state_machine.py`
 
 - Gemini diagnostician requires `GEMINI_API_KEY`/Vertex credentials; without
   them the deterministic diagnostician runs (clearly labeled as such).
-- Model parity with the desktop AI Chat
-  (`src/ui/chat/AiChatController.cpp`): same credential path
-  (`GOOGLE_API_KEY` / `GEMINI_API_KEY` → `x-goog-api-key` on the
-  Generative Language API) and same catalog — `gemini-3.7-flash`
-  (diagnostician default), `gemini-3.5-flash` (telemetry compression),
-  `gemini-2.5-pro` (second opinion). Override per campaign with
+- Model parity with the desktop AI Chat uses `google-genai` and the verified
+  model catalog: `gemini-3.7-flash` (diagnostician default) and
+  `gemini-3.6-flash` (telemetry compression and second opinion). Override per campaign with
   `run-campaign --gemini-model <id>`.
 - Cloud deployment needs GCP credentials; see `cloud/infra/README.md`.
 - `google-adk` 2.7.1 (latest) is installed in the overlay env
@@ -154,12 +156,17 @@ durable event log.
 # Create Campaign -> Start Run. In Ask Servo, select that campaign and request
 # "Run the selected campaign through the agentic loop". Gemini/OpenAI plans;
 # deterministic tools and the Google ADK graph execute and verify the result.
+# For the asynchronous cloud path, ask "Run this campaign in the Google Cloud
+# background". Ask Servo selects the bounded dispatch_campaign tool; it cannot
+# invent a job ID or bypass the Firebase/API authorization boundary.
 ```
 
 Control API surface:
 
 - `GET /v1/campaigns`, `GET /v1/campaigns/{id}/state`, and `/events`
 - `POST /v1/campaigns/{id}/run`, `/resume`, `/step`, and `/cancel`
+- `POST /v1/campaigns/{id}/dispatch`: idempotent asynchronous Cloud Run Job
+- `GET /v1/cloud/readiness`: configured services versus receipt-proven execution
 - `GET /v1/campaigns/{id}/artifacts` and hash-bound artifact download
 - `GET /v1/assistant/tools`, `POST /v1/assistant/plan`, and `/execute`
 - `POST /v1/ask/agent`: inspect -> model plan -> bounded execution -> durable

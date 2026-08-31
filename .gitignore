@@ -77,13 +77,13 @@ venv/
 /demo/**/jobs/**/frames/
 /demo/**/campaign-cli-demo/
 
-# Local control API source is tracked; Docker/cloud deployment scaffolding is
-# intentionally excluded from the native no-install hackathon build.
-/cloud/**/Dockerfile
-/cloud/infra/
+# Google Cloud deployment sources are part of the reproducible submission.
+# Local credentials and generated deployment receipts remain ignored by the
+# general secret/tmp rules below.
+# Superseded split-job prototypes remain local; the tracked campaign Job runs
+# the complete ADK state machine with one sealed workspace.
 /cloud/exam_job/
 /cloud/training_job/
-/cloud/control_api/requirements-gcs.txt
 
 # Rejected one-off reconstruction experiment generator.
 /tools/reconstruction/servo_prepare_r21.py

@@ -7,12 +7,83 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ...schemas.driving import DrivingOutcome, MINIMUM_SUCCESS_ROUTE_COMPLETION
+from ...schemas.simulation import SimulationSessionState, TERMINAL_SIMULATION_STATES
+
 
 @dataclass(frozen=True)
 class RouteMetrics:
     progress: float
     lateral_error_m: float
     centerline_index: int
+
+
+def terminal_route_validation(
+    *,
+    route_completion: float,
+    frame_count: int,
+    outcome: DrivingOutcome | str | None,
+    session_state: SimulationSessionState | str,
+) -> dict[str, object]:
+    """Classify a route view and reject every incomplete success claim.
+
+    A terminal simulation state only says that execution ended.  It is not a
+    pass by itself.  This receipt keeps a 61% timeout visible as partial
+    evidence and a zero-frame 0% worker failure as a starting-pose-only record,
+    while making it impossible to serialize either one as a route pass.
+    """
+
+    completion = float(route_completion)
+    if not math.isfinite(completion) or not 0.0 <= completion <= 1.0:
+        raise ValueError("route completion must be finite and inside [0, 1]")
+    if int(frame_count) < 0:
+        raise ValueError("route frame count cannot be negative")
+    normalized_state = SimulationSessionState(session_state)
+    normalized_outcome = DrivingOutcome(outcome) if outcome is not None else None
+    terminal = normalized_state in TERMINAL_SIMULATION_STATES
+    starting_pose_only = completion <= 1e-9 and int(frame_count) == 0
+
+    if terminal and normalized_outcome is None:
+        raise ValueError("terminal route evidence requires an explicit outcome")
+    if normalized_outcome == DrivingOutcome.SUCCESS:
+        if normalized_state != SimulationSessionState.COMPLETED:
+            raise ValueError("successful route evidence requires a completed session state")
+        if int(frame_count) <= 0:
+            raise ValueError("successful route evidence requires authoritative physics frames")
+        if completion < MINIMUM_SUCCESS_ROUTE_COMPLETION:
+            raise ValueError(
+                "route success rejected: completion "
+                f"{completion:.6f} is below {MINIMUM_SUCCESS_ROUTE_COMPLETION:.2f}"
+            )
+
+    route_pass = (
+        terminal
+        and normalized_outcome == DrivingOutcome.SUCCESS
+        and completion >= MINIMUM_SUCCESS_ROUTE_COMPLETION
+        and int(frame_count) > 0
+    )
+    if route_pass:
+        classification = "pass"
+    elif starting_pose_only:
+        classification = "starting-pose-only"
+    elif not terminal:
+        classification = "in-progress"
+    elif completion <= 1e-9:
+        classification = "terminal-no-progress"
+    else:
+        classification = "terminal-partial-or-failed"
+    return {
+        "schema": "servo.carla-route-validation/v1",
+        "session_state": normalized_state.value,
+        "outcome": normalized_outcome.value if normalized_outcome is not None else None,
+        "route_completion": completion,
+        "required_completion": MINIMUM_SUCCESS_ROUTE_COMPLETION,
+        "authoritative_frame_count": int(frame_count),
+        "terminal_execution": terminal,
+        "starting_pose_only": starting_pose_only,
+        "accepted_as_route_pass": route_pass,
+        "classification": classification,
+    }
 
 
 def route_metrics(centerline: list[tuple[float, float, float]], position: tuple[float, float, float], previous_index: int = 0) -> RouteMetrics:

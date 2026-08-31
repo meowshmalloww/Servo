@@ -44,6 +44,20 @@ target_link_libraries(AiChatControllerTests
 
 add_test(NAME AiChatControllerTests COMMAND AiChatControllerTests)
 
+qt_add_executable(AuthControllerTests
+    AuthControllerTests.cpp
+    ../src/ui/auth/AuthController.cpp
+    ../src/ui/auth/AuthController.h
+)
+
+target_include_directories(AuthControllerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ui/auth
+)
+
+target_link_libraries(AuthControllerTests PRIVATE Qt6::Network Qt6::Qml Qt6::Test)
+
+add_test(NAME AuthControllerTests COMMAND AuthControllerTests)
+
 qt_add_executable(RealityCIControllerTests
     RealityCIControllerTests.cpp
     ../src/ui/realityci/RealityCIController.cpp

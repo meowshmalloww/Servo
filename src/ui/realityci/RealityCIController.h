@@ -29,7 +29,7 @@ class RealityCIController final : public QAbstractTableModel
     // Column identity for TableView-based tables.
     Q_PROPERTY(int eventCount READ eventCount NOTIFY eventsChanged)
     Q_PROPERTY(QString baseUrl READ baseUrl WRITE setBaseUrl NOTIFY baseUrlChanged)
-    Q_PROPERTY(bool tokenConfigured READ tokenConfigured CONSTANT)
+    Q_PROPERTY(bool tokenConfigured READ tokenConfigured NOTIFY tokenConfiguredChanged)
     Q_PROPERTY(QString connectionState READ connectionState NOTIFY connectionStateChanged)
     Q_PROPERTY(bool online READ online NOTIFY connectionStateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -90,6 +90,7 @@ public:
     QString assistantResult() const;
 
     Q_INVOKABLE void setBaseUrl(const QString &baseUrl);
+    Q_INVOKABLE void setBearerToken(const QString &token);
     Q_INVOKABLE void connectToServer();
     Q_INVOKABLE void createCampaign(const QString &checkpointUri,
                                     int trainingScenarios,
@@ -127,6 +128,7 @@ public:
 signals:
     void eventsChanged();
     void baseUrlChanged();
+    void tokenConfiguredChanged();
     void connectionStateChanged();
     void busyChanged();
     void assistantBusyChanged();

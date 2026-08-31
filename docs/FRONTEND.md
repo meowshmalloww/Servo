@@ -1,5 +1,10 @@
 # Servo frontend contract
 
+The application shell is gated by `AuthController`. In Firebase mode the
+workspace, simulations, and Ask Servo remain behind the login surface until
+Firebase sign-in and `/v1/auth/session` verification succeed. Local mode is an
+explicit developer path. See [AUTHENTICATION.md](AUTHENTICATION.md).
+
 Servo's desktop frontend is a Qt 6.11/QML workbench. It provides the production UI shell, persistent media-source registration, a real Vulkan-rendered world viewport, and a native-process reconstruction control surface without fabricating backend results.
 
 ## Shell

@@ -1,0 +1,3 @@
+# Cloud-only persistence dependency. Imported lazily so local native builds do
+# not need a Google Cloud environment.
+google-cloud-storage>=3.4,<4

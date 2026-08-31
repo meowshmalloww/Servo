@@ -31,6 +31,15 @@ ApplicationWindow {
         debugDrawer.showTab(index);
     }
 
+    function applyControlPlaneAuthentication() {
+        RealityCIController.setBearerToken(AuthController.accessToken);
+        SimulationController.setBearerToken(AuthController.accessToken);
+        if (AuthController.authenticated) {
+            RealityCIController.connectToServer();
+            SimulationController.connectToServer();
+        }
+    }
+
     palette.window: Theme.window
     palette.windowText: Theme.text
     palette.base: Theme.field
@@ -64,8 +73,14 @@ ApplicationWindow {
         debugDrawer.expanded = appSettings.debugExpanded;
         Session.worldModel = WorldLibraryModel;
         RuntimeMetrics.attachWindow(window);
-        RealityCIController.connectToServer();
-        SimulationController.connectToServer();
+        window.applyControlPlaneAuthentication();
+    }
+
+    Connections {
+        target: AuthController
+        function onAccessTokenChanged() {
+            window.applyControlPlaneAuthentication();
+        }
     }
 
     Connections {
@@ -175,6 +190,7 @@ ApplicationWindow {
 
     menuBar: MenuBar {
         id: mainMenu
+        visible: AuthController.authenticated
         height: Theme.menuHeight
 
         background: Rectangle {
@@ -332,6 +348,8 @@ ApplicationWindow {
 
     RowLayout {
         anchors.fill: parent
+        visible: AuthController.authenticated
+        enabled: AuthController.authenticated
         spacing: 0
 
         Rectangle {
@@ -541,6 +559,17 @@ ApplicationWindow {
                         onClicked: Session.workspaceIndex = 3
                     }
 
+                    TextButton {
+                        visible: !AuthController.localMode
+                        text: "Sign out"
+                        toolTip: AuthController.email.length > 0
+                                 ? "Signed in as " + AuthController.email
+                                 : "End Firebase session"
+                        compact: true
+                        Layout.alignment: Qt.AlignVCenter
+                        onClicked: AuthController.signOut()
+                    }
+
                     RowLayout {
                         id: perfRow
                         spacing: 10
@@ -745,6 +774,12 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    LoginPage {
+        anchors.fill: parent
+        visible: !AuthController.authenticated
+        z: 1000
     }
 
     FileDialog {

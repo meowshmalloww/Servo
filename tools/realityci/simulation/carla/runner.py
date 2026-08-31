@@ -58,7 +58,7 @@ from .actors import (
 from .cleanup import OwnedActors
 from .coordinates import CoordinateTransform, matrix_to_quaternion
 from .discovery import carla_import_path
-from .evaluator import route_metrics
+from .evaluator import route_metrics, terminal_route_validation
 from .sensor_barrier import SensorBarrier
 from .world_loader import configure_synchronous_world, load_executable_world
 
@@ -355,7 +355,7 @@ def _evidence_artifact_names(input_camera_ids: tuple[str, ...]) -> tuple[str, ..
         "collisions.jsonl", "lane-invasions.jsonl", "safety-interventions.jsonl",
         "route-stabilizer.jsonl", ROUTE_TERMINAL_ARTIFACT,
         "dynamic-actors.json", "dynamic-actor-events.jsonl",
-        "physics-evidence.json", "roadside-detections.jsonl",
+        "physics-evidence.json", "route-validation.json", "roadside-detections.jsonl",
         "previews/latest-policy-frame.jpg", "previews/latest-carla-native-fixed.jpg",
         "previews/latest-servo-t5-carla-lincoln-fixed.jpg",
         "evidence/carla-native-fixed.mp4", "evidence/servo-t5-carla-lincoln-fixed.mp4",
@@ -1403,6 +1403,32 @@ class CarlaSimulationRunner:
                     detection["frame_id"] = policy_frame_id
                     _append_jsonl(store.session_root / "roadside-detections.jsonl", detection)
                 terminal_state = SimulationSessionState.CANCELLED if terminal_result == DrivingOutcome.CANCELLED else SimulationSessionState.COMPLETED
+                try:
+                    route_validation = terminal_route_validation(
+                        route_completion=live.route_completion,
+                        frame_count=sequence,
+                        outcome=terminal_result,
+                        session_state=terminal_state,
+                    )
+                except ValueError as exc:
+                    # Preserve the authoritative partial progress, but never
+                    # serialize an incomplete route as a successful pass.
+                    terminal_result = DrivingOutcome.INFRASTRUCTURE_INVALID
+                    failure = str(exc)
+                    terminal_state = SimulationSessionState.COMPLETED
+                    route_validation = terminal_route_validation(
+                        route_completion=live.route_completion,
+                        frame_count=sequence,
+                        outcome=terminal_result,
+                        session_state=terminal_state,
+                    )
+                    route_validation["rejected_success_claim"] = True
+                    route_validation["rejection_reason"] = failure
+                else:
+                    route_validation["rejected_success_claim"] = False
+                atomic_write_json(
+                    store.session_root / "route-validation.json", route_validation
+                )
                 store.transition(terminal_state, terminal_result.value)
                 final = live.model_copy(update={"session_state": terminal_state, "current_result": terminal_result, "last_failure": failure})
                 store.publish_live(final)

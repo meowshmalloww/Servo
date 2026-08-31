@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -37,6 +38,11 @@ def _load_local_env() -> None:
         "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY",
         "SERVO_GOOGLE_API", "SERVO_GEMINI_MODEL", "SERVO_GEMINI_TOOL_MODEL",
         "SERVO_OPENAI_TOOL_MODEL", "SERVO_API_TOKEN", "SERVO_CAMPAIGN_ROOT",
+        "SERVO_AUTH_MODE", "SERVO_FIREBASE_PROJECT_ID",
+        "SERVO_FIREBASE_REQUIRED_CLAIM", "SERVO_FIREBASE_REQUIRE_VERIFIED_EMAIL",
+        "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_GENAI_USE_VERTEXAI",
+        "SERVO_GCP_REGION", "SERVO_CAMPAIGN_JOB", "SERVO_GCS_BUCKET",
+        "SERVO_GCS_PREFIX", "SERVO_COMMIT_SHA",
     }
     path = REPO_ROOT / ".env"
     if not path.is_file():
@@ -99,22 +105,57 @@ from tools.realityci.simulation.worlds.executable_bundle import (
     prepare_inferred_corridor,
 )
 
-from .object_store import gcs_enabled, sync_from_gcs, sync_to_gcs
+from .cloud_dispatch import CloudCampaignJobConfig, dispatch_campaign_job
+from .object_store import (
+    download_gcs_uri,
+    gcs_enabled,
+    list_gcs_campaign_ids,
+    sync_from_gcs,
+    sync_to_gcs,
+)
+from .auth import (
+    AuthenticationConfigurationError,
+    AuthenticationRejectedError,
+    configured_auth_mode,
+    firebase_project_id,
+    verify_authorization,
+)
 
 WORKSPACE_ROOT = Path(os.environ.get("SERVO_CAMPAIGN_ROOT", "./campaigns"))
 SIMULATION_ROOT = Path(os.environ.get("SERVO_SIMULATION_ROOT", "./simulations"))
 API_TOKEN = os.environ.get("SERVO_API_TOKEN", "")
+AUTH_MODE = configured_auth_mode()
+FIREBASE_PROJECT_ID = firebase_project_id()
+FIREBASE_REQUIRED_CLAIM = os.environ.get("SERVO_FIREBASE_REQUIRED_CLAIM", "").strip()
+FIREBASE_REQUIRE_VERIFIED_EMAIL = (
+    os.environ.get("SERVO_FIREBASE_REQUIRE_VERIFIED_EMAIL", "1").strip().lower()
+    not in {"0", "false", "no"}
+)
 _LOCKS_GUARD = threading.Lock()
 _CAMPAIGN_LOCKS: dict[str, threading.RLock] = {}
 
 
-def require_token(authorization: str = Header(default="")) -> None:
-    """Require the configured bearer token while keeping local setup simple."""
+def require_token(
+    request: Request,
+    authorization: str = Header(default=""),
+) -> dict[str, Any]:
+    """Authenticate one local developer or a verified Firebase user."""
 
-    if not API_TOKEN:
-        return
-    if authorization != f"Bearer {API_TOKEN}":
-        raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+    try:
+        principal = verify_authorization(
+            authorization,
+            mode=AUTH_MODE,
+            local_token=API_TOKEN,
+            project_id=FIREBASE_PROJECT_ID,
+            required_claim=FIREBASE_REQUIRED_CLAIM,
+            require_verified_email=FIREBASE_REQUIRE_VERIFIED_EMAIL,
+        )
+    except AuthenticationConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AuthenticationRejectedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    request.state.auth_principal = principal
+    return principal
 
 
 app = FastAPI(title="servo-realityci-api", version="1.0.0")
@@ -588,14 +629,68 @@ def healthz() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/v1/auth/session", dependencies=[Depends(require_token)])
+def authenticated_session(request: Request) -> dict:
+    """Return only the sanitized identity established by the auth boundary."""
+
+    return {"authenticated": True, "principal": request.state.auth_principal}
+
+
 @app.get("/v1/system", dependencies=[Depends(require_token)])
 def system_status() -> dict:
     return {
         "status": "ok",
         "service": "servo-realityci-api",
         "version": app.version,
-        "authentication_required": bool(API_TOKEN),
+        "authentication_required": AUTH_MODE == "firebase" or bool(API_TOKEN),
+        "authentication_mode": AUTH_MODE,
         "persistence": "gcs" if gcs_enabled() else "filesystem",
+    }
+
+
+@app.get("/v1/cloud/readiness", dependencies=[Depends(require_token)])
+def cloud_readiness() -> dict:
+    """Expose configured cloud components without overstating deployment proof."""
+
+    try:
+        config = CloudCampaignJobConfig.from_environment()
+        dispatch_configured = True
+        job_resource = (
+            f"projects/{config.project_id}/locations/{config.region}/jobs/{config.job_name}"
+        )
+    except RuntimeError:
+        dispatch_configured = False
+        job_resource = ""
+    receipts = []
+    if WORKSPACE_ROOT.is_dir():
+        receipts = sorted(WORKSPACE_ROOT.glob("cam-*/cloud-execution-receipt.json"))
+    verified = []
+    for path in receipts:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            sealed = str(payload.pop("content_hash", ""))
+            computed = sha256_digest(canonical_json_bytes(payload))
+            if (
+                payload.get("state") == "completed"
+                and sealed == computed
+                and str(payload.get("cloud_run_execution", "")).strip()
+                and payload.get("commit_sha") not in {None, "", "unknown"}
+            ):
+                verified.append(payload)
+        except (OSError, json.JSONDecodeError):
+            continue
+    return {
+        "cloud_run": bool(os.environ.get("K_SERVICE")),
+        "service_revision": os.environ.get("K_REVISION", ""),
+        "firebase_auth": AUTH_MODE == "firebase" and bool(FIREBASE_PROJECT_ID),
+        "vertex_ai": os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true",
+        "gemini_model": os.environ.get("SERVO_GEMINI_MODEL", "gemini-3.7-flash"),
+        "adk": "google-adk/2.7.1",
+        "gcs": gcs_enabled(),
+        "campaign_job_configured": dispatch_configured,
+        "campaign_job_resource": job_resource,
+        "verified_cloud_campaigns": len(verified),
+        "deployment_proven": bool(os.environ.get("K_SERVICE")) and bool(verified),
     }
 
 
@@ -940,6 +1035,11 @@ def _ask_result_message(tool: AskToolName, result: dict[str, Any]) -> str:
     if tool == AskToolName.LIST_CAMPAIGNS:
         campaigns = list(result.get("campaigns", []))
         return f"Found {len(campaigns)} durable RealityCI campaigns."
+    if tool == AskToolName.DISPATCH_CAMPAIGN:
+        return (
+            f"Campaign {result.get('campaign_id', 'unknown')} was queued on Cloud Run Job "
+            f"{result.get('job_resource', 'the configured Cloud Run Job')}."
+        )
     if tool == AskToolName.GET_SYSTEM_LOGS:
         return f"Read {len(result.get('logs', []))} bounded log files."
 
@@ -963,6 +1063,10 @@ def _ask_execute_tool(call: AskToolCallFull) -> dict:
     cid = call.campaign_id or args.get("campaign_id") or args.get("campaignId")
     sid = call.simulation_id or args.get("simulation_id")
     wid = call.world_id or args.get("world_id") or args.get("worldId")
+    if tool == AskToolName.DISPATCH_CAMPAIGN:
+        if not cid:
+            raise HTTPException(status_code=400, detail="dispatch_campaign requires campaign_id")
+        return {"tool": tool.value, "result": dispatch_campaign(cid, None)}
     # Campaign domain — delegate to existing _execute_tool where possible
     campaign_tools = {
         AskToolName.CREATE_CAMPAIGN, AskToolName.STEP_CAMPAIGN, AskToolName.RUN_TO_COMPLETION,
@@ -1434,6 +1538,10 @@ def ask_execute_explicit(
 @app.get("/v1/campaigns", dependencies=[Depends(require_token)])
 def list_campaigns() -> dict:
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+    if gcs_enabled():
+        for campaign_id in list_gcs_campaign_ids():
+            if re.fullmatch(r"cam-[0-9a-f]{16}", campaign_id):
+                sync_from_gcs(campaign_id, WORKSPACE_ROOT / campaign_id)
     campaigns: list[dict] = []
     for root in sorted(WORKSPACE_ROOT.iterdir()):
         if not root.is_dir() or root.name.startswith("."):
@@ -1464,8 +1572,9 @@ def create_campaign(
     request: CreateCampaignRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
-    checkpoint = Path(request.baseline_checkpoint_uri)
-    if not checkpoint.is_file():
+    checkpoint_uri = request.baseline_checkpoint_uri.strip()
+    checkpoint = Path(checkpoint_uri)
+    if not checkpoint_uri.startswith("gs://") and not checkpoint.is_file():
         raise HTTPException(status_code=400, detail="baseline checkpoint does not exist")
     try:
         default_register().find(request.objective_capability)
@@ -1477,9 +1586,26 @@ def create_campaign(
 
     def create() -> dict:
         campaign_id = new_record_id("cam")
+        campaign_root = WORKSPACE_ROOT / campaign_id
+        campaign_root.mkdir(parents=True, exist_ok=False)
+        staged_checkpoint = campaign_root / "baseline-checkpoint.pt"
+        try:
+            if checkpoint_uri.startswith("gs://"):
+                download_gcs_uri(checkpoint_uri, staged_checkpoint)
+            else:
+                shutil.copy2(checkpoint, staged_checkpoint)
+        except (OSError, RuntimeError, ValueError) as exc:
+            # This directory was created by this request and has not yet become
+            # a campaign. Do not leave an empty campaign-shaped artifact that
+            # later list/sync calls could mistake for durable state.
+            shutil.rmtree(campaign_root, ignore_errors=True)
+            raise HTTPException(
+                status_code=400,
+                detail=f"baseline checkpoint could not be staged: {exc}",
+            ) from exc
         engine = CampaignEngine(
-            WORKSPACE_ROOT / campaign_id,
-            baseline_checkpoint_path=checkpoint,
+            campaign_root,
+            baseline_checkpoint_path=staged_checkpoint,
             objective_capability=request.objective_capability,
             diagnostician_kind=request.diagnostician,
             diagnostician_model=request.diagnostician_model,
@@ -1499,9 +1625,73 @@ def create_campaign(
     return _idempotent("create-campaign", idempotency_key, request.model_dump_json(), create)
 
 
+@app.post(
+    "/v1/campaigns/{campaign_id}/dispatch",
+    status_code=202,
+    dependencies=[Depends(require_token)],
+)
+def dispatch_campaign(
+    campaign_id: str,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    """Queue one durable Google ADK campaign on Cloud Run Jobs."""
+
+    def execute() -> dict:
+        with _campaign_lock(campaign_id):
+            engine = _engine_for(campaign_id)
+            if engine.current_state() in TERMINAL_STATES:
+                raise HTTPException(status_code=409, detail="campaign is already terminal")
+            if not (engine.paths.root / "baseline-checkpoint.pt").is_file():
+                raise HTTPException(
+                    status_code=409,
+                    detail="campaign has no staged baseline checkpoint for cloud execution",
+                )
+            dispatch_path = engine.paths.root / "cloud-dispatch.json"
+            completion_path = engine.paths.root / "cloud-execution-receipt.json"
+            if dispatch_path.is_file():
+                prior_completion = {}
+                if completion_path.is_file():
+                    prior_completion = json.loads(completion_path.read_text(encoding="utf-8"))
+                if prior_completion.get("state") != "failed":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="campaign already has an active or completed cloud dispatch",
+                    )
+            _persist(campaign_id)
+            result = dispatch_campaign_job(campaign_id)
+            record = {
+                "schema": "servo.cloud-campaign-dispatch/v1",
+                "campaign_id": campaign_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                **result,
+            }
+            record["content_hash"] = sha256_digest(canonical_json_bytes(record))
+            _atomic_json(dispatch_path, record)
+            _persist(campaign_id)
+            return result
+
+    return _idempotent(
+        f"{campaign_id}:cloud-dispatch",
+        idempotency_key,
+        "google-cloud-run-job",
+        execute,
+    )
+
+
 def _mutate_campaign(campaign_id: str, operation: Callable[[CampaignEngine], dict]) -> dict:
     with _campaign_lock(campaign_id):
         engine = _engine_for(campaign_id)
+        dispatch_path = engine.paths.root / "cloud-dispatch.json"
+        completion_path = engine.paths.root / "cloud-execution-receipt.json"
+        if dispatch_path.is_file():
+            completion = {}
+            if completion_path.is_file():
+                completion = json.loads(completion_path.read_text(encoding="utf-8"))
+            if completion.get("state") not in {"failed", "completed"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="campaign is executing in Cloud Run and cannot be mutated locally",
+                )
         response = operation(engine)
         _persist(campaign_id)
         return response

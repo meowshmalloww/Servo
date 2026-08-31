@@ -155,6 +155,7 @@ public:
     QString visualIntegrationStatus() const;
 
     Q_INVOKABLE void setBaseUrl(const QString &value);
+    Q_INVOKABLE void setBearerToken(const QString &token);
     Q_INVOKABLE void connectToServer();
     Q_INVOKABLE void refreshCarlaStatus();
     Q_INVOKABLE void verifyCarlaIntegration();

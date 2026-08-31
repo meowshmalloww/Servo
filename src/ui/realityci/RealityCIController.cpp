@@ -216,6 +216,16 @@ void RealityCIController::setBaseUrl(const QString &baseUrl)
     emit baseUrlChanged();
 }
 
+void RealityCIController::setBearerToken(const QString &token)
+{
+    if (m_token == token)
+        return;
+    const bool wasConfigured = !m_token.isEmpty();
+    m_token = token;
+    if (wasConfigured != !m_token.isEmpty())
+        emit tokenConfiguredChanged();
+}
+
 void RealityCIController::setConnectionState(const QString &state)
 {
     if (m_connectionState == state)

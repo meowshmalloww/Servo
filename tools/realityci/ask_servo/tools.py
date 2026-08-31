@@ -30,6 +30,7 @@ class AskToolName(str, Enum):
     CREATE_CAMPAIGN = "create_campaign"
     STEP_CAMPAIGN = "step_campaign"
     RUN_TO_COMPLETION = "run_to_completion"
+    DISPATCH_CAMPAIGN = "dispatch_campaign"
     CANCEL_CAMPAIGN = "cancel_campaign"
     LIST_CAMPAIGNS = "list_campaigns"
     GET_CAMPAIGN_STATE = "get_campaign_state"
@@ -96,6 +97,7 @@ TOOL_DESCRIPTIONS: dict[AskToolName, str] = {
     AskToolName.CREATE_CAMPAIGN: "Create a campaign from a baseline checkpoint. Requires baseline_checkpoint_uri.",
     AskToolName.STEP_CAMPAIGN: "Advance one durable handler (intake→baseline→triage→...→debt). Safe to retry.",
     AskToolName.RUN_TO_COMPLETION: "Run the campaign to terminal (completed_promoted/rejected/failed/cancelled).",
+    AskToolName.DISPATCH_CAMPAIGN: "Queue one complete campaign on the configured Google Cloud Run Job. Requires a staged baseline and authenticated cloud dispatch.",
     AskToolName.CANCEL_CAMPAIGN: "Durably cancel an active campaign.",
     AskToolName.LIST_CAMPAIGNS: "List all campaigns with state and terminal flag.",
     AskToolName.GET_CAMPAIGN_STATE: "Read campaign.json, state.json, and last event for a campaign.",
@@ -198,6 +200,16 @@ def deterministic_plan(request: AskPlanRequest) -> AskToolCall:
         )[0]
     t = goal.lower()
     # Campaign
+    if (
+        "campaign" in t
+        and any(phrase in t for phrase in ("cloud", "background", "cloud run", "dispatch"))
+        and any(phrase in t for phrase in ("run", "start", "queue", "dispatch", "complete"))
+    ):
+        return AskToolCall(
+            tool=AskToolName.DISPATCH_CAMPAIGN,
+            campaign_id=request.campaign_id,
+            explanation="Queue the selected campaign on the authenticated Cloud Run campaign job.",
+        )
     if any(
         phrase in t
         for phrase in (

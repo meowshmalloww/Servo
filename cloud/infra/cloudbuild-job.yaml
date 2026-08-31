@@ -1,0 +1,12 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-f"
+      - "${_DOCKERFILE}"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/servo/${_IMAGE}:cpu"
+      - "."
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/servo/${_IMAGE}:cpu"
