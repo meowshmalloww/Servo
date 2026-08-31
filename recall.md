@@ -124,6 +124,90 @@ checkpoint, hidden result, and decision is content-addressed and auditable.
 - Dedicated service identities separate API and job permissions.
 - Cloud Logging is enabled by the deployment script.
 
+## SDK and ADK evidence audit (2026-08-31)
+
+This section is the submission-safe record of what Servo actually imports and
+executes. **Implemented** means real runtime code exists. **Locally verified**
+means a receipt or automated test exercised that code. **Cloud-proven** requires
+a real deployed revision/job receipt; configuration or mocked tests alone do
+not qualify.
+
+| Technology | Exact use in Servo | Evidence | Honest status |
+| --- | --- | --- | --- |
+| Google Agent Development Kit `2.7.1` | A real `SequentialAgent` made from twelve `BaseAgent` state nodes runs through ADK `Runner` events. The graph resumes the deterministic RealityCI campaign and refuses to replace the engine's durable state. | `tools/realityci/adk_graph.py`; `tests/realityci/test_adk_graph.py`; live Ask Servo receipt below | Implemented and locally verified |
+| Google Gen AI SDK `2.19.0` | Structured Gemini calls propose causal hypotheses and select one allowlisted Ask Servo action. Servo executes the tool, then re-reads state, events, and artifacts before reporting success. | `tools/realityci/diagnosis/gemini.py`; `tools/realityci/ask_servo/tools.py`; `tools/realityci/assistant_tools.py`; live receipt below | Implemented and locally live-verified |
+| Firebase Admin SDK `7.5.0` | The Cloud Run API verifies Firebase ID tokens, including revocation checks. | `cloud/control_api/app/auth.py`; backend authentication tests; deployed API rejects missing tokens with HTTP 401 | Implemented, locally tested, and deployed; a real user sign-in receipt is still required |
+| Cloud Storage client `>=3.4,<4` | Synchronizes versioned campaign workspaces and retrieves explicitly addressed checkpoints/artifacts. Large PLY, video, checkpoint, and evidence bytes belong here rather than in Firestore. | `cloud/control_api/app/object_store.py`; `cloud/campaign_job/main.py`; `gs://servo-1f808-servo-artifacts` | Implemented and deployed; a completed campaign artifact receipt is still required |
+| Cloud Firestore client `>=2.21,<3` | Writes bounded campaign/artifact metadata, hashes, status, and `gs://` pointers; it does not store large artifact bodies. | `cloud/control_api/app/firestore_index.py`; `cloud/campaign_job/main.py`; Firestore `(default)` in `us-central1` | Implemented and deployed; a completed campaign metadata receipt is still required |
+| Vertex AI access | Python agents can use Vertex AI through the Google Gen AI SDK with ADC/service identity. The native Qt assistant uses the Vertex/Gemini REST API directly, not the Python SDK. | Vertex mode in Gemini clients; `cloud/infra/deploy.ps1`; `src/ui/chat/AiChatController.cpp` | Implemented/configured; deployed Vertex execution not yet cloud-proven |
+
+### Was ADK used well and fully?
+
+**It is used meaningfully, not as a decorative dependency.** ADK owns the
+executable orchestration graph, emits node events, carries session state, and is
+covered by complete-run, no-op-rerun, and fresh-process-resume tests. Gemini is
+also operational rather than cosmetic: it selects a bounded action and proposes
+structured diagnoses that feed real experiments.
+
+**It is not a fully managed production deployment.** ADK currently uses
+`InMemorySessionService`; durable truth and resume are intentionally owned by
+Servo's hash-addressed campaign workspace and idempotent engine. This is a
+defensible safety design, but it is not a managed ADK session backend. Servo now
+has a real Cloud Run API revision, ready background job, Firestore database, and
+versioned GCS bucket; it has not yet produced a completed deployed campaign or
+Vertex AI execution receipt. The graph uses deterministic
+`BaseAgent` nodes around verified operations rather than making every state a
+free-form `LlmAgent`.
+
+For the hackathon, this is already substantial ADK/Gen AI SDK usage. The best
+next proof is a real signed-in Cloud Run campaign with stored receipts, not
+adding unrelated Google SDKs merely to increase the technology count.
+
+### Google Cloud deployment receipt (2026-08-31)
+
+- Project: `servo-1f808` (`224961191633`), region `us-central1`.
+- Cloud Run API: `servo-realityci-api`, ready revision
+  `servo-realityci-api-00003-54z`, 100% traffic, maximum one instance.
+- API URL: `https://servo-realityci-api-mfqkrzkvkq-uc.a.run.app`.
+- Missing Firebase bearer tokens are rejected with HTTP 401 by Servo's API.
+- Cloud Run job: `servo-campaign-job`, ready under the dedicated
+  `servo-realityci-job` service account.
+- Artifact Registry images: `servo-realityci-api:cpu` and
+  `servo-campaign-job:cpu`.
+- Storage: versioned `gs://servo-1f808-servo-artifacts`; noncurrent versions
+  expire after 30 days.
+- Metadata: Firestore `(default)`, Native mode, `us-central1`, deletion
+  protection enabled.
+- Authentication: Firebase Email/Password provider enabled. No operator account
+  password is committed to the repository.
+- Billing: linked to the user-selected Servo billing account. A $140 warning
+  budget has 50%, 75%, 90%, and 100% thresholds. A budget is an alert, not a
+  spending cap; charges can continue after promotional credits are exhausted.
+
+### Live Gemini/ADK receipt
+
+- Receipt: `campaigns/.ask-servo/runs/askrun-0f577c2f7b7443e0.json`
+- Content hash:
+  `sha256:0b63bbb6469d5df8a2075c5aed2aefcf97dd5933b33ddf2c6af6fa59fcdc7d61`
+- Provider: `gemini`
+- Campaign: `cam-91c726ae91e94ccd`
+- Gemini inspected the active campaign and selected the allowlisted
+  `run_to_completion` action.
+- Google ADK `2.7.1` ran the campaign to `completed_rejected`.
+- Servo then independently verified campaign state, ordered events, and
+  artifacts before completing the assistant run.
+- The deterministic promotion gate rejected the candidate. This is positive
+  fail-closed evidence: neither Gemini nor ADK can declare a model promoted
+  without the measured gate passing.
+
+### Technologies not used and not claimable
+
+Servo does **not** currently use Genkit, Antigravity SDK, Firebase JavaScript
+SDK, `google-cloud-aiplatform`, Pub/Sub, Cloud SQL, GKE, Veo, Lyria, Gemma, or a
+managed ADK/Agent Engine deployment. Gemini Robotics-ER is planning context,
+not an executed integration. Do not select or name any of these in the
+submission unless executable code and a reproducible receipt are added first.
+
 ## Reconstruction and simulation
 
 - Media reconstruction uses FFmpeg, COLMAP/PyCOLMAP, PyTorch CUDA, and gsplat
@@ -156,6 +240,26 @@ checkpoint, hidden result, and decision is content-addressed and auditable.
 For a Sketchfab asset intended as a vehicle or prop, prefer a self-contained
 `.glb`. A 4K-texture GLB is the default hackathon balance; 8K should be used
 only for a close-up hero asset after measuring GPU memory and frame time.
+
+### Trainable road/world map formats
+
+- **CARLA cooked `.umap` maps:** current full simulation-world format. These
+  provide CARLA geometry, collision, lanes, spawn points, signals, actors, and
+  sensor simulation when installed in the CARLA package.
+- **OpenDRIVE `.xodr`:** current runtime road-network format. Servo can ask
+  CARLA to generate a world from it, and executable Servo bundles already bind
+  `map.xodr`, `route.json`, `alignment.json`, validation, and provenance.
+- **OpenStreetMap `.osm`:** not directly importable in Servo's UI. CARLA's
+  `Osm2Odr` converter can create `.xodr`, which Servo/CARLA can then run.
+- **Custom photoreal CARLA map:** author visual geometry as `.fbx` plus road
+  semantics as `.xodr`, then cook/package it with CARLA/Unreal into a CARLA
+  map. This is the route for a trainable world with both visuals and physics.
+- **3DGS `.ply`:** appearance layer only; it does not contain traffic rules,
+  collision, or free-space truth.
+- **GLB/glTF/OBJ:** visual vehicles and props only until an asset receives a
+  collider, semantic class, transform, behavior/blueprint, and evidence record.
+  A traffic-light GLB is not an operational traffic signal by itself.
+- **USDZ:** unsupported.
 
 ## Real CARLA evidence
 

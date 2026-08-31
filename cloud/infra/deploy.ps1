@@ -28,10 +28,35 @@ function Step([string]$message) {
     Write-Host "== $message ==" -ForegroundColor Cyan
 }
 
+function Test-Gcloud([string[]]$Arguments) {
+    # PowerShell 7 can promote native stderr from an expected nonzero probe to
+    # a terminating NativeCommandError when the script is fail-fast. Keep the
+    # probe quiet and return only its exit status; real mutations remain strict.
+    $previousPreference = $ErrorActionPreference
+    $hasNativePreference = Test-Path variable:PSNativeCommandUseErrorActionPreference
+    if ($hasNativePreference) {
+        $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+    }
+    try {
+        $ErrorActionPreference = "SilentlyContinue"
+        if ($hasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        & gcloud @Arguments 2>$null | Out-Null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        if ($hasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+        }
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
 function Ensure-ServiceAccount([string]$name, [string]$displayName) {
-    gcloud iam service-accounts describe "$name@$ProjectId.iam.gserviceaccount.com" `
-        --project $ProjectId *> $null
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Test-Gcloud @(
+        "iam", "service-accounts", "describe",
+        "$name@$ProjectId.iam.gserviceaccount.com", "--project", $ProjectId
+    ))) {
         gcloud iam service-accounts create $name --project $ProjectId `
             --display-name $displayName
     }
@@ -57,8 +82,10 @@ Ensure-ServiceAccount $apiServiceAccountName "Servo RealityCI API"
 Ensure-ServiceAccount $jobServiceAccountName "Servo RealityCI campaign job"
 
 Step "Firestore metadata database"
-gcloud firestore databases describe --database="(default)" --project $ProjectId *> $null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-Gcloud @(
+    "firestore", "databases", "describe", "--database=(default)",
+    "--project", $ProjectId
+))) {
     gcloud firestore databases create --database="(default)" `
         --location=$Region --type=firestore-native --project=$ProjectId
 }
@@ -69,15 +96,18 @@ foreach ($serviceAccount in @($apiServiceAccount, $jobServiceAccount)) {
 }
 
 Step "Artifact Registry"
-gcloud artifacts repositories describe servo --location $Region --project $ProjectId *> $null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-Gcloud @(
+    "artifacts", "repositories", "describe", "servo", "--location", $Region,
+    "--project", $ProjectId
+))) {
     gcloud artifacts repositories create servo --repository-format docker `
         --location $Region --project $ProjectId
 }
 
 Step "Versioned campaign artifact bucket"
-gcloud storage buckets describe "gs://$bucket" --project $ProjectId *> $null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-Gcloud @(
+    "storage", "buckets", "describe", "gs://$bucket", "--project", $ProjectId
+))) {
     gcloud storage buckets create "gs://$bucket" --project $ProjectId `
         --location $Region --uniform-bucket-level-access
 }
@@ -109,8 +139,11 @@ gcloud builds submit $repoRoot `
 
 Step "Create or update the background ADK campaign job"
 $jobImage = "$Region-docker.pkg.dev/$ProjectId/servo/$CampaignJobName`:cpu"
-gcloud run jobs describe $CampaignJobName --region $Region --project $ProjectId *> $null
-$jobAction = if ($LASTEXITCODE -eq 0) { "update" } else { "create" }
+$jobExists = Test-Gcloud @(
+    "run", "jobs", "describe", $CampaignJobName, "--region", $Region,
+    "--project", $ProjectId
+)
+$jobAction = if ($jobExists) { "update" } else { "create" }
 gcloud run jobs $jobAction $CampaignJobName `
     --project $ProjectId --region $Region --image $jobImage `
     --service-account $jobServiceAccount `
