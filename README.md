@@ -5,6 +5,10 @@
 <h1 align="center">SERVO</h1>
 
 <p align="center">
+  <img src="docs/assets/submission/servo-devpost-thumbnail.png" width="960" alt="Servo physical AI CI/CD engine">
+</p>
+
+<p align="center">
   <strong>Simulation Engine for Real-world Vehicle Optimization</strong><br>
   Autonomous CI/CD for physical AI: reconstruct worlds, test driving policies, diagnose failures, retrain models, and promote evidence-backed improvements.
 </p>
@@ -133,7 +137,7 @@ py -3.11 -m venv .venv-realityci
 .\.venv-realityci\Scripts\python.exe -m pytest tests\realityci -q
 ```
 
-Expected result for the documented submission build: **192 passed, 1 optional test skipped**.
+Expected result for the documented submission build: **194 passed, 1 optional test skipped**.
 The suite exercises the Google ADK campaign graph, Gemini/GenAI structured
 client boundary with mock transports, Firebase authentication, Cloud Run Job
 dispatch contract, durable campaign resume, training, hidden evaluation,
@@ -167,6 +171,10 @@ versioned Cloud Storage evidence flow are documented in
 [`cloud/infra/README.md`](cloud/infra/README.md). A deployment is considered
 proven only after a real `.run.app` revision and hash-sealed Cloud Run Job
 execution receipt have been captured.
+
+Large Gaussian worlds and model checkpoints are published to Cloud Storage
+with SHA-256 manifests while Firestore stores only searchable metadata and
+`gs://` pointers. See [`docs/CLOUD_ARTIFACT_STORAGE.md`](docs/CLOUD_ARTIFACT_STORAGE.md).
 
 ### Reconstruction runtime
 

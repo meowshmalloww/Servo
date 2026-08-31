@@ -76,6 +76,7 @@ See `assets/realityci-architecture.svg` and `REALITYCI_BACKEND.md`
 | Cloud Run | Firebase-authenticated control API plus one asynchronous complete-campaign Job; deployment proof is still required |
 | Vertex AI | ADC/service-account Gemini 3.7 Flash execution inside the campaign Job |
 | Cloud Storage | versioned campaign workspace, ordered events, checkpoints, hidden exam, decision, and cloud execution receipt |
+| Cloud Firestore | bounded campaign and artifact metadata index; large bytes remain in Cloud Storage |
 | Firebase Authentication | native sign-in and server-side ID-token/revocation verification |
 
 ## Gates that cannot be gamed
@@ -96,9 +97,9 @@ See `assets/realityci-architecture.svg` and `REALITYCI_BACKEND.md`
 - Cloud deployment is scripted and the desktop speaks to the same API, but the
   current verified run is local uvicorn + local CARLA/DriveMA; Cloud Run has
   not yet been claimed as deployed.
-- Firestore/Pub/Sub are not runtime claims: the deadline path uses one
-  Cloud Run Job per versioned GCS campaign workspace to avoid pretending an
-  unverified queue/transaction layer exists.
+- Firestore is implemented as a metadata-only campaign/artifact index. Pub/Sub
+  is not a runtime claim: the deadline path uses one Cloud Run Job per
+  versioned GCS campaign workspace rather than an unverified queue layer.
 - The CARLA corridor and scale are inferred from T5 camera evidence. Collision
   truth belongs to CARLA/OpenDRIVE, never Gaussian opacity. The Gaussian world
   still contains off-axis blur/fiberglass artifacts and is not metric,
