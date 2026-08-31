@@ -7,6 +7,8 @@
 
 class QJsonObject;
 class QNetworkAccessManager;
+class QTcpServer;
+class QTcpSocket;
 
 class AuthController final : public QObject
 {
@@ -27,6 +29,7 @@ class AuthController final : public QObject
     Q_PROPERTY(QString apiBaseUrl READ apiBaseUrl CONSTANT)
     Q_PROPERTY(QString lastError READ lastError NOTIFY authenticationChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY authenticationChanged)
+    Q_PROPERTY(bool googleSignInAvailable READ googleSignInAvailable NOTIFY authenticationChanged)
     // Trusted in-process QML passes this directly to the two API controllers.
     // It is never persisted, printed, or written to Settings.
     Q_PROPERTY(QString accessToken READ accessToken NOTIFY accessTokenChanged)
@@ -47,10 +50,12 @@ public:
     QString apiBaseUrl() const;
     QString lastError() const;
     QString notice() const;
+    bool googleSignInAvailable() const;
     QString accessToken() const;
 
     Q_INVOKABLE void signIn(const QString &email, const QString &password);
     Q_INVOKABLE void requestPasswordReset(const QString &email);
+    Q_INVOKABLE QString beginGoogleSignIn();
     Q_INVOKABLE void signOut();
 
 signals:
@@ -74,10 +79,16 @@ private:
                        const QString &fallbackDisplayName,
                        const QString &fallbackUserId);
     void rejectSession(const QString &message, quint64 generation);
+    void sendVerificationEmail(const QString &idToken, quint64 generation);
+    void serveGoogleRequest(QTcpSocket *socket, const QByteArray &request);
+    void closeGoogleBridge();
     static QString firebaseError(const QByteArray &payload, const QString &fallback);
+    static bool firebaseEmailVerified(const QString &idToken);
 
     QNetworkAccessManager *m_network = nullptr;
     QTimer m_refreshTimer;
+    QTcpServer *m_googleServer = nullptr;
+    QString m_googleState;
     QString m_mode;
     QString m_apiKey;
     QString m_projectId;

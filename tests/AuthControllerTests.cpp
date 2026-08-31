@@ -1,6 +1,8 @@
 #include "AuthController.h"
 
 #include <QTest>
+#include <QUrl>
+#include <QUrlQuery>
 
 namespace {
 struct EnvironmentValue {
@@ -24,6 +26,7 @@ private slots:
     void localDesktopModePreservesExplicitDevelopmentToken();
     void firebaseModeFailsClosedWhenConfigurationIsMissing();
     void configuredFirebaseModeStartsSignedOut();
+    void configuredFirebaseModeOffersLoopbackGoogleSignIn();
 };
 
 void AuthControllerTests::localDesktopModePreservesExplicitDevelopmentToken()
@@ -68,6 +71,27 @@ void AuthControllerTests::configuredFirebaseModeStartsSignedOut()
     QVERIFY(controller.accessToken().isEmpty());
     QCOMPARE(controller.state(), QStringLiteral("signed-out"));
     QCOMPARE(controller.projectId(), QStringLiteral("servo-test-project"));
+    QVERIFY(controller.googleSignInAvailable());
+}
+
+void AuthControllerTests::configuredFirebaseModeOffersLoopbackGoogleSignIn()
+{
+    EnvironmentValue mode("SERVO_AUTH_MODE"), key("SERVO_FIREBASE_API_KEY");
+    EnvironmentValue project("SERVO_FIREBASE_PROJECT_ID");
+    qputenv("SERVO_AUTH_MODE", "firebase");
+    qputenv("SERVO_FIREBASE_API_KEY", "public-web-api-key");
+    qputenv("SERVO_FIREBASE_PROJECT_ID", "servo-test-project");
+    AuthController controller;
+    const QUrl callback(controller.beginGoogleSignIn());
+    QCOMPARE(callback.scheme(), QStringLiteral("http"));
+    QCOMPARE(callback.host(), QStringLiteral("127.0.0.1"));
+    QVERIFY(callback.port() > 0);
+    QVERIFY(!QUrlQuery(callback).queryItemValue(QStringLiteral("state")).isEmpty());
+    QVERIFY(controller.busy());
+    QCOMPARE(controller.state(), QStringLiteral("google-browser"));
+    controller.signOut();
+    QVERIFY(!controller.busy());
+    QCOMPARE(controller.state(), QStringLiteral("signed-out"));
 }
 
 QTEST_GUILESS_MAIN(AuthControllerTests)

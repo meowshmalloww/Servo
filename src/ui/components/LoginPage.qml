@@ -221,7 +221,7 @@ Rectangle {
                         SvgIcon { source: Theme.icon("info"); iconSize: Theme.iconSm; color: Theme.textSecondary }
                         Text {
                             Layout.fillWidth: true
-                            text: "Use an Email/Password user created in Firebase Authentication. Your Gmail address is allowed, but this is not your Google password."
+                            text: "Sign in with Google, or use a verified Email/Password account from Firebase Authentication. Servo never receives your Google password."
                             color: Theme.textSecondary
                             font.family: Theme.uiFont
                             font.pixelSize: 9
@@ -229,6 +229,28 @@ Rectangle {
                             wrapMode: Text.WordWrap
                         }
                     }
+                }
+
+                TextButton {
+                    Layout.fillWidth: true
+                    text: AuthController.state === "google-browser"
+                          ? "Complete sign-in in browser..."
+                          : "Continue with Google"
+                    tone: "primary"
+                    enabled: AuthController.googleSignInAvailable && !AuthController.busy
+                    onClicked: {
+                        const callbackUrl = AuthController.beginGoogleSignIn()
+                        if (callbackUrl.length > 0)
+                            Qt.openUrlExternally(callbackUrl)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft }
+                    Text { text: "OR USE FIREBASE EMAIL"; color: Theme.textMuted; font.family: Theme.monoFont; font.pixelSize: 8; font.letterSpacing: 0.5 }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.borderSoft }
                 }
 
                 ColumnLayout {
@@ -306,7 +328,9 @@ Rectangle {
                 TextButton {
                     Layout.fillWidth: true
                     text: AuthController.busy
-                          ? (AuthController.state === "sending-reset" ? "Sending reset email..." : "Verifying identity...")
+                          ? (AuthController.state === "sending-reset" ? "Sending reset email..."
+                             : AuthController.state === "sending-verification" ? "Sending verification email..."
+                             : "Verifying identity...")
                           : "Continue to Servo"
                     tone: "primary"
                     enabled: AuthController.configured && !AuthController.busy

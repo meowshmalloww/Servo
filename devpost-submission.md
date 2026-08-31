@@ -84,7 +84,7 @@ where \(w_i\) is the importance of a capability and \(c_i\) is its evidence-back
 
 The immediate next step is to capture one complete authenticated cloud campaign receipt that connects Cloud Run, the campaign Job, Vertex AI, Firestore, and Cloud Storage in a single trace.
 
-After the hackathon, we want to add more policy adapters, metric sensor-backed road geometry, richer multi-camera capture, per-object dynamic representations, and longer-running cloud campaigns. Google Sign-In can also be added as an optional operator login once its native OAuth redirect flow is configured and tested. The core principle will remain unchanged: every improvement must come with evidence strong enough to reject it when it is wrong.
+After the hackathon, we want to add more policy adapters, metric sensor-backed road geometry, richer multi-camera capture, per-object dynamic representations, and longer-running cloud campaigns. The core principle will remain unchanged: every improvement must come with evidence strong enough to reject it when it is wrong.
 
 ## Why this matters
 
@@ -182,7 +182,7 @@ TODO: add the final public YouTube or Vimeo URL. The official submission require
 * The deployed API and campaign Job are proven as infrastructure, but a complete authenticated cloud campaign receipt is still pending.
 * The Gaussian road world is visual and nonmetric. It is not collision validated and does not provide complete 360-degree measured coverage.
 * Native simulator evidence and Gaussian appearance are separate truth layers, not one unified physical scene.
-* Google Sign-In is not implemented. Current operator access uses Firebase Email/Password.
+* Google Sign-In uses Firebase's hosted identity flow through a short-lived localhost callback. The Google provider must be enabled in the Firebase console for the deployed project.
 * The final public demo video URL is still missing.
 
 ## Submission readiness notes
