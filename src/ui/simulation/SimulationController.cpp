@@ -206,7 +206,11 @@ QString SimulationController::replyError(QNetworkReply *reply, const QString &fa
 
 void SimulationController::connectToServer()
 {
-    QNetworkReply *reply = get(QStringLiteral("/healthz"));
+    // Cloud Run reserves /healthz for its own routing and can return a
+    // platform 404 before the request reaches Servo.  The authenticated
+    // session endpoint verifies both transport reachability and the Firebase
+    // bearer token while remaining usable by the local-auth development API.
+    QNetworkReply *reply = get(QStringLiteral("/v1/auth/session"));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {

@@ -127,6 +127,7 @@ QString AuthController::email() const { return m_email; }
 QString AuthController::displayName() const { return m_displayName; }
 QString AuthController::userId() const { return m_userId; }
 QString AuthController::projectId() const { return m_projectId; }
+QString AuthController::apiBaseUrl() const { return m_apiBaseUrl; }
 QString AuthController::lastError() const { return m_lastError; }
 QString AuthController::accessToken() const { return m_accessToken; }
 

@@ -13,11 +13,17 @@ Item {
     property bool splitView: Qt.application.arguments.indexOf(
                                  "--native-drive-split-smoke") >= 0
     property real snowAccumulation: 0.0
+    property real timeOfDay: Session.worldTimeOfDay
+    property real sunIntensity: Session.worldSunIntensity
     property url vehicleAssetSource: Qt.resolvedUrl("../assets/vehicles/OpenXVolvoEX30.glb")
     property string vehicleAssetName: "OpenX Volvo EX30 (2024)"
     readonly property bool vehicleOverlayDisabled: Qt.application.arguments.indexOf(
                                                        "--disable-native-vehicle-overlay") >= 0
     readonly property bool externalCamera: root.cameraMode !== 0
+
+    function daylightAmount() {
+        return Math.max(0.0, Math.sin((root.timeOfDay - 6.0) * Math.PI / 12.0));
+    }
 
     focus: active
 
@@ -110,6 +116,8 @@ Item {
         egoVehicleOrientation: NativeVehicleController.vehicleOrientation
         simulationFrameId: NativeVehicleController.frameId
         snowAccumulation: root.snowAccumulation
+        timeOfDay: root.timeOfDay
+        sunIntensity: root.sunIntensity
     }
 
     // The Gaussian scene remains the background rendered by GaussianSplatView.
@@ -148,9 +156,9 @@ Item {
         }
 
         DirectionalLight {
-            eulerRotation.x: -42
-            eulerRotation.y: -28
-            brightness: 0.62
+            eulerRotation.x: -8 - 72 * root.daylightAmount()
+            eulerRotation.y: root.timeOfDay * 15 - 90
+            brightness: root.sunIntensity * (0.04 + 0.70 * root.daylightAmount())
             castsShadow: true
             shadowFactor: 78
             shadowMapQuality: Light.ShadowMapQualityHigh
@@ -158,11 +166,11 @@ Item {
         DirectionalLight {
             eulerRotation.x: 28
             eulerRotation.y: 145
-            brightness: 0.16
+            brightness: 0.04 + 0.12 * root.daylightAmount()
         }
         DirectionalLight {
             rotation: vehicleCamera.rotation
-            brightness: 0.72
+            brightness: 0.10 + 0.34 * root.daylightAmount()
         }
 
         Node {
@@ -271,6 +279,15 @@ Item {
             }
             StatusBadge { visible: root.width >= 1250; text: "PHYSICS - 9.81 m/s2"; tone: "success" }
             StatusBadge { visible: root.width >= 1250; text: "ROAD - WORLD DESCRIPTOR"; tone: "warning" }
+            StatusBadge {
+                visible: root.width >= 1180
+                text: (root.timeOfDay < 5 || root.timeOfDay >= 20 ? "NIGHT "
+                      : root.timeOfDay < 9 ? "DAWN "
+                      : root.timeOfDay < 17 ? "DAY " : "DUSK ")
+                      + Math.floor(root.timeOfDay).toString().padStart(2, "0")
+                      + ":" + Math.round((root.timeOfDay % 1) * 60).toString().padStart(2, "0")
+                tone: "info"
+            }
             StatusBadge {
                 visible: root.snowAccumulation > 0.01
                 text: "SNOW " + Math.round(root.snowAccumulation * 100)

@@ -76,6 +76,8 @@ class GaussianSplatView : public QQuickRhiItem
     Q_PROPERTY(QString captureEnvelopeStatus READ captureEnvelopeStatus NOTIFY captureEnvelopeChanged)
     Q_PROPERTY(int visualizationMode READ visualizationMode WRITE setVisualizationMode NOTIFY visualizationModeChanged)
     Q_PROPERTY(double snowAccumulation READ snowAccumulation WRITE setSnowAccumulation NOTIFY weatherChanged)
+    Q_PROPERTY(double timeOfDay READ timeOfDay WRITE setTimeOfDay NOTIFY lightingChanged)
+    Q_PROPERTY(double sunIntensity READ sunIntensity WRITE setSunIntensity NOTIFY lightingChanged)
     Q_PROPERTY(bool externalCameraEnabled READ externalCameraEnabled WRITE setExternalCameraEnabled NOTIFY simulationViewChanged)
     Q_PROPERTY(QVector3D externalCameraPosition READ externalCameraPosition WRITE setExternalCameraPosition NOTIFY simulationViewChanged)
     Q_PROPERTY(QQuaternion externalCameraOrientation READ externalCameraOrientation WRITE setExternalCameraOrientation NOTIFY simulationViewChanged)
@@ -121,6 +123,10 @@ public:
     void setVisualizationMode(int value);
     double snowAccumulation() const;
     void setSnowAccumulation(double value);
+    double timeOfDay() const;
+    void setTimeOfDay(double value);
+    double sunIntensity() const;
+    void setSunIntensity(double value);
     bool externalCameraEnabled() const;
     void setExternalCameraEnabled(bool value);
     QVector3D externalCameraPosition() const;
@@ -168,6 +174,7 @@ signals:
     void captureEnvelopeChanged();
     void visualizationModeChanged();
     void weatherChanged();
+    void lightingChanged();
     void simulationViewChanged();
 
 protected:
@@ -234,6 +241,8 @@ private:
     quint64 m_cameraRevision = 1;
     int m_visualizationMode = 0;
     double m_snowAccumulation = 0.0;
+    double m_timeOfDay = 12.0;
+    double m_sunIntensity = 1.0;
     bool m_loading = false;
     bool m_followPath = true;
     bool m_externalCameraEnabled = false;

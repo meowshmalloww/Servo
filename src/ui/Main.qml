@@ -32,6 +32,8 @@ ApplicationWindow {
     }
 
     function applyControlPlaneAuthentication() {
+        RealityCIController.setBaseUrl(AuthController.apiBaseUrl);
+        SimulationController.setBaseUrl(AuthController.apiBaseUrl);
         RealityCIController.setBearerToken(AuthController.accessToken);
         SimulationController.setBearerToken(AuthController.accessToken);
         if (AuthController.authenticated) {

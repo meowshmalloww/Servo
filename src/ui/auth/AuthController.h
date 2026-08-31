@@ -24,6 +24,7 @@ class AuthController final : public QObject
     Q_PROPERTY(QString displayName READ displayName NOTIFY authenticationChanged)
     Q_PROPERTY(QString userId READ userId NOTIFY authenticationChanged)
     Q_PROPERTY(QString projectId READ projectId CONSTANT)
+    Q_PROPERTY(QString apiBaseUrl READ apiBaseUrl CONSTANT)
     Q_PROPERTY(QString lastError READ lastError NOTIFY authenticationChanged)
     // Trusted in-process QML passes this directly to the two API controllers.
     // It is never persisted, printed, or written to Settings.
@@ -42,6 +43,7 @@ public:
     QString displayName() const;
     QString userId() const;
     QString projectId() const;
+    QString apiBaseUrl() const;
     QString lastError() const;
     QString accessToken() const;
 

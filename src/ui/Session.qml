@@ -10,6 +10,8 @@ QtObject {
     property bool viewportFocusMode: false
     property string worldWeather: "clear"
     property real worldSnowAccumulation: 0.90
+    property real worldTimeOfDay: 12.0
+    property real worldSunIntensity: 1.0
 
     property var projectTreeModel: null
     property var worldModel: null

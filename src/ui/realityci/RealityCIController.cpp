@@ -196,6 +196,11 @@ QString RealityCIController::assistantResult() const
     return m_assistantResult;
 }
 
+QVariantMap RealityCIController::cloudReadiness() const
+{
+    return m_cloudReadiness;
+}
+
 void RealityCIController::setBaseUrl(const QString &baseUrl)
 {
     QString normalized = baseUrl.trimmed();
@@ -319,7 +324,10 @@ void RealityCIController::connectToServer()
     clearError();
     setBusy(true);
     setConnectionState(QStringLiteral("connecting"));
-    QNetworkReply *reply = get(QStringLiteral("/healthz"));
+    // Cloud Run reserves /healthz before the request reaches FastAPI.  The
+    // authenticated session endpoint proves both transport and Firebase token
+    // verification, which is the control-plane boundary the desktop needs.
+    QNetworkReply *reply = get(QStringLiteral("/v1/auth/session"));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
@@ -331,8 +339,27 @@ void RealityCIController::connectToServer()
         setConnectionState(QStringLiteral("online"));
         m_reconnectTimer.stop();
         setBusy(false);
+        fetchCloudReadiness();
         listCampaigns();
         refresh();
+    });
+}
+
+void RealityCIController::fetchCloudReadiness()
+{
+    if (!online())
+        return;
+    QNetworkReply *reply = get(QStringLiteral("/v1/cloud/readiness"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            m_cloudReadiness.clear();
+            emit cloudReadinessChanged();
+            return;
+        }
+        m_cloudReadiness = QJsonDocument::fromJson(reply->readAll())
+                               .object().toVariantMap();
+        emit cloudReadinessChanged();
     });
 }
 

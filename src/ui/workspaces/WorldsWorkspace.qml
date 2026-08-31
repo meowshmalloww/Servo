@@ -1215,6 +1215,8 @@ Item {
                                 source: root.hasSelection ? root.explorePlyPath : ""
                                 visualizationMode: root.visualizationMode
                                 snowAccumulation: root.snowAccumulation
+                                timeOfDay: Session.worldTimeOfDay
+                                sunIntensity: Session.worldSunIntensity
                                 focus: visible
                                 onReadyChanged: {
                                     if (!ready || loading)
@@ -1359,6 +1361,8 @@ Item {
                                 active: visible
                                 gaussianView: gaussianView
                                 snowAccumulation: root.snowAccumulation
+                                timeOfDay: Session.worldTimeOfDay
+                                sunIntensity: Session.worldSunIntensity
                             }
 
                             CarlaDriveView {
@@ -1634,6 +1638,60 @@ Item {
                                             font.family: Theme.monoFont
                                             font.pixelSize: 9
                                         }
+                                    }
+                                    RowLayout {
+                                        spacing: 3
+                                        Text {
+                                            text: "TIME"
+                                            color: Theme.textMuted
+                                            font.family: Theme.monoFont
+                                            font.pixelSize: 8
+                                        }
+                                        TextButton { compact: true; text: "Dawn"; selected: Session.worldTimeOfDay === 6.5; onClicked: Session.worldTimeOfDay = 6.5 }
+                                        TextButton { compact: true; text: "Day"; selected: Session.worldTimeOfDay === 12.0; onClicked: Session.worldTimeOfDay = 12.0 }
+                                        TextButton { compact: true; text: "Dusk"; selected: Session.worldTimeOfDay === 18.5; onClicked: Session.worldTimeOfDay = 18.5 }
+                                        TextButton { compact: true; text: "Night"; selected: Session.worldTimeOfDay === 22.0; onClicked: Session.worldTimeOfDay = 22.0 }
+                                        Slider {
+                                            Layout.preferredWidth: 105
+                                            from: 0.0
+                                            to: 24.0
+                                            stepSize: 0.25
+                                            value: Session.worldTimeOfDay
+                                            onMoved: Session.worldTimeOfDay = value
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "Generated visual time " + value.toFixed(2) + " h"
+                                        }
+                                        Text {
+                                            text: Math.floor(Session.worldTimeOfDay).toString().padStart(2, "0")
+                                                  + ":" + Math.round((Session.worldTimeOfDay % 1) * 60).toString().padStart(2, "0")
+                                            color: Theme.textSecondary
+                                            font.family: Theme.monoFont
+                                            font.pixelSize: 9
+                                        }
+                                        Text {
+                                            text: "SUN"
+                                            color: Theme.textMuted
+                                            font.family: Theme.monoFont
+                                            font.pixelSize: 8
+                                        }
+                                        Slider {
+                                            Layout.preferredWidth: 76
+                                            from: 0.0
+                                            to: 2.0
+                                            stepSize: 0.05
+                                            value: Session.worldSunIntensity
+                                            onMoved: Session.worldSunIntensity = value
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "Generated sun intensity " + value.toFixed(2)
+                                        }
+                                    }
+                                    Text {
+                                        text: "Time and sun are generated visual simulation; they do not relight hidden geometry or become sensor truth."
+                                        color: Theme.textMuted
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 8
+                                        wrapMode: Text.WordWrap
+                                        Layout.maximumWidth: 360
                                     }
                                     TextButton {
                                         compact: true

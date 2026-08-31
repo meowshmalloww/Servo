@@ -95,8 +95,8 @@ checkpoint, hidden result, and decision is content-addressed and auditable.
 
 - A Firebase-authenticated control API and asynchronous complete-campaign
   Cloud Run Job are implemented and reproducibly scripted.
-- A real `.run.app` deployment and Cloud Run execution receipt are still
-  required before claiming live cloud deployment.
+- The API and Job are deployed in `servo-1f808`; the remaining proof is one
+  operator-authenticated campaign that commits its Firestore and GCS receipts.
 
 ### Firebase Authentication
 
@@ -123,6 +123,19 @@ checkpoint, hidden result, and decision is content-addressed and auditable.
 - Artifact Registry stores versioned container images.
 - Dedicated service identities separate API and job permissions.
 - Cloud Logging is enabled by the deployment script.
+
+### Desktop cloud and lighting UI
+
+- Settings shows the real API URL and authenticated readiness for Cloud Run,
+  Firebase Auth, Vertex AI/Gemini, Google ADK, Cloud Storage, Firestore, and the
+  campaign Job. A service stays `UNVERIFIED` until `/v1/cloud/readiness`
+  confirms it; the UI does not infer readiness from configuration strings.
+- The native controllers use `/v1/auth/session` as the Cloud Run connectivity
+  probe because Cloud Run reserves `/healthz` before Servo routing.
+- World Explore and Live Drive expose Dawn, Day, Dusk, Night, continuous local
+  time, and sun intensity. This grades the baked Gaussian appearance and adds a
+  procedural depthless sun; it is generated visual simulation, not physical
+  relighting or sensor truth.
 
 ## SDK and ADK evidence audit (2026-08-31)
 
@@ -421,12 +434,10 @@ Never spend the demo implying that a visual composite is physical geometry.
 
 ## Next verified work
 
-1. Enable Firebase Email/Password Authentication.
-2. Link the hackathon Google Cloud billing account to project `servo-1f808`.
-3. Create Firestore `(default)` and Cloud Storage in the chosen shared region.
-4. Install/authenticate Google Cloud CLI only with explicit approval.
-5. Run `cloud/infra/deploy.ps1` and capture the real revision/job receipt.
-6. Test native Firebase sign-in against the real Cloud Run API.
-7. Publish one T5 world and one promoted model with hash manifests.
-8. Verify Firestore pointers and Cloud Storage objects.
-9. Record the final four-minute evidence-first demo.
+1. Create the private operator account in Firebase Authentication and sign in
+   through Servo; never commit its password.
+2. Execute one authenticated cloud campaign and preserve its Cloud Run Job,
+   Firestore, GCS, Gemini, and ADK receipts.
+3. Publish one T5 world and one promoted model with hash manifests.
+4. Verify Firestore pointers and Cloud Storage objects from the desktop UI.
+5. Record the final four-minute evidence-first demo.

@@ -886,6 +886,8 @@ private:
     QQuaternion m_egoVehicleOrientation;
     int m_visualizationMode = 0;
     float m_snowAccumulation = 0.0f;
+    float m_timeOfDay = 12.0f;
+    float m_sunIntensity = 1.0f;
     quint64 m_cameraRevision = 0;
     quint64 m_sortedCameraRevision = 0;
     quint64 m_renderSequence = 0;
@@ -946,6 +948,8 @@ double GaussianSplatView::captureEnvelopeScore() const { return m_captureEnvelop
 QString GaussianSplatView::captureEnvelopeStatus() const { return m_captureEnvelopeStatus; }
 int GaussianSplatView::visualizationMode() const { return m_visualizationMode; }
 double GaussianSplatView::snowAccumulation() const { return m_snowAccumulation; }
+double GaussianSplatView::timeOfDay() const { return m_timeOfDay; }
+double GaussianSplatView::sunIntensity() const { return m_sunIntensity; }
 bool GaussianSplatView::externalCameraEnabled() const { return m_externalCameraEnabled; }
 QVector3D GaussianSplatView::externalCameraPosition() const { return m_externalCameraPosition; }
 QQuaternion GaussianSplatView::externalCameraOrientation() const { return m_externalCameraOrientation; }
@@ -1018,6 +1022,26 @@ void GaussianSplatView::setSnowAccumulation(double value)
         return;
     m_snowAccumulation = bounded;
     emit weatherChanged();
+    update();
+}
+
+void GaussianSplatView::setTimeOfDay(double value)
+{
+    const double bounded = std::clamp(value, 0.0, 24.0);
+    if (qFuzzyCompare(1.0 + m_timeOfDay, 1.0 + bounded))
+        return;
+    m_timeOfDay = bounded;
+    emit lightingChanged();
+    update();
+}
+
+void GaussianSplatView::setSunIntensity(double value)
+{
+    const double bounded = std::clamp(value, 0.0, 2.0);
+    if (qFuzzyCompare(1.0 + m_sunIntensity, 1.0 + bounded))
+        return;
+    m_sunIntensity = bounded;
+    emit lightingChanged();
     update();
 }
 
@@ -1627,6 +1651,8 @@ void GaussianSplatRenderer::synchronize(QQuickRhiItem *item)
     m_verticalFov = view->verticalFieldOfView();
     m_visualizationMode = view->visualizationMode();
     m_snowAccumulation = float(view->snowAccumulation());
+    m_timeOfDay = float(view->timeOfDay());
+    m_sunIntensity = float(view->sunIntensity());
     m_captureEnvelopeScore = float(view->captureEnvelopeScore());
     m_egoVehiclePosition = view->egoVehiclePosition();
     m_egoVehicleOrientation = view->egoVehicleOrientation();
@@ -2118,8 +2144,10 @@ void GaussianSplatRenderer::render(QRhiCommandBuffer *commandBuffer)
     // The preprocess shader must not replace the retained order with identity
     // IDs on an interleaved no-sort frame.
     uniforms.stabilization[1] = sortThisFrame ? 1.0f : 0.0f;
-    uniforms.stabilization[2] = 0.0f;
-    uniforms.stabilization[3] = 0.0f;
+    // Generated visual time-of-day simulation. It changes display appearance
+    // and the procedural sun only; geometry, depth and evidence remain intact.
+    uniforms.stabilization[2] = std::clamp(m_timeOfDay, 0.0f, 24.0f);
+    uniforms.stabilization[3] = std::clamp(m_sunIntensity, 0.0f, 2.0f);
     const QVector3D weatherUp = normalizedOr(m_scene->navigationUp,
                                               QVector3D(0.0f, 1.0f, 0.0f));
     uniforms.weather[0] = weatherUp.x();

@@ -10,6 +10,7 @@
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QVariantMap>
 #include <QtQmlIntegration>
 
 class QNetworkReply;
@@ -42,6 +43,7 @@ class RealityCIController final : public QAbstractTableModel
     Q_PROPERTY(QVariantList campaigns READ campaigns NOTIFY campaignsChanged)
     Q_PROPERTY(QVariantList artifacts READ artifacts NOTIFY artifactsChanged)
     Q_PROPERTY(QString assistantResult READ assistantResult NOTIFY assistantResultChanged)
+    Q_PROPERTY(QVariantMap cloudReadiness READ cloudReadiness NOTIFY cloudReadinessChanged)
 
 public:
     enum Column {
@@ -88,6 +90,7 @@ public:
     QVariantList campaigns() const;
     QVariantList artifacts() const;
     QString assistantResult() const;
+    QVariantMap cloudReadiness() const;
 
     Q_INVOKABLE void setBaseUrl(const QString &baseUrl);
     Q_INVOKABLE void setBearerToken(const QString &token);
@@ -119,6 +122,7 @@ public:
     Q_INVOKABLE void forgetCampaign();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void clearError();
+    Q_INVOKABLE void fetchCloudReadiness();
 
     Q_INVOKABLE QVariantMap latestPayload(const QString &eventType) const;
     Q_INVOKABLE QVariantList payloadsOf(const QString &eventType) const;
@@ -137,6 +141,7 @@ signals:
     void campaignsChanged();
     void artifactsChanged();
     void assistantResultChanged();
+    void cloudReadinessChanged();
 
 private:
     struct EventRow {
@@ -174,6 +179,7 @@ private:
     QString m_campaignState = QStringLiteral("unknown");
     QVariantList m_campaigns;
     QVariantList m_artifacts;
+    QVariantMap m_cloudReadiness;
     QString m_assistantResult;
     QTimer m_reconnectTimer;
     bool m_busy = false;
