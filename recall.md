@@ -1,187 +1,309 @@
-# Servo setup recall
+# Servo project recall
 
 Last updated: 2026-08-31
 
-This file is the durable checklist for finishing Servo's Firebase and Google
-Cloud connection. It intentionally contains no passwords, API keys, ID tokens,
-refresh tokens, or service-account private keys.
+Read this file first when preparing the hackathon submission, writing project
+copy, recording the demo, or resuming implementation. It is a project-memory
+document, not a secret store and not a substitute for evidence artifacts.
 
-## Current verified state
+## Identity
 
-- Firebase project: `servo-1f808`
-- Firebase Web App: `Servo`
-- The Web App registration is correct for the native Qt desktop.
-- The ignored local `.env` contains the Firebase project ID and Web API key.
-- Servo already implements a native Firebase email/password login controller.
-- The backend verifies Firebase ID tokens with the Firebase Admin SDK and
-  revocation checking.
-- Firestore campaign metadata indexing is implemented.
-- Large campaign artifacts already have a versioned Cloud Storage path.
-- Generic world/model/checkpoint publishing is implemented in
-  `cloud/infra/publish-artifact.ps1`.
-- Local RealityCI verification: 194 passed, 1 skipped.
-- Cloud Run, Firestore, and Cloud Storage have not yet been deployed from this
-  machine because Google Cloud CLI is not installed.
+- **Project:** Servo
+- **Expanded name:** Simulation Engine for Real-world Vehicle Optimization
+- **Repository:** https://github.com/meowshmalloww/Servo
+- **Hackathon:** All Things Agentic Hackathon
+- **Organization:** Individual submission; leave organization blank unless an
+  organization is created before submission.
+- **Elevator pitch:** An autonomous CI/CD engine for physical AI: reconstruct
+  3D worlds, test driving policies, diagnose failures, retrain models, and
+  deploy evidence-backed updates.
 
-## What to select on Firebase's Add SDK page
+## What Servo is
 
-Select **Config**.
-
-Do not select npm or CDN for the Servo desktop:
-
-- **npm** is for a JavaScript application using a bundler.
-- **CDN** is for a browser page loading Firebase JavaScript with script tags.
-- **Config** shows the public project identifiers needed by Servo's native Qt
-  Firebase Authentication REST client.
-
-The Web API key is project configuration, not a Firebase Admin private key.
-Do not commit it, but do not create or download a service-account JSON file for
-the desktop either.
-
-## Firebase console checklist
-
-### 1. Keep the existing Web App
-
-Firebase console > Project settings > General > Your apps:
-
-- Keep the existing `Servo` Web App.
-- Do not register another app.
-- Do not run `npm install firebase`.
-
-### 2. Enable authentication
-
-Firebase console > Build > Authentication:
-
-1. Select **Get started** if shown.
-2. Open **Sign-in method**.
-3. Select **Email/Password**.
-4. Enable **Email/Password**.
-5. Leave passwordless email-link sign-in disabled for the hackathon.
-6. Save.
-7. Open **Users** and add the authorized Servo operator account.
-8. Verify the account email before enabling Servo's production Firebase mode.
-
-### 3. Create Firestore
-
-Firebase console > Build > Firestore Database:
-
-1. Select **Create database**.
-2. Choose **Production mode**. Servo's browser/client does not write campaign
-   records directly; Cloud Run uses IAM through its service account.
-3. Use the same region planned for Cloud Run, currently `us-central1`.
-4. Keep the database ID `(default)`.
-
-Firestore stores only metadata and pointers:
-
-- `servo_campaigns/<campaign-id>`
-- `servo_artifacts/<artifact-id>`
-
-Do not upload PLYs, ZIP bundles, checkpoints, videos, or textures into a
-Firestore document.
-
-### 4. Create object storage
-
-Firebase console > Build > Storage:
-
-1. Select **Get started**.
-2. Upgrade to Blaze if Firebase requires it.
-3. Choose `us-central1` when available so compute and storage remain colocated.
-4. Start with restrictive/production rules.
-
-The default bucket will be `servo-1f808.firebasestorage.app`. Servo may use
-that bucket, but the recommended deployment creates a dedicated versioned
-bucket named `servo-1f808-servo-artifacts` for server-owned CI/CD evidence.
-
-Cloud Storage contains:
-
-- Gaussian PLYs and world bundles
-- Cameras, textures, environment maps, and validation videos
-- Policy checkpoints and training receipts
-- Campaign event logs and evidence bundles
-- Hash manifests
-
-Firestore contains the corresponding searchable record and `gs://` URI.
-
-## Local versus cloud authentication
-
-Keep Servo in local mode until the Cloud Run URL exists:
+Servo is a native Windows control center for continuously improving physical-AI
+policies. The operator describes a capability goal to Servo AI Assistant. Servo
+then coordinates a bounded, evidence-backed workflow:
 
 ```text
-SERVO_AUTH_MODE=local
-SERVO_API_URL=http://127.0.0.1:8000
+media / simulator evidence
+  -> reconstruct and register a world
+  -> run a policy in deterministic scenarios
+  -> capture synchronized failure evidence
+  -> ask Gemini for bounded hypotheses and experiment plans
+  -> execute counterfactual experiments
+  -> establish root cause with deterministic code
+  -> create targeted training experience
+  -> retrain a supported policy
+  -> run hidden examination and regression gates
+  -> promote or reject
+  -> publish the evidence-backed artifact
 ```
 
-After a real Cloud Run deployment, switch the ignored `.env` to:
+The LLM may investigate, explain, and select allowed tools. It cannot override
+promotion gates, invent evidence, modify hidden tests, or declare a pass.
+
+## Problem
+
+Physical-AI teams often have disconnected reconstruction, simulation,
+diagnosis, training, evaluation, and deployment tools. A failure may be visible
+without a reproducible causal record, and a newly trained checkpoint may fix
+one case while silently regressing another.
+
+Servo turns this into CI/CD: every world, scenario, observation, intervention,
+checkpoint, hidden result, and decision is content-addressed and auditable.
+
+## Main product surfaces
+
+- **Worlds:** create, explore, organize, validate, and remove reconstructed
+  Gaussian worlds.
+- **Runs:** execute a connected driving policy and capture synchronized
+  evidence.
+- **Diagnose:** rank hypotheses and run measured counterfactual experiments.
+- **Train:** construct targeted experiences and produce a changed checkpoint.
+- **Verify:** hidden examination, regression protection, and deterministic
+  promotion/rejection.
+- **Capabilities / Reality Debt:** record what is proven, missing, inferred, or
+  unsafe to claim.
+- **Servo AI Assistant:** one conversational entry point for inspecting state,
+  executing bounded ADK workflows, reading logs, and explaining results.
+
+## Google technologies actually used
+
+### Google Agent Development Kit
+
+- Google ADK 2.7.1 executes Servo's resumable campaign graph.
+- The campaign is a durable sequence of verified states rather than one large
+  free-form prompt.
+- ADK tool calls operate through explicit schemas and postcondition checks.
+
+### Google Gen AI SDK and Gemini
+
+- Gemini 3.7 Flash is the configured diagnostician/planner model.
+- The Google Gen AI SDK provides structured model calls.
+- Gemini proposes causal hypotheses, selects bounded Servo tools, summarizes
+  evidence, and plans the next allowed action.
+- Deterministic code remains the authority for causality and promotion.
+
+### Vertex AI
+
+- The cloud campaign job is configured to use Gemini through Vertex AI with
+  its attached Google Cloud service identity.
+- Local development can use the configured Gemini provider without committing
+  credentials.
+
+### Cloud Run
+
+- A Firebase-authenticated control API and asynchronous complete-campaign
+  Cloud Run Job are implemented and reproducibly scripted.
+- A real `.run.app` deployment and Cloud Run execution receipt are still
+  required before claiming live cloud deployment.
+
+### Firebase Authentication
+
+- Native Qt email/password sign-in uses Firebase Authentication's REST API.
+- The backend uses Firebase Admin verification with revocation checking.
+- ID and refresh tokens are held in memory; signing out clears them.
+- No JavaScript Firebase SDK, npm package, or CDN script is used by the desktop.
+
+### Cloud Firestore
+
+- Stores bounded searchable campaign and artifact metadata.
+- Stores state, provenance, hashes, timestamps, and `gs://` pointers.
+- Never stores Gaussian PLYs, videos, textures, or checkpoint bodies.
+
+### Cloud Storage
+
+- Stores versioned campaign workspaces, event logs, checkpoints, examination
+  results, decisions, world bundles, Gaussian PLYs, videos, and hash manifests.
+- Generic publishing is implemented in `cloud/infra/publish-artifact.ps1`.
+
+### Cloud Build, Artifact Registry, IAM, and Logging
+
+- Cloud Build produces the API and campaign-job images.
+- Artifact Registry stores versioned container images.
+- Dedicated service identities separate API and job permissions.
+- Cloud Logging is enabled by the deployment script.
+
+## Reconstruction and simulation
+
+- Media reconstruction uses FFmpeg, COLMAP/PyCOLMAP, PyTorch CUDA, and gsplat
+  under a checksum-locked native Windows runtime.
+- Servo owns the orchestration, training policy, manifests, audits, world
+  library, Vulkan renderer, diagnostics, and publication gates.
+- T5 is the strongest Yosemite hackathon visual candidate but remains
+  nonmetric and `collisionValidated=false`.
+- The Gaussian world is appearance evidence, not collision geometry.
+- CARLA/OpenDRIVE owns simulation collision and road physics.
+- The current corridor and scale are inferred from camera evidence.
+- Off-axis Gaussian blur, gaps, and fiberglass artifacts remain an honest
+  limitation of the captured forward monocular evidence.
+
+## Real CARLA evidence
+
+- CARLA 0.9.16 packaged-runtime discovery and owned process/session management
+  are implemented.
+- Synchronous explicit-control workers, inferred-corridor OpenDRIVE,
+  CARLA/3DGS/hybrid observations, three DriveMA cameras, IMU, collision, lane,
+  and terminal-stop evidence are implemented.
+- Accepted T5/DriveMA snow evidence completed about 94.3% of its inferred route
+  with zero collisions and one lane invasion.
+- The evidence records 90% snow accumulation, a 9.81 m/s^2 CARLA gravity
+  reference, approximately 9.76 m/s^2 median measured IMU magnitude, and
+  passing ground contact.
+- A separate pedestrian challenge produced a real collision failure. Servo
+  classified it and preserved it as failure evidence; it is not presented as a
+  pass.
+- The rejected depth-aware CARLA/T5 composite is forensic evidence only and
+  must not be used as submission imagery or described as unified geometry.
+
+## Agentic campaign evidence
+
+- Servo has executed the complete local campaign loop with durable ordered
+  events and artifacts.
+- A golden occluded-pedestrian campaign trained a changed PyTorch checkpoint,
+  improved the hidden exam from 4/8 to 7/8, passed protected regression gates,
+  and received a deterministic promotion decision.
+- A separate live Gemini/ADK campaign inspected evidence and was correctly
+  rejected by deterministic promotion gates.
+- The result demonstrates that Servo does not simply approve whatever the
+  assistant recommends.
+
+## Verification baseline
+
+- RealityCI test suite: **194 passed, 1 skipped**.
+- Native Qt/C++ tests: **13/13 passed** on the documented build.
+- Tests cover ADK graph execution and resume, structured Gemini boundaries,
+  Firebase verification, Cloud Run dispatch contracts, training, hidden exams,
+  regression and promotion, artifact durability, and fail-closed CARLA route
+  validation.
+- Unit tests are not represented as a live Cloud Run deployment or live drive.
+
+## Cloud data architecture
 
 ```text
-SERVO_AUTH_MODE=firebase
-SERVO_FIREBASE_PROJECT_ID=servo-1f808
-SERVO_FIREBASE_API_KEY=YOUR_EXISTING_WEB_APP_API_KEY
-SERVO_API_URL=https://YOUR_REAL_CLOUD_RUN_SERVICE.run.app
+Firebase Authentication -> operator identity
+Cloud Run API            -> authenticated control plane
+Cloud Run Job            -> one durable campaign execution
+Vertex AI / Gemini       -> bounded diagnosis and planning
+Cloud Firestore          -> metadata, state, hashes, pointers
+Cloud Storage            -> worlds, models, checkpoints, videos, evidence
+Artifact Registry        -> API/job container images
+Cloud Logging            -> operational logs
 ```
 
-Never commit `.env`. Never store a Firebase Admin private key, refresh token,
-ID token, password, or Google service-account JSON in the repository.
+Firebase project `servo-1f808` and Google Cloud project `servo-1f808` are the
+same underlying project. Firebase adds Firebase-specific configuration and
+console experiences to the Google Cloud project; IAM, project ID, resources,
+and billing are shared.
 
-## Google Cloud deployment (next machine setup step)
+Detailed setup belongs in:
 
-Google Cloud CLI must be installed before these commands are available. Servo
-will not install it automatically or claim deployment without a real Cloud Run
-revision and execution receipt.
+- `docs/AUTHENTICATION.md`
+- `docs/CLOUD_ARTIFACT_STORAGE.md`
+- `cloud/infra/README.md`
 
-```powershell
-gcloud auth login
-gcloud auth application-default login
+Do not put setup instructions or secrets into this recall file.
 
-Set-Location D:\Servo
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\cloud\infra\deploy.ps1 `
-  -ProjectId servo-1f808 `
-  -FirebaseProjectId servo-1f808 `
-  -Region us-central1
-```
+## Submission answers
 
-The script enables required APIs, creates service identities, creates or reuses
-Firestore, creates a versioned artifact bucket, builds the Cloud Run API and
-campaign Job, grants least-purpose IAM roles, and prints the real API URL.
+### Tagline
 
-## Publish a world after deployment
+**Autonomous CI/CD for physical AI—reconstruct worlds, test policies, diagnose
+failures, retrain, and deploy evidence-backed updates.**
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\cloud\infra\publish-artifact.ps1 `
-  -ProjectId servo-1f808 `
-  -ArtifactBucket servo-1f808-servo-artifacts `
-  -Kind world `
-  -ArtifactId yosemite-t5-final-v2 `
-  -Source "D:\path\to\published-world-bundle"
-```
+### Organization
 
-The publisher refuses accidental reuse of an artifact ID, computes file
-SHA-256 values, uploads through resumable Cloud Storage commands, publishes a
-manifest, and registers bounded metadata in Firestore.
+Leave blank or select individual unless Servo is submitted through a real
+organization.
 
-## Honest completion boundary
+### Reproducible testing instructions
 
-Servo currently implements:
+Yes. The README contains fresh-environment commands, expected results, native
+build/test commands, reconstruction runtime setup, and the boundary between
+local verification and real cloud proof.
 
-`reconstruct -> test -> diagnose -> create experience -> retrain -> hidden exam -> promote/reject -> publish artifact`
+### Google SDKs
 
-Publishing a promoted checkpoint to the cloud release channel is implemented.
-Installing that checkpoint on a real physical vehicle is a separate,
-target-specific safety/signing integration and is not claimed by the current
-hackathon build.
+- Google Agent Development Kit 2.7.1
+- Google Gen AI SDK
+- Firebase Admin SDK
+- Google Cloud Storage and Firestore server client libraries
 
-## Continue from here
+Do not claim Genkit or Antigravity SDK; they are not part of the verified Servo
+runtime.
 
-When resuming, read this file first, then:
+### Google AI models
 
-1. Confirm Authentication Email/Password is enabled.
-2. Confirm Firestore `(default)` exists in `us-central1`.
-3. Confirm Storage is enabled or choose the dedicated deployment bucket.
-4. Install/authenticate Google Cloud CLI only with user approval.
-5. Run `cloud/infra/deploy.ps1`.
-6. Record the Cloud Run URL and deployment receipt.
-7. Switch `.env` to Firebase mode and test native sign-in.
-8. Publish one T5 world and one candidate checkpoint.
-9. Verify the Firestore records and GCS hashes.
+- Gemini 3.7 Flash through the Google Gen AI SDK / Vertex AI configuration.
+
+The submission question means models executed by the project, not models used
+only by developers while writing code. Do not list Veo, Lyria, or Gemma unless
+Servo actually calls them and produces reproducible evidence before submission.
+
+### Google Cloud services
+
+- Vertex AI
+- Cloud Run service and Job
+- Cloud Build
+- Artifact Registry
+- Cloud Storage
+- Cloud Firestore
+- Firebase Authentication
+- IAM service accounts
+- Cloud Logging
+
+Do not claim Pub/Sub, Cloud SQL, or Google Kubernetes Engine; Servo does not
+need them for the bounded hackathon architecture and has not verified them.
+
+## Four-minute demo story
+
+1. Ask Servo to improve a driving capability.
+2. Show the reconstructed T5 world and explicit reconstruction limitations.
+3. Run the policy in real CARLA snow/pedestrian scenarios.
+4. Open synchronized failure evidence and the diagnosis.
+5. Let Gemini select bounded investigations through ADK.
+6. Show targeted training producing a changed checkpoint hash.
+7. Run hidden exam and protected regression gates.
+8. Show deterministic promote or reject and the cloud artifact/evidence record.
+
+Never spend the demo implying that a visual composite is physical geometry.
+
+## Claims allowed
+
+- Autonomous, evidence-backed CI/CD workflow for physical-AI policies.
+- Video/media-to-Gaussian reconstruction with native exploration.
+- Real CARLA execution and physical evidence for the documented sessions.
+- Bounded Gemini/ADK orchestration with deterministic safety gates.
+- Real PyTorch checkpoint training and hash-verified promotion/rejection.
+- Reproducible Google Cloud deployment architecture.
+
+## Claims prohibited until separately proven
+
+- Collision-safe or autonomous-driving-ready Gaussian geometry.
+- Metric or LiDAR-derived Yosemite reconstruction.
+- Complete measured 360-degree reconstruction from the forward video.
+- Unified CARLA collision geometry and Gaussian appearance.
+- Production vehicle deployment.
+- Live Google Cloud execution before a `.run.app` revision and job receipt exist.
+- Pub/Sub, Cloud SQL, GKE, Genkit, Veo, Lyria, Gemma, or other unused services.
+
+## Submission assets
+
+- Thumbnail: `docs/assets/submission/servo-devpost-thumbnail.png`
+- Real application evidence: `docs/assets/submission/servo-live-app-20260831.png`
+- Reconstruction videos and previews: `docs/assets/reconstruction/`
+- Demo script: `docs/Servo_RealityCI_4_Minute_Demo_Script.md`
+- Submission overview: `docs/SUBMISSION_OVERVIEW.md`
+- Architecture: `docs/ASK_SERVO_ARCHITECTURE.md`
+
+## Next verified work
+
+1. Enable Firebase Email/Password Authentication.
+2. Link the hackathon Google Cloud billing account to project `servo-1f808`.
+3. Create Firestore `(default)` and Cloud Storage in the chosen shared region.
+4. Install/authenticate Google Cloud CLI only with explicit approval.
+5. Run `cloud/infra/deploy.ps1` and capture the real revision/job receipt.
+6. Test native Firebase sign-in against the real Cloud Run API.
+7. Publish one T5 world and one promoted model with hash manifests.
+8. Verify Firestore pointers and Cloud Storage objects.
+9. Record the final four-minute evidence-first demo.
