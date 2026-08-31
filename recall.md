@@ -167,7 +167,7 @@ adding unrelated Google SDKs merely to increase the technology count.
 
 - Project: `servo-1f808` (`224961191633`), region `us-central1`.
 - Cloud Run API: `servo-realityci-api`, ready revision
-  `servo-realityci-api-00003-54z`, 100% traffic, maximum one instance.
+  `servo-realityci-api-00005-gvf`, 100% traffic, maximum one instance.
 - API URL: `https://servo-realityci-api-mfqkrzkvkq-uc.a.run.app`.
 - Missing Firebase bearer tokens are rejected with HTTP 401 by Servo's API.
 - Cloud Run job: `servo-campaign-job`, ready under the dedicated
