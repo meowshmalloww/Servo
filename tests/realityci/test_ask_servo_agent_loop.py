@@ -98,7 +98,7 @@ def test_agent_loop_records_unsupported_action_as_blocked_not_success() -> None:
 
     def planner(_request):
         return (
-            "openai",
+            "gemini",
             AskToolCall(
                 tool=AskToolName.DELETE_WORLD,
                 world_id="world-test",
@@ -118,7 +118,7 @@ def test_agent_loop_records_unsupported_action_as_blocked_not_success() -> None:
     result = run_agent_goal(
         AskAgentRequest(
             prompt="Delete this world",
-            provider="openai",
+            provider="gemini",
             world_id="world-test",
         ),
         run_id="askrun-fedcba9876543210",

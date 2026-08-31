@@ -1,4 +1,4 @@
-# Ask Servo — Full-Control AI Architecture
+# Servo AI Assistant — Full-Control AI Architecture
 
 **Status:** local Gemini control path and bounded agent loop implemented and live-verified 2026-08-30
 **Goal:** One AI world where a single model controls **everything** in Servo — runs, worlds, simulations, vehicles, build, settings, weather — through **structured tools and evidence**, not VLM pixel guessing. Every number comes from a durable record; every mutation is a bounded, hash-verified API call.
@@ -7,9 +7,9 @@
 
 ## Verified implementation update
 
-The desktop `Ask Servo` workspace now sends natural-language goals to
+The desktop `Servo AI Assistant` workspace now sends natural-language goals to
 `POST /v1/ask/agent`. Every turn performs four explicit phases: inspect the
-current durable record, let Gemini/OpenAI select one bounded tool, execute it
+current durable record, let Gemini select one bounded tool, execute it
 through deterministic control-plane code, and verify the resulting state,
 ordered events, and artifacts. The complete campaign tool executes the real
 Google ADK 2.7.1 graph and returns its node trace. Each turn is persisted as a
@@ -27,7 +27,7 @@ Live agent verification from 2026-08-30:
   verifier re-read 21 ordered domain events plus 80 artifacts.
 - Terminal result was `completed_rejected`. The promotion gate correctly
   rejected a candidate that did not satisfy the evidence contract.
-- Gemini and OpenAI credentials are read only from the local environment; keys
+- Gemini credentials are read only from the local environment; keys
   are never returned to the UI, logs, or repository.
 - Unwired mutation tools return HTTP 501. They never report fake completion.
 - In the agent endpoint, that same condition becomes a durable `BLOCKED`
@@ -154,7 +154,7 @@ Every branch checks `infrastructure_invalid` vs `policy failure` (`REALITYCI_CAR
 │  schemas/*          │  │  prompts.py (genetic_loop)      │
 └─────────────────────┘  └─────────────────────────────┬───┘
                          ┌─────────────────────────────▼───┐
-                         │ Gemini 3.7 Flash / GPT-5.6 /    │
+                         │ Gemini 3.7 Flash /              │
                          │ deterministic fallback (same    │
                          │  SHA, never invents)            │
                          └─────────────────────────────────┘
@@ -198,7 +198,7 @@ curl http://127.0.0.1:8000/v1/ask/tools
 # or MCP: tools/list over stdio
 
 # 3. Run a verified agent turn. Use provider=gemini for the configured Vertex
-# path, provider=openai for OpenAI, or deterministic for a repeatable offline
+# path, provider=gemini, or deterministic for a repeatable offline
 # test. Never place credentials in the JSON body.
 curl -X POST http://127.0.0.1:8000/v1/ask/agent -H "Content-Type: application/json" -H "Idempotency-Key: demo-agent-01" -d '{"prompt":"Run the selected campaign through the agentic loop","provider":"gemini","campaign_id":"cam-...","verify":true}'
 
@@ -211,7 +211,7 @@ curl http://127.0.0.1:8000/v1/ask/agent-runs/askrun-...
 
 All `POST` mutating calls accept `Idempotency-Key: <uuid>` and return `request_id` for log correlation.
 
-In the desktop, open **Ask Servo**, select Gemini 3.7 Flash, and ask:
+In the desktop, open **Servo AI Assistant**, select Gemini 3.7 Flash, and ask:
 `Run the selected campaign through the agentic loop`. Select a campaign in
 Runs first. If no campaign is selected, Servo stops with a `BLOCKED` receipt
 instead of choosing an unrelated campaign. `New` clears only the chat; it does

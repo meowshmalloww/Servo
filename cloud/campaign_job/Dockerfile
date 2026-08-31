@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir torch==2.11.0 --index-url https://download.pytorc
        pydantic==2.13.4 \
        google-adk==2.7.1 \
        google-genai==2.19.0 \
-       google-cloud-storage==3.4.1
+       google-cloud-storage==3.4.1 \
+       google-cloud-firestore==2.21.0
 
 COPY tools/realityci tools/realityci
 COPY cloud/campaign_job/main.py cloud/campaign_job/main.py

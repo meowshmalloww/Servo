@@ -551,7 +551,7 @@ ApplicationWindow {
                     }
 
                     TextButton {
-                        text: "Ask Servo"
+                        text: "Servo AI Assistant"
                         iconSource: Theme.icon("assistant")
                         selected: Session.workspaceIndex === 3
                         compact: true

@@ -19,12 +19,6 @@ QString apiModelId(const QString &displayName)
         return QStringLiteral("gemini-3.7-flash");
     if (value.startsWith(QStringLiteral("Gemini 3.6")))
         return QStringLiteral("gemini-3.6-flash");
-    if (value == QStringLiteral("GPT-5.6 Sol"))
-        return QStringLiteral("gpt-5.6-sol");
-    if (value == QStringLiteral("GPT-5.6 Terra"))
-        return QStringLiteral("gpt-5.6-terra");
-    if (value == QStringLiteral("GPT-5.6 Luna"))
-        return QStringLiteral("gpt-5.6-luna");
     return value.contains(QLatin1Char(' ')) ? QString() : value;
 }
 } // namespace
@@ -609,10 +603,7 @@ void RealityCIController::executeAssistantPrompt(const QString &prompt,
     QJsonObject body;
     body.insert(QLatin1String("prompt"), prompt.trimmed());
     QString normalizedProvider = provider.trimmed().toLower();
-    if (normalizedProvider.contains(QLatin1String("openai"))
-        || normalizedProvider.startsWith(QLatin1String("gpt")))
-        normalizedProvider = QStringLiteral("openai");
-    else if (normalizedProvider.contains(QLatin1String("google"))
+    if (normalizedProvider.contains(QLatin1String("google"))
              || normalizedProvider.startsWith(QLatin1String("gemini")))
         normalizedProvider = QStringLiteral("gemini");
     else if (normalizedProvider != QLatin1String("deterministic"))
@@ -711,9 +702,7 @@ void RealityCIController::executeAskPrompt(const QString &prompt,
     QJsonObject body;
     body.insert(QLatin1String("prompt"), prompt.trimmed());
     QString normalizedProvider = provider.trimmed().toLower();
-    if (normalizedProvider.contains(QLatin1String("openai")) || normalizedProvider.startsWith(QLatin1String("gpt")))
-        normalizedProvider = QStringLiteral("openai");
-    else if (normalizedProvider.contains(QLatin1String("google")) || normalizedProvider.startsWith(QLatin1String("gemini")))
+    if (normalizedProvider.contains(QLatin1String("google")) || normalizedProvider.startsWith(QLatin1String("gemini")))
         normalizedProvider = QStringLiteral("gemini");
     else if (normalizedProvider != QLatin1String("deterministic"))
         normalizedProvider = QStringLiteral("auto");

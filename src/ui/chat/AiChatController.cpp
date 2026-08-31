@@ -28,13 +28,11 @@ constexpr int ReplyNone = 0;
 constexpr int ReplyRealtime = 1;
 constexpr int ReplyDelayedSubmit = 2;
 constexpr int ReplyDelayedPoll = 3;
-constexpr int ReplyOpenAi = 4;
 constexpr int DelayedPollIntervalMs = 30'000;
 constexpr auto DeveloperApiRoot = "https://generativelanguage.googleapis.com/v1beta/";
 constexpr auto VertexExpressApiRoot = "https://aiplatform.googleapis.com/v1/";
-constexpr auto OpenAiResponsesUrl = "https://api.openai.com/v1/responses";
 constexpr auto SystemInstruction =
-    "You are Servo Assistant, a concise engineering copilot for a robotics validation workbench. "
+    "You are Servo AI Assistant, a concise engineering copilot for a robotics validation workbench. "
     "Be explicit about uncertainty and never invent project state, sensor evidence, or safety results. "
     "Web browsing and web search are disabled. Do not claim that you searched the web.";
 
@@ -111,11 +109,6 @@ QString configuredGoogleApiKey()
                             QStringLiteral("GEMINI_API_KEY")});
 }
 
-QString configuredOpenAiApiKey()
-{
-    return configuredValue({QStringLiteral("OPENAI_API_KEY")});
-}
-
 bool useVertexExpress(const QString &apiKey)
 {
     const QString provider = configuredValue({QStringLiteral("SERVO_GOOGLE_API")}).toLower();
@@ -157,7 +150,6 @@ AiChatController::AiChatController(QObject *parent)
     : QAbstractListModel(parent)
     , m_store(std::make_unique<AiChatStore>())
     , m_googleApiKey(configuredGoogleApiKey())
-    , m_openAiApiKey(configuredOpenAiApiKey())
     , m_vertexExpress(useVertexExpress(m_googleApiKey))
 {
     m_network.setTransferTimeout(std::chrono::minutes(2));
@@ -217,7 +209,7 @@ bool AiChatController::busy() const
 
 bool AiChatController::configured() const
 {
-    return !m_googleApiKey.isEmpty() || !m_openAiApiKey.isEmpty();
+    return !m_googleApiKey.isEmpty();
 }
 
 QString AiChatController::statusText() const
@@ -237,9 +229,6 @@ QStringList AiChatController::modelNames() const
         QStringLiteral("Gemini 3.6 Flash"),
         QStringLiteral("Gemini 3.7 Long Run"),
         QStringLiteral("Gemini 3.6 Long Run"),
-        QStringLiteral("GPT-5.6 Sol"),
-        QStringLiteral("GPT-5.6 Terra"),
-        QStringLiteral("GPT-5.6 Luna"),
     };
 }
 
@@ -277,30 +266,6 @@ QVariantList AiChatController::modelOptions() const
             {QStringLiteral("efforts"), QStringList{QStringLiteral("High")}},
             {QStringLiteral("delayed"), true},
             {QStringLiteral("fixedHigh"), true},
-        },
-        QVariantMap{
-            {QStringLiteral("name"), QStringLiteral("GPT-5.6 Sol")},
-            {QStringLiteral("description"), QStringLiteral("Frontier capability for complex engineering work")},
-            {QStringLiteral("provider"), QStringLiteral("OpenAI")},
-            {QStringLiteral("efforts"), effortNames()},
-            {QStringLiteral("delayed"), false},
-            {QStringLiteral("fixedHigh"), false},
-        },
-        QVariantMap{
-            {QStringLiteral("name"), QStringLiteral("GPT-5.6 Terra")},
-            {QStringLiteral("description"), QStringLiteral("Balanced intelligence for everyday agentic work")},
-            {QStringLiteral("provider"), QStringLiteral("OpenAI")},
-            {QStringLiteral("efforts"), effortNames()},
-            {QStringLiteral("delayed"), false},
-            {QStringLiteral("fixedHigh"), false},
-        },
-        QVariantMap{
-            {QStringLiteral("name"), QStringLiteral("GPT-5.6 Luna")},
-            {QStringLiteral("description"), QStringLiteral("Fast, efficient work for repeatable tasks")},
-            {QStringLiteral("provider"), QStringLiteral("OpenAI")},
-            {QStringLiteral("efforts"), effortNames()},
-            {QStringLiteral("delayed"), false},
-            {QStringLiteral("fixedHigh"), false},
         },
     };
 }
@@ -410,21 +375,12 @@ bool AiChatController::sendMessage(const QString &prompt,
     if (trimmed.isEmpty() || m_busy)
         return false;
 
-    const bool useOpenAi = isOpenAiModel(modelName);
-    if (useOpenAi ? m_openAiApiKey.isEmpty() : m_googleApiKey.isEmpty()) {
-        setErrorText(useOpenAi
-                         ? QStringLiteral("Set OPENAI_API_KEY in Servo's .env, then restart the app.")
-                         : QStringLiteral("Set GOOGLE_API_KEY or GEMINI_API_KEY in Servo's .env, then restart the app."));
+    if (m_googleApiKey.isEmpty()) {
+        setErrorText(QStringLiteral("Set GOOGLE_API_KEY or GEMINI_API_KEY in Servo's .env, then restart the app."));
         return false;
     }
 
     QJsonArray geminiParts{QJsonObject{{QStringLiteral("text"), trimmed}}};
-    QJsonArray openAiCurrentContent{
-        QJsonObject{
-            {QStringLiteral("type"), QStringLiteral("input_text")},
-            {QStringLiteral("text"), trimmed},
-        },
-    };
     for (const Attachment &attachment : std::as_const(m_attachments)) {
         QFile file(attachment.url.toLocalFile());
         if (!file.open(QIODevice::ReadOnly)) {
@@ -437,13 +393,6 @@ bool AiChatController::sendMessage(const QString &prompt,
                  {QStringLiteral("mimeType"), attachment.mimeType},
                  {QStringLiteral("data"), QString::fromLatin1(encoded)},
              }},
-        });
-        openAiCurrentContent.append(QJsonObject{
-            {QStringLiteral("type"), QStringLiteral("input_image")},
-            {QStringLiteral("image_url"), QStringLiteral("data:%1;base64,%2")
-                                                  .arg(attachment.mimeType,
-                                                       QString::fromLatin1(encoded))},
-            {QStringLiteral("detail"), QStringLiteral("auto")},
         });
     }
 
@@ -469,33 +418,12 @@ bool AiChatController::sendMessage(const QString &prompt,
          }},
     };
 
-    QJsonArray openAiInput;
-    for (const Message &message : std::as_const(m_messages)) {
-        openAiInput.append(QJsonObject{
-            {QStringLiteral("role"), message.author},
-            {QStringLiteral("content"), message.content},
-        });
-    }
-    openAiInput.append(QJsonObject{
-        {QStringLiteral("role"), QStringLiteral("user")},
-        {QStringLiteral("content"), openAiCurrentContent},
-    });
-    const QJsonObject openAiRequest{
-        {QStringLiteral("model"), selectedModelId},
-        {QStringLiteral("instructions"), QString::fromLatin1(SystemInstruction)},
-        {QStringLiteral("input"), openAiInput},
-        {QStringLiteral("reasoning"), QJsonObject{
-             {QStringLiteral("effort"), effectiveEffortId(modelName, effortName)},
-         }},
-        {QStringLiteral("store"), false},
-    };
-    const QJsonObject requestPayload = useOpenAi ? openAiRequest : geminiRequest;
-    if (QJsonDocument(requestPayload).toJson(QJsonDocument::Compact).size()
+    if (QJsonDocument(geminiRequest).toJson(QJsonDocument::Compact).size()
         > MaximumRequestBytes) {
         setErrorText(QStringLiteral("This request is too large. Remove one or more images."));
         return false;
     }
-    const QString requestCacheKey = cacheKey(selectedModelId, requestPayload);
+    const QString requestCacheKey = cacheKey(selectedModelId, geminiRequest);
 
     appendMessage(QStringLiteral("user"), trimmed);
     m_conversationContents.append(geminiUserContent);
@@ -514,12 +442,7 @@ bool AiChatController::sendMessage(const QString &prompt,
     m_pendingModelName = modelName;
     setBusy(true);
 
-    if (useOpenAi) {
-        setStatusText(QStringLiteral("Thinking"));
-        postJson(QUrl(QString::fromLatin1(OpenAiResponsesUrl)),
-                 openAiRequest,
-                 ReplyOpenAi);
-    } else if (isDelayedModel(modelName)) {
+    if (isDelayedModel(modelName)) {
         const QJsonObject payload{
             {QStringLiteral("batch"), QJsonObject{
                  {QStringLiteral("display_name"), QStringLiteral("Servo autonomous run")},
@@ -671,20 +594,9 @@ void AiChatController::clearError()
 
 QString AiChatController::modelId(const QString &modelName)
 {
-    if (modelName == QStringLiteral("GPT-5.6 Sol"))
-        return QStringLiteral("gpt-5.6-sol");
-    if (modelName == QStringLiteral("GPT-5.6 Terra"))
-        return QStringLiteral("gpt-5.6-terra");
-    if (modelName == QStringLiteral("GPT-5.6 Luna"))
-        return QStringLiteral("gpt-5.6-luna");
     if (modelName.startsWith(QStringLiteral("Gemini 3.6")))
         return QStringLiteral("gemini-3.6-flash");
     return QStringLiteral("gemini-3.7-flash");
-}
-
-bool AiChatController::isOpenAiModel(const QString &modelName)
-{
-    return modelName.startsWith(QStringLiteral("GPT-"));
 }
 
 bool AiChatController::isDelayedModel(const QString &modelName)
@@ -723,27 +635,6 @@ QString AiChatController::responseText(const QJsonObject &response)
                                      .value(QStringLiteral("parts")).toArray();
         for (const QJsonValue &partValue : parts) {
             const QString text = partValue.toObject().value(QStringLiteral("text")).toString();
-            if (!text.isEmpty())
-                chunks.append(text);
-        }
-    }
-    return chunks.join(QString()).trimmed();
-}
-
-QString AiChatController::openAiResponseText(const QJsonObject &response)
-{
-    QStringList chunks;
-    const QJsonArray output = response.value(QStringLiteral("output")).toArray();
-    for (const QJsonValue &outputValue : output) {
-        const QJsonObject item = outputValue.toObject();
-        if (item.value(QStringLiteral("type")).toString() != QStringLiteral("message"))
-            continue;
-        const QJsonArray content = item.value(QStringLiteral("content")).toArray();
-        for (const QJsonValue &contentValue : content) {
-            const QJsonObject part = contentValue.toObject();
-            if (part.value(QStringLiteral("type")).toString() != QStringLiteral("output_text"))
-                continue;
-            const QString text = part.value(QStringLiteral("text")).toString();
             if (!text.isEmpty())
                 chunks.append(text);
         }
@@ -827,10 +718,7 @@ void AiChatController::postJson(const QUrl &url, const QJsonObject &payload, int
 {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    if (replyKind == ReplyOpenAi)
-        request.setRawHeader("Authorization", QByteArray("Bearer ") + m_openAiApiKey.toUtf8());
-    else
-        request.setRawHeader("x-goog-api-key", m_googleApiKey.toUtf8());
+    request.setRawHeader("x-goog-api-key", m_googleApiKey.toUtf8());
     request.setRawHeader("User-Agent", "Servo/0.2 Qt/6.11");
 
     QNetworkReply *reply = m_network.post(
@@ -962,9 +850,7 @@ void AiChatController::finishReply(QNetworkReply *reply)
         return;
     }
 
-    const QString output = replyKind == ReplyOpenAi
-        ? openAiResponseText(response)
-        : responseText(response);
+    const QString output = responseText(response);
     if (output.isEmpty()) {
         setErrorText(responseError(response));
         setBusy(false);

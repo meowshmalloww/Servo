@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Simulation Engine for Real-world Vehicle Optimization</strong><br>
-  Agentic simulation, validation, diagnosis, and optimization for autonomous-vehicle policies.
+  Autonomous CI/CD for physical AI: reconstruct worlds, test driving policies, diagnose failures, retrain models, and promote evidence-backed improvements.
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@ SERVO is a desktop control center for building and testing autonomous-vehicle sy
 observe -> diagnose -> create experience -> train -> hidden exam -> promote or reject
 ```
 
-SERVO is being developed for the [All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/) as an agentic vehicle-optimization workflow: the operator describes the goal, Servo Assistant coordinates the system, and every run produces durable evidence.
+SERVO is being developed for the [All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/) as an agentic vehicle-optimization workflow: the operator describes the goal, Servo AI Assistant coordinates the system, and every run produces durable evidence.
 
 ## Core product
 
@@ -34,7 +34,7 @@ SERVO is being developed for the [All Things Agentic Hackathon](https://allthing
 - **Training** — Build targeted experience sets, update supported policy checkpoints, and preserve training provenance.
 - **Verification** — Evaluate hidden scenarios, protect existing capabilities from regression, and promote or reject candidates.
 - **Reality Debt** — Track missing evidence and turn capability gaps into explicit acquisition or training work.
-- **Servo Assistant** — Use Gemini/Vertex AI or OpenAI credentials to inspect the project, navigate the application, control supported workflows, and explain results.
+- **Servo AI Assistant** — Use Gemini 3.7 through the Google Gen AI SDK and Vertex AI to inspect the project, execute bounded ADK workflows, and explain evidence-backed results.
 
 ## System architecture
 
@@ -66,7 +66,7 @@ The desktop application is a native Qt/C++ workbench. The local RealityCI servic
 - The CARLA 0.9.16 integration includes fail-closed packaged-runtime discovery, owned process/session management, inferred-corridor OpenDRIVE companions, synchronous explicit-control workers, CARLA/3DGS/hybrid observation adapters, a real three-camera DriveMA-2B policy endpoint, and native live-drive UI/controller plumbing.
 - The packaged CARLA 0.9.16 runtime registered in `simulations/runtime/carla/settings.json` has passed Servo's real Town01 physics/RGB preflight and generated-OpenDRIVE displacement test. CARLA source checkouts are neither discovered nor required at runtime.
 - The currently attached accepted-T5/DriveMA snow run completed 94.3% of its inferred corridor with zero collisions and one lane invasion. Its evidence records 90% snow accumulation, a 9.81 m/s² CARLA gravity reference, 9.76 m/s² median measured IMU magnitude, and passing ground contact. The desktop exposes the uncomposited native CARLA camera and the actual interactive five-tile T5 world as separate views. The rejected offline composite remains forensic-only and is not submission imagery. T5 remains review-required, nonmetric, and `collisionValidated=false`.
-- Servo Assistant uses the real local control plane and configured Gemini/Vertex AI or OpenAI provider to inspect durable worlds, runs, weather, logs, and evidence. Unsupported actions fail closed instead of returning simulated success.
+- Servo AI Assistant uses the real local control plane and configured Gemini/Vertex AI provider to inspect durable worlds, runs, weather, logs, and evidence. Unsupported actions fail closed instead of returning simulated success.
 
 See [local CARLA setup](docs/LOCAL_WINDOWS_CARLA_SETUP.md) and [integration architecture](docs/CARLA_INTEGRATION.md).
 

@@ -78,7 +78,7 @@ Transitions are enforced by `tools/realityci/state_machine.py`
 | `exam/promotion.py` | truth-table gate; identity + isolation checks |
 | `capabilities/register.py` | state machine per capability; debt formula; next-weakness selector |
 | `capabilities/world_scout.py` | BLOCKED_MISSING_REALITY → sealed capture missions |
-| `assistant_tools.py` | bounded Gemini/OpenAI tool planner; ten explicit campaign tools only |
+| `assistant_tools.py` | bounded Gemini tool planner; ten explicit campaign tools only |
 | `adk_graph.py` | Google ADK 2.7 SequentialAgent over the 12 pipeline states; durable resume |
 | `security_audit.py` | secret/path/license release gate → docs/SECURITY_AND_PROVENANCE.md |
 | `orchestrator.py` | fsync'd event log, atomic state, idempotent resumable steps |
@@ -98,7 +98,7 @@ Transitions are enforced by `tools/realityci/state_machine.py`
    and regression records, and isolation receipt presence.
 5. **Idempotency/resume**: events carry monotonic sequence + idempotency
    key; re-running a terminal campaign emits nothing.
-6. **Safe assistant boundary**: Gemini/OpenAI may select an allowlisted tool,
+6. **Safe assistant boundary**: Gemini may select an allowlisted tool,
    but only deterministic campaign code changes state or decides promotion.
 7. **Local API lifecycle**: token authentication (when configured), persistent
    request idempotency, structured errors, cancellation, artifact retrieval,
@@ -154,7 +154,7 @@ durable event log.
 
 # then in Servo: Runs -> API URL http://127.0.0.1:8000 -> Connect ->
 # Create Campaign -> Start Run. In Ask Servo, select that campaign and request
-# "Run the selected campaign through the agentic loop". Gemini/OpenAI plans;
+# "Run the selected campaign through the agentic loop". Gemini plans;
 # deterministic tools and the Google ADK graph execute and verify the result.
 # For the asynchronous cloud path, ask "Run this campaign in the Google Cloud
 # background". Ask Servo selects the bounded dispatch_campaign tool; it cannot
@@ -191,7 +191,7 @@ recorded process.
   `completed_rejected` through the deterministic safety gate; 21 ordered
   events and 80 artifacts were re-read during verification.
 
-The Gemini and OpenAI structured providers are implemented and schema-tested.
+The Gemini structured provider and deterministic offline fallback are implemented and schema-tested.
 The receipt above used the configured Gemini/Vertex path for planning; all
 state transitions, experiments, training, and promotion checks remained
 deterministic tools rather than model-authored claims.

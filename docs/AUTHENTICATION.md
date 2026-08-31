@@ -66,5 +66,19 @@ Do not deploy an unauthenticated local-mode API publicly.
 4. Configure Cloud Run with Firebase mode, project ID, and the optional claim.
 5. Configure the desktop with the same project ID, web API key, and API URL.
 
+The desktop values belong in the local ignored `.env`:
+
+```text
+SERVO_AUTH_MODE=firebase
+SERVO_FIREBASE_PROJECT_ID=YOUR_PROJECT_ID
+SERVO_FIREBASE_API_KEY=YOUR_FIREBASE_WEB_API_KEY
+SERVO_API_URL=https://YOUR_CLOUD_RUN_SERVICE.run.app
+```
+
+Create the web API key/config from **Firebase console > Project settings >
+General > Your apps**. Do not download or distribute a service-account private
+key for the desktop. The Cloud Run service and job use their attached Google
+Cloud service identities instead.
+
 Authentication identifies the operator. Deterministic promotion gates,
 artifact provenance, and CARLA evidence validation remain separate controls.

@@ -97,12 +97,10 @@ private:
     };
 
     static QString modelId(const QString &modelName);
-    static bool isOpenAiModel(const QString &modelName);
     static bool isDelayedModel(const QString &modelName);
     static QString effortId(const QString &effortName);
     static QString effectiveEffortId(const QString &modelName, const QString &effortName);
     static QString responseText(const QJsonObject &response);
-    static QString openAiResponseText(const QJsonObject &response);
     static QString delayedResponseText(const QJsonObject &response);
     static QString responseError(const QJsonObject &response);
     static QString cacheKey(const QString &modelId, const QJsonObject &request);
@@ -124,7 +122,6 @@ private:
     QTimer m_pollTimer;
     std::unique_ptr<AiChatStore> m_store;
     QString m_googleApiKey;
-    QString m_openAiApiKey;
     QString m_statusText = QStringLiteral("Ready");
     QString m_errorText;
     QString m_pendingCacheKey;

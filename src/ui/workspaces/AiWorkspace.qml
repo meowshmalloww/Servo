@@ -282,7 +282,7 @@ Item {
                     }
                     onSendRequested: (prompt, modelName, effortName) => {
                         if (RealityCIController.isAskPrompt(prompt)) {
-                            const provider = modelName.indexOf("GPT") === 0 ? "openai" : "gemini"
+                            const provider = "gemini"
                             // Pass world/simulation context if available
                             const worldId = typeof SimulationController !== "undefined" ? SimulationController.selectedWorldId : ""
                             const simId = typeof SimulationController !== "undefined" ? SimulationController.sessionId : ""
@@ -291,7 +291,7 @@ Item {
                             RealityCIController.executeAskPrompt(prompt, provider, modelName, worldId, simId)
                             chatInput.clearPrompt()
                         } else if (RealityCIController.isCampaignPrompt(prompt)) {
-                            const provider = modelName.indexOf("GPT") === 0 ? "openai" : "gemini"
+                            const provider = "gemini"
                             AiChatController.recordExternalMessage("user", prompt)
                             root.controlPromptPending = true
                             RealityCIController.executeAssistantPrompt(prompt, provider, modelName)

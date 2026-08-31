@@ -1,7 +1,7 @@
 # Servo frontend contract
 
 The application shell is gated by `AuthController`. In Firebase mode the
-workspace, simulations, and Ask Servo remain behind the login surface until
+workspace, simulations, and Servo AI Assistant remain behind the login surface until
 Firebase sign-in and `/v1/auth/session` verification succeed. Local mode is an
 explicit developer path. See [AUTHENTICATION.md](AUTHENTICATION.md).
 

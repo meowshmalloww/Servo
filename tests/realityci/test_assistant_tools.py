@@ -38,7 +38,6 @@ def test_deterministic_planner_is_bounded(prompt, expected) -> None:
 
 def test_explicit_deterministic_provider_never_touches_network(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "must-not-be-used")
-    monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-used")
     provider, call = plan_tool(
         AssistantPlanRequest(prompt="show status", provider="deterministic")
     )

@@ -165,7 +165,7 @@ class AskToolCall(StrictTool):
 
 class AskPlanRequest(StrictTool):
     prompt: str = Field(min_length=1, max_length=8000)
-    provider: Literal["auto", "gemini", "openai", "deterministic"] = "auto"
+    provider: Literal["auto", "gemini", "deterministic"] = "auto"
     model: str | None = None
     campaign_id: str | None = None
     simulation_id: str | None = None
@@ -386,30 +386,13 @@ def _gemini_plan(request: AskPlanRequest) -> AskToolCall:
     )
 
 
-def _openai_plan(request: AskPlanRequest) -> AskToolCall:
-    from openai import OpenAI
-
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OpenAI credentials are not configured")
-    model = request.model or os.environ.get("SERVO_OPENAI_TOOL_MODEL", "gpt-5.6-terra")
-    response = OpenAI(api_key=api_key).responses.parse(model=model, input=_planning_prompt(request), text_format=AskToolCall, store=False)
-    if response.output_parsed is None:
-        raise RuntimeError("OpenAI returned no structured tool call")
-    return AskToolCall.model_validate(response.output_parsed)
-
-
 def plan_tool(request: AskPlanRequest) -> tuple[str, AskToolCall]:
     provider = request.provider
     if provider == "auto":
         if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
             provider = "gemini"
-        elif os.environ.get("OPENAI_API_KEY"):
-            provider = "openai"
         else:
             provider = "deterministic"
     if provider == "gemini":
         return provider, _gemini_plan(request)
-    if provider == "openai":
-        return provider, _openai_plan(request)
     return "deterministic", deterministic_plan(request)

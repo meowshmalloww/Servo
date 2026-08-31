@@ -35,14 +35,15 @@ def _load_local_env() -> None:
     """Load only Servo's documented keys for direct local uvicorn launches."""
 
     allowed = {
-        "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY",
+        "GOOGLE_API_KEY", "GEMINI_API_KEY",
         "SERVO_GOOGLE_API", "SERVO_GEMINI_MODEL", "SERVO_GEMINI_TOOL_MODEL",
-        "SERVO_OPENAI_TOOL_MODEL", "SERVO_API_TOKEN", "SERVO_CAMPAIGN_ROOT",
+        "SERVO_API_TOKEN", "SERVO_CAMPAIGN_ROOT",
         "SERVO_AUTH_MODE", "SERVO_FIREBASE_PROJECT_ID",
         "SERVO_FIREBASE_REQUIRED_CLAIM", "SERVO_FIREBASE_REQUIRE_VERIFIED_EMAIL",
         "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_GENAI_USE_VERTEXAI",
         "SERVO_GCP_REGION", "SERVO_CAMPAIGN_JOB", "SERVO_GCS_BUCKET",
         "SERVO_GCS_PREFIX", "SERVO_COMMIT_SHA",
+        "SERVO_FIRESTORE_DATABASE", "SERVO_FIRESTORE_COLLECTION",
     }
     path = REPO_ROOT / ".env"
     if not path.is_file():
@@ -112,6 +113,11 @@ from .object_store import (
     list_gcs_campaign_ids,
     sync_from_gcs,
     sync_to_gcs,
+)
+from .firestore_index import (
+    firestore_enabled,
+    list_firestore_campaign_ids,
+    upsert_campaign_index,
 )
 from .auth import (
     AuthenticationConfigurationError,
@@ -495,6 +501,8 @@ def _campaign_engine_kwargs(campaign: Campaign) -> dict:
 def _persist(campaign_id: str) -> None:
     if gcs_enabled():
         sync_to_gcs(campaign_id, WORKSPACE_ROOT / campaign_id)
+    if firestore_enabled():
+        upsert_campaign_index(campaign_id, WORKSPACE_ROOT / campaign_id)
 
 
 def _state_response(engine: CampaignEngine) -> dict:
@@ -687,6 +695,8 @@ def cloud_readiness() -> dict:
         "gemini_model": os.environ.get("SERVO_GEMINI_MODEL", "gemini-3.7-flash"),
         "adk": "google-adk/2.7.1",
         "gcs": gcs_enabled(),
+        "firestore": firestore_enabled(),
+        "firestore_role": "campaign metadata index; large artifacts remain in GCS",
         "campaign_job_configured": dispatch_configured,
         "campaign_job_resource": job_resource,
         "verified_cloud_campaigns": len(verified),
@@ -1539,7 +1549,10 @@ def ask_execute_explicit(
 def list_campaigns() -> dict:
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
     if gcs_enabled():
-        for campaign_id in list_gcs_campaign_ids():
+        campaign_ids = set(list_gcs_campaign_ids())
+        if firestore_enabled():
+            campaign_ids.update(list_firestore_campaign_ids())
+        for campaign_id in sorted(campaign_ids):
             if re.fullmatch(r"cam-[0-9a-f]{16}", campaign_id):
                 sync_from_gcs(campaign_id, WORKSPACE_ROOT / campaign_id)
     campaigns: list[dict] = []

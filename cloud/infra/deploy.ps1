@@ -47,6 +47,7 @@ gcloud services enable `
     identitytoolkit.googleapis.com `
     iamcredentials.googleapis.com `
     logging.googleapis.com `
+    firestore.googleapis.com `
     run.googleapis.com `
     secretmanager.googleapis.com `
     storage.googleapis.com
@@ -54,6 +55,18 @@ gcloud services enable `
 Step "Dedicated service identities"
 Ensure-ServiceAccount $apiServiceAccountName "Servo RealityCI API"
 Ensure-ServiceAccount $jobServiceAccountName "Servo RealityCI campaign job"
+
+Step "Firestore metadata database"
+gcloud firestore databases describe --database="(default)" --project $ProjectId *> $null
+if ($LASTEXITCODE -ne 0) {
+    gcloud firestore databases create --database="(default)" `
+        --location=$Region --type=firestore-native --project=$ProjectId
+}
+foreach ($serviceAccount in @($apiServiceAccount, $jobServiceAccount)) {
+    gcloud projects add-iam-policy-binding $ProjectId `
+        --member "serviceAccount:$serviceAccount" --role roles/datastore.user `
+        --condition None
+}
 
 Step "Artifact Registry"
 gcloud artifacts repositories describe servo --location $Region --project $ProjectId *> $null
@@ -102,7 +115,7 @@ gcloud run jobs $jobAction $CampaignJobName `
     --project $ProjectId --region $Region --image $jobImage `
     --service-account $jobServiceAccount `
     --cpu 2 --memory 4Gi --task-timeout 3600s --max-retries 1 `
-    --set-env-vars "SERVO_GCS_BUCKET=$bucket,SERVO_GCS_PREFIX=$GcsPrefix,SERVO_COMMIT_SHA=$commitSha,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,GOOGLE_GENAI_USE_VERTEXAI=true"
+    --set-env-vars "SERVO_GCS_BUCKET=$bucket,SERVO_GCS_PREFIX=$GcsPrefix,SERVO_FIRESTORE_DATABASE=(default),SERVO_FIRESTORE_COLLECTION=servo_campaigns,SERVO_COMMIT_SHA=$commitSha,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,GOOGLE_GENAI_USE_VERTEXAI=true"
 
 Step "Allow only the API identity to execute the campaign job"
 gcloud run jobs add-iam-policy-binding $CampaignJobName `
@@ -117,7 +130,7 @@ gcloud run deploy $ApiService `
     --allow-unauthenticated `
     --min-instances 0 --max-instances 1 `
     --cpu 2 --memory 4Gi --concurrency 8 --timeout 3600 `
-    --set-env-vars "SERVO_AUTH_MODE=firebase,SERVO_FIREBASE_PROJECT_ID=$firebaseProject,SERVO_FIREBASE_REQUIRE_VERIFIED_EMAIL=1,SERVO_GCP_REGION=$Region,SERVO_CAMPAIGN_JOB=$CampaignJobName,SERVO_GCS_BUCKET=$bucket,SERVO_GCS_PREFIX=$GcsPrefix,SERVO_CAMPAIGN_ROOT=/workspace/campaigns,SERVO_COMMIT_SHA=$commitSha,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,GOOGLE_GENAI_USE_VERTEXAI=true"
+    --set-env-vars "SERVO_AUTH_MODE=firebase,SERVO_FIREBASE_PROJECT_ID=$firebaseProject,SERVO_FIREBASE_REQUIRE_VERIFIED_EMAIL=1,SERVO_GCP_REGION=$Region,SERVO_CAMPAIGN_JOB=$CampaignJobName,SERVO_GCS_BUCKET=$bucket,SERVO_GCS_PREFIX=$GcsPrefix,SERVO_FIRESTORE_DATABASE=(default),SERVO_FIRESTORE_COLLECTION=servo_campaigns,SERVO_CAMPAIGN_ROOT=/workspace/campaigns,SERVO_COMMIT_SHA=$commitSha,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,GOOGLE_GENAI_USE_VERTEXAI=true"
 
 $serviceUrl = (gcloud run services describe $ApiService --project $ProjectId `
     --region $Region --format "value(status.url)").Trim()
@@ -126,6 +139,7 @@ Step "Deployment boundary"
 Write-Host "API URL:      $serviceUrl"
 Write-Host "Campaign job: $CampaignJobName"
 Write-Host "Artifacts:    gs://$bucket/$GcsPrefix"
+Write-Host "Metadata:     Firestore (default)/servo_campaigns"
 Write-Host "Commit:       $commitSha"
 Write-Host ""
 Write-Host "Firebase Authentication must be enabled for project '$firebaseProject'."

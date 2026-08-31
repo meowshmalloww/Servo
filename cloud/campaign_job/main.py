@@ -46,6 +46,35 @@ def _storage_bucket():
     return storage.Client().bucket(_required_env("SERVO_GCS_BUCKET"))
 
 
+def _write_firestore_index(campaign_id: str, payload: dict[str, Any]) -> None:
+    database = os.environ.get("SERVO_FIRESTORE_DATABASE", "").strip()
+    if not database:
+        return
+    try:
+        from google.cloud import firestore
+    except ImportError as exc:
+        raise RuntimeError("google-cloud-firestore is required in the campaign job") from exc
+    collection = os.environ.get("SERVO_FIRESTORE_COLLECTION", "servo_campaigns").strip()
+    if not collection or "/" in collection:
+        raise RuntimeError("SERVO_FIRESTORE_COLLECTION must be one collection name")
+    prefix = _workspace_prefix(campaign_id)
+    index = {
+        "schema": "servo.firestore-campaign-index/v1",
+        "campaign_id": campaign_id,
+        "state": payload["state"],
+        "terminal": payload["state"] in {"completed", "failed"},
+        "updated_at": payload["updated_at"],
+        "commit_sha": payload["commit_sha"],
+        "cloud_run_execution": payload["cloud_run_execution"],
+        "artifact_prefix": f"gs://{_required_env('SERVO_GCS_BUCKET')}/{prefix}",
+        "storage_contract": "metadata-only; artifacts-in-gcs",
+    }
+    firestore.Client(
+        project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None,
+        database=database,
+    ).collection(collection).document(campaign_id).set(index, merge=True)
+
+
 def _download_workspace(campaign_id: str, root: Path) -> None:
     bucket = _storage_bucket()
     base = _workspace_prefix(campaign_id)
@@ -108,6 +137,7 @@ def _write_state(root: Path, campaign_id: str, state: str, **detail: Any) -> Non
     path = root / "cloud-execution-receipt.json"
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     _upload_file(campaign_id, root, path)
+    _write_firestore_index(campaign_id, payload)
 
 
 def main() -> int:
